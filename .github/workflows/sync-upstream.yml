@@ -52,3 +52,28 @@ jobs:
                 "repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow_id}/disable"
             fi
           done <<< "${workflow_ids}"
+
+  sync-develop:
+    needs: sync
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out fork develop
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: develop
+
+      - name: Merge fork main into develop
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main develop
+
+          if ! git merge --no-edit origin/main; then
+            git merge --abort
+            echo "::error::origin/main conflicts with develop; resolve the conflict manually"
+            exit 1
+          fi
+
+          git push origin HEAD:develop
