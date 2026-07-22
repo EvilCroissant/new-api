@@ -1,0 +1,54 @@
+name: Sync upstream
+
+on:
+  schedule:
+    # GitHub cron uses UTC: 00:00/12:00 UTC = 08:00/20:00 Asia/Shanghai.
+    - cron: "0 0,12 * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: write
+
+concurrency:
+  group: sync-upstream-main
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out fork main
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - name: Merge upstream main
+        env:
+          UPSTREAM_REPOSITORY: QuantumNous/new-api
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
+          git fetch upstream main
+          git merge --no-edit upstream/main
+          git push origin HEAD:main
+
+      - name: Disable inherited workflows
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          workflow_ids="$(
+            gh api --paginate \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows?per_page=100" \
+              --jq '.workflows[] | select(.path != ".github/workflows/sync-upstream.yml" and .state == "active") | .id'
+          )"
+
+          while IFS= read -r workflow_id; do
+            if [ -n "${workflow_id}" ]; then
+              gh api --method PUT \
+                "repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow_id}/disable"
+            fi
+          done <<< "${workflow_ids}"
