@@ -161,6 +161,10 @@ const MODELS_SECTIONS = [
             settings['channel_affinity_setting.max_entries'],
           'channel_affinity_setting.default_ttl_seconds':
             settings['channel_affinity_setting.default_ttl_seconds'],
+          'channel_affinity_setting.upward_probe_interval_seconds':
+            settings[
+              'channel_affinity_setting.upward_probe_interval_seconds'
+            ],
           'channel_affinity_setting.rules':
             settings['channel_affinity_setting.rules'],
         }}

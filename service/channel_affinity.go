@@ -11,6 +11,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/cachex"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/types"
@@ -25,15 +26,14 @@ const (
 	ginKeyChannelAffinityMeta       = "channel_affinity_meta"
 	ginKeyChannelAffinityLogInfo    = "channel_affinity_log_info"
 	ginKeyChannelAffinitySkipRetry  = "channel_affinity_skip_retry_on_failure"
+	ginKeyChannelAffinitySelection  = "channel_affinity_selection"
+	ginKeyChannelAffinityState      = "channel_affinity_state"
+	ginKeyChannelAffinityProbeID    = "channel_affinity_probe_channel_id"
 
-	channelAffinityCacheNamespace           = "new-api:channel_affinity:v1"
 	channelAffinityUsageCacheStatsNamespace = "new-api:channel_affinity_usage_cache_stats:v1"
 )
 
 var (
-	channelAffinityCacheOnce sync.Once
-	channelAffinityCache     *cachex.HybridCache[int]
-
 	channelAffinityUsageCacheStatsOnce  sync.Once
 	channelAffinityUsageCacheStatsCache *cachex.HybridCache[ChannelAffinityUsageCacheCounters]
 
@@ -56,6 +56,11 @@ type channelAffinityMeta struct {
 	RequestPath    string
 }
 
+type channelAffinitySelection struct {
+	Group    string
+	Priority int64
+}
+
 type ChannelAffinityStatsContext struct {
 	RuleName       string
 	UsingGroup     string
@@ -76,36 +81,6 @@ type ChannelAffinityCacheStats struct {
 	ByRuleName    map[string]int `json:"by_rule_name"`
 	CacheCapacity int            `json:"cache_capacity"`
 	CacheAlgo     string         `json:"cache_algo"`
-}
-
-func getChannelAffinityCache() *cachex.HybridCache[int] {
-	channelAffinityCacheOnce.Do(func() {
-		setting := operation_setting.GetChannelAffinitySetting()
-		capacity := setting.MaxEntries
-		if capacity <= 0 {
-			capacity = 100_000
-		}
-		defaultTTLSeconds := setting.DefaultTTLSeconds
-		if defaultTTLSeconds <= 0 {
-			defaultTTLSeconds = 3600
-		}
-
-		channelAffinityCache = cachex.NewHybridCache[int](cachex.HybridCacheConfig[int]{
-			Namespace: cachex.Namespace(channelAffinityCacheNamespace),
-			Redis:     common.RDB,
-			RedisEnabled: func() bool {
-				return common.RedisEnabled && common.RDB != nil
-			},
-			RedisCodec: cachex.IntCodec{},
-			Memory: func() *hot.HotCache[string, int] {
-				return hot.NewHotCache[string, int](hot.LRU, capacity).
-					WithTTL(time.Duration(defaultTTLSeconds) * time.Second).
-					WithJanitor().
-					Build()
-			},
-		})
-	})
-	return channelAffinityCache
 }
 
 func GetChannelAffinityCacheStats() ChannelAffinityCacheStats {
@@ -609,14 +584,17 @@ func GetPreferredChannelByAffinity(c *gin.Context, modelName string, usingGroup 
 			RequestPath:    path,
 		})
 
-		cache := getChannelAffinityCache()
-		channelID, found, err := cache.Get(cacheKeySuffix)
+		state, found, err := getChannelAffinityCache().Get(cacheKeySuffix)
 		if err != nil {
 			common.SysError(fmt.Sprintf("channel affinity cache get failed: key=%s, err=%v", cacheKeyFull, err))
 			return 0, false
 		}
+		c.Set(ginKeyChannelAffinityState, channelAffinityRequestState{
+			State: state,
+			Found: found,
+		})
 		if found {
-			return channelID, true
+			return state.ChannelID, true
 		}
 		return 0, false
 	}
@@ -650,19 +628,20 @@ func ClearCurrentChannelAffinityCache(c *gin.Context) bool {
 		return false
 	}
 
-	cache := getChannelAffinityCache()
-	deleted, err := cache.DeleteMany([]string{cacheKey})
-	if err != nil {
-		common.SysError(fmt.Sprintf("channel affinity cache delete current failed: err=%v", err))
-		return false
-	}
-	c.Set(ginKeyChannelAffinitySkipRetry, false)
-	for _, ok := range deleted {
-		if ok {
-			return true
+	requestState, hasState := getChannelAffinityRequestState(c)
+	deleted := false
+	var err error
+	if hasState && requestState.Found {
+		deleted, err = deleteChannelAffinityState(cacheKey, requestState.State)
+		if err != nil {
+			common.SysError(fmt.Sprintf("channel affinity cache delete current failed: err=%v", err))
 		}
 	}
-	return false
+	c.Set(ginKeyChannelAffinityState, channelAffinityRequestState{})
+	c.Set(ginKeyChannelAffinitySelection, nil)
+	c.Set(ginKeyChannelAffinityProbeID, 0)
+	c.Set(ginKeyChannelAffinitySkipRetry, false)
+	return deleted
 }
 
 func ShouldKeepChannelAffinityOnChannelDisabled() bool {
@@ -673,7 +652,7 @@ func ShouldKeepChannelAffinityOnChannelDisabled() bool {
 	return setting.KeepOnChannelDisabled
 }
 
-func MarkChannelAffinityUsed(c *gin.Context, selectedGroup string, channelID int) {
+func MarkChannelAffinityUsed(c *gin.Context, selectedGroup string, channelID int, priority int64) {
 	if c == nil || channelID <= 0 {
 		return
 	}
@@ -681,6 +660,10 @@ func MarkChannelAffinityUsed(c *gin.Context, selectedGroup string, channelID int
 	if !ok {
 		return
 	}
+	c.Set(ginKeyChannelAffinitySelection, channelAffinitySelection{
+		Group:    selectedGroup,
+		Priority: priority,
+	})
 	c.Set(ginKeyChannelAffinitySkipRetry, meta.SkipRetry)
 	info := map[string]interface{}{
 		"reason":         meta.RuleName,
@@ -690,6 +673,7 @@ func MarkChannelAffinityUsed(c *gin.Context, selectedGroup string, channelID int
 		"model":          meta.ModelName,
 		"request_path":   meta.RequestPath,
 		"channel_id":     channelID,
+		"priority":       priority,
 		"key_source":     meta.KeySourceType,
 		"key_key":        meta.KeySourceKey,
 		"key_path":       meta.KeySourcePath,
@@ -697,6 +681,81 @@ func MarkChannelAffinityUsed(c *gin.Context, selectedGroup string, channelID int
 		"key_fp":         meta.KeyFingerprint,
 	}
 	c.Set(ginKeyChannelAffinityLogInfo, info)
+}
+
+func getChannelAffinitySelection(c *gin.Context) (channelAffinitySelection, bool) {
+	if c == nil {
+		return channelAffinitySelection{}, false
+	}
+	value, ok := c.Get(ginKeyChannelAffinitySelection)
+	if !ok {
+		return channelAffinitySelection{}, false
+	}
+	selection, ok := value.(channelAffinitySelection)
+	if !ok {
+		return channelAffinitySelection{}, false
+	}
+	return selection, true
+}
+
+func getChannelAffinityRequestState(c *gin.Context) (channelAffinityRequestState, bool) {
+	if c == nil {
+		return channelAffinityRequestState{}, false
+	}
+	value, ok := c.Get(ginKeyChannelAffinityState)
+	if !ok {
+		return channelAffinityRequestState{}, false
+	}
+	requestState, ok := value.(channelAffinityRequestState)
+	return requestState, ok
+}
+
+func TryClaimHigherPriorityAffinityProbe(c *gin.Context, selectedGroup string, preferred *model.Channel) *model.Channel {
+	if c == nil || preferred == nil || selectedGroup == "" {
+		return nil
+	}
+	meta, hasMeta := getChannelAffinityMeta(c)
+	requestState, hasState := getChannelAffinityRequestState(c)
+	if !hasMeta || !hasState || !requestState.Found ||
+		requestState.State.ChannelID != preferred.Id {
+		return nil
+	}
+
+	now := time.Now()
+	nowMillis := now.UnixMilli()
+	if requestState.State.NextProbeAt > nowMillis {
+		return nil
+	}
+
+	nextProbeAt := now.Add(channelAffinityProbeInterval(operation_setting.GetChannelAffinitySetting())).UnixMilli()
+	claimed, err := claimChannelAffinityProbe(meta.CacheKey, requestState.State, nowMillis, nextProbeAt)
+	if err != nil {
+		common.SysError(fmt.Sprintf("channel affinity probe claim failed: key=%s, err=%v", meta.CacheKey, err))
+		return nil
+	}
+	if !claimed {
+		return nil
+	}
+
+	next, err := model.GetRandomSatisfiedChannelAtNextHigherPriority(
+		selectedGroup,
+		meta.ModelName,
+		preferred.GetPriority(),
+		meta.RequestPath,
+	)
+	if err != nil {
+		common.SysError(fmt.Sprintf(
+			"channel affinity upward probe lookup failed: group=%s, model=%s, err=%v",
+			selectedGroup,
+			meta.ModelName,
+			err,
+		))
+		return nil
+	}
+	if next != nil {
+		c.Set(ginKeyChannelAffinityProbeID, next.Id)
+	}
+	return next
 }
 
 func AppendChannelAffinityAdminInfo(c *gin.Context, adminInfo map[string]interface{}) {
@@ -722,6 +781,15 @@ func RecordChannelAffinity(c *gin.Context, channelID int) {
 		if successChannelID := c.GetInt("channel_id"); successChannelID > 0 {
 			channelID = successChannelID
 		}
+	} else if c != nil {
+		probeChannelID := c.GetInt(ginKeyChannelAffinityProbeID)
+		successChannelID := c.GetInt("channel_id")
+		if probeChannelID > 0 && successChannelID > 0 && successChannelID != probeChannelID {
+			requestState, ok := getChannelAffinityRequestState(c)
+			if ok && requestState.Found {
+				channelID = requestState.State.ChannelID
+			}
+		}
 	}
 	cacheKey, ttlSeconds, ok := getChannelAffinityContext(c)
 	if !ok {
@@ -733,9 +801,46 @@ func RecordChannelAffinity(c *gin.Context, channelID int) {
 	if ttlSeconds <= 0 {
 		ttlSeconds = 3600
 	}
-	cache := getChannelAffinityCache()
-	if err := cache.SetWithTTL(cacheKey, channelID, time.Duration(ttlSeconds)*time.Second); err != nil {
-		common.SysError(fmt.Sprintf("channel affinity cache set failed: key=%s, err=%v", cacheKey, err))
+	requestState, hasState := getChannelAffinityRequestState(c)
+	if !hasState {
+		return
+	}
+
+	now := time.Now()
+	ttl := time.Duration(ttlSeconds) * time.Second
+	idleExpiresAt := now.Add(ttl).UnixMilli()
+	if !requestState.Found {
+		versionEpoch, versionSeq := nextChannelAffinityVersion()
+		state := channelAffinityState{
+			ChannelID:     channelID,
+			VersionEpoch:  versionEpoch,
+			VersionSeq:    versionSeq,
+			NextProbeAt:   now.Add(channelAffinityProbeInterval(setting)).UnixMilli(),
+			IdleExpiresAt: idleExpiresAt,
+		}
+		if _, err := createChannelAffinityState(cacheKey, state, ttl); err != nil {
+			common.SysError(fmt.Sprintf("channel affinity cache create failed: key=%s, err=%v", cacheKey, err))
+		}
+		return
+	}
+
+	if channelID == requestState.State.ChannelID {
+		if _, err := refreshChannelAffinityState(cacheKey, requestState.State, idleExpiresAt, ttl); err != nil {
+			common.SysError(fmt.Sprintf("channel affinity cache refresh failed: key=%s, err=%v", cacheKey, err))
+		}
+		return
+	}
+
+	versionEpoch, versionSeq := nextChannelAffinityVersion()
+	replacement := channelAffinityState{
+		ChannelID:     channelID,
+		VersionEpoch:  versionEpoch,
+		VersionSeq:    versionSeq,
+		NextProbeAt:   now.Add(channelAffinityProbeInterval(setting)).UnixMilli(),
+		IdleExpiresAt: idleExpiresAt,
+	}
+	if _, err := switchChannelAffinityState(cacheKey, requestState.State, replacement, ttl); err != nil {
+		common.SysError(fmt.Sprintf("channel affinity cache switch failed: key=%s, err=%v", cacheKey, err))
 	}
 }
 

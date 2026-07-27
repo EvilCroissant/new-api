@@ -112,9 +112,50 @@ func SyncChannelCache(frequency int) {
 }
 
 func GetRandomSatisfiedChannel(group string, model string, retry int, requestPath string) (*Channel, error) {
+	return GetRandomSatisfiedChannelSkippingPriority(group, model, retry, requestPath, nil)
+}
+
+// GetRandomSatisfiedChannelAtNextHigherPriority selects a channel from the
+// nearest available priority above currentPriority.
+func GetRandomSatisfiedChannelAtNextHigherPriority(group string, model string, currentPriority int64, requestPath string) (*Channel, error) {
+	if !common.MemoryCacheEnabled {
+		return GetChannelAtNextHigherPriority(group, model, currentPriority, requestPath)
+	}
+
+	channelSyncLock.RLock()
+	defer channelSyncLock.RUnlock()
+
+	channels := filterChannelsByRequestPathAndModel(group2model2channels[group][model], requestPath, model)
+	if len(channels) == 0 {
+		normalizedModel := ratio_setting.FormatMatchingModelName(model)
+		channels = filterChannelsByRequestPathAndModel(group2model2channels[group][normalizedModel], requestPath, model)
+	}
+
+	var targetPriority int64
+	found := false
+	for _, channelID := range channels {
+		channel, ok := channelsIDM[channelID]
+		if !ok {
+			return nil, fmt.Errorf("数据库一致性错误，渠道# %d 不存在，请联系管理员修复", channelID)
+		}
+		priority := channel.GetPriority()
+		if priority > currentPriority && (!found || priority < targetPriority) {
+			targetPriority = priority
+			found = true
+		}
+	}
+	if !found {
+		return nil, nil
+	}
+	return randomSatisfiedChannelAtPriority(channels, targetPriority)
+}
+
+// GetRandomSatisfiedChannelSkippingPriority keeps the original priority-based
+// retry order while omitting the priority already consumed by an affinity hit.
+func GetRandomSatisfiedChannelSkippingPriority(group string, model string, retry int, requestPath string, skippedPriority *int64) (*Channel, error) {
 	// if memory cache is disabled, get channel directly from database
 	if !common.MemoryCacheEnabled {
-		return GetChannel(group, model, retry, requestPath)
+		return GetChannelSkippingPriority(group, model, retry, requestPath, skippedPriority)
 	}
 
 	channelSyncLock.RLock()
@@ -143,9 +184,21 @@ func GetRandomSatisfiedChannel(group string, model string, retry int, requestPat
 	uniquePriorities := make(map[int]bool)
 	for _, channelId := range channels {
 		if channel, ok := channelsIDM[channelId]; ok {
-			uniquePriorities[int(channel.GetPriority())] = true
+			priority := channel.GetPriority()
+			if skippedPriority == nil || priority != *skippedPriority {
+				uniquePriorities[int(priority)] = true
+			}
 		} else {
 			return nil, fmt.Errorf("数据库一致性错误，渠道# %d 不存在，请联系管理员修复", channelId)
+		}
+	}
+	if len(uniquePriorities) == 0 && skippedPriority != nil {
+		for _, channelId := range channels {
+			channel, ok := channelsIDM[channelId]
+			if !ok {
+				return nil, fmt.Errorf("数据库一致性错误，渠道# %d 不存在，请联系管理员修复", channelId)
+			}
+			uniquePriorities[int(channel.GetPriority())] = true
 		}
 	}
 	var sortedUniquePriorities []int
@@ -159,22 +212,25 @@ func GetRandomSatisfiedChannel(group string, model string, retry int, requestPat
 	}
 	targetPriority := int64(sortedUniquePriorities[retry])
 
-	// get the priority for the given retry number
+	return randomSatisfiedChannelAtPriority(channels, targetPriority)
+}
+
+func randomSatisfiedChannelAtPriority(channels []int, targetPriority int64) (*Channel, error) {
 	var sumWeight = 0
 	var targetChannels []*Channel
-	for _, channelId := range channels {
-		if channel, ok := channelsIDM[channelId]; ok {
+	for _, channelID := range channels {
+		if channel, ok := channelsIDM[channelID]; ok {
 			if channel.GetPriority() == targetPriority {
 				sumWeight += channel.GetWeight()
 				targetChannels = append(targetChannels, channel)
 			}
 		} else {
-			return nil, fmt.Errorf("数据库一致性错误，渠道# %d 不存在，请联系管理员修复", channelId)
+			return nil, fmt.Errorf("数据库一致性错误，渠道# %d 不存在，请联系管理员修复", channelID)
 		}
 	}
 
 	if len(targetChannels) == 0 {
-		return nil, errors.New(fmt.Sprintf("no channel found, group: %s, model: %s, priority: %d", group, model, targetPriority))
+		return nil, fmt.Errorf("no channel found at priority: %d", targetPriority)
 	}
 
 	// smoothing factor and adjustment

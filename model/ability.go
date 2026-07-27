@@ -105,11 +105,84 @@ func getChannelQuery(group string, model string, retry int) (*gorm.DB, error) {
 	return channelQuery, nil
 }
 
+func getChannelQuerySkippingPriority(group string, model string, retry int, skippedPriority *int64) (*gorm.DB, error) {
+	if skippedPriority == nil {
+		return getChannelQuery(group, model, retry)
+	}
+
+	var priorities []int
+	err := DB.Model(&Ability{}).
+		Select("DISTINCT(priority)").
+		Where(commonGroupCol+" = ? and model = ? and enabled = ? and priority <> ?", group, model, true, *skippedPriority).
+		Order("priority DESC").
+		Pluck("priority", &priorities).Error
+	if err != nil {
+		return nil, err
+	}
+	if len(priorities) == 0 {
+		return getChannelQuery(group, model, retry)
+	}
+	if retry >= len(priorities) {
+		retry = len(priorities) - 1
+	}
+	return DB.Where(commonGroupCol+" = ? and model = ? and enabled = ? and priority = ?", group, model, true, priorities[retry]), nil
+}
+
 func GetChannel(group string, model string, retry int, requestPath string) (*Channel, error) {
+	return getChannelSkippingPriority(group, model, retry, requestPath, nil)
+}
+
+// GetChannelAtNextHigherPriority is the database-backed equivalent of
+// GetRandomSatisfiedChannelAtNextHigherPriority.
+func GetChannelAtNextHigherPriority(group string, model string, currentPriority int64, requestPath string) (*Channel, error) {
+	var abilities []Ability
+	err := DB.
+		Where(commonGroupCol+" = ? and model = ? and enabled = ? and priority > ?", group, model, true, currentPriority).
+		Order("priority ASC").
+		Order("weight DESC").
+		Find(&abilities).Error
+	if err != nil {
+		return nil, err
+	}
+	abilities = filterAbilitiesByRequestPathAndModel(abilities, requestPath, model)
+	if len(abilities) == 0 {
+		return nil, nil
+	}
+
+	targetPriority := *abilities[0].Priority
+	weightSum := uint(0)
+	for _, ability := range abilities {
+		if ability.Priority == nil || *ability.Priority != targetPriority {
+			continue
+		}
+		weightSum += ability.Weight + 10
+	}
+	weight := common.GetRandomInt(int(weightSum))
+	for _, ability := range abilities {
+		if ability.Priority == nil || *ability.Priority != targetPriority {
+			continue
+		}
+		weight -= int(ability.Weight) + 10
+		if weight <= 0 {
+			channel := Channel{}
+			err = DB.First(&channel, "id = ?", ability.ChannelId).Error
+			return &channel, err
+		}
+	}
+	return nil, errors.New("channel not found")
+}
+
+// GetChannelSkippingPriority is the database-backed equivalent of
+// GetRandomSatisfiedChannelSkippingPriority.
+func GetChannelSkippingPriority(group string, model string, retry int, requestPath string, skippedPriority *int64) (*Channel, error) {
+	return getChannelSkippingPriority(group, model, retry, requestPath, skippedPriority)
+}
+
+func getChannelSkippingPriority(group string, model string, retry int, requestPath string, skippedPriority *int64) (*Channel, error) {
 	var abilities []Ability
 
 	var err error = nil
-	channelQuery, err := getChannelQuery(group, model, retry)
+	channelQuery, err := getChannelQuerySkippingPriority(group, model, retry, skippedPriority)
 	if err != nil {
 		return nil, err
 	}

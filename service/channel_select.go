@@ -27,6 +27,21 @@ func (p *RetryParam) GetRetry() int {
 	return *p.Retry
 }
 
+func (p *RetryParam) getPriorityRetry(group string) (int, *int64) {
+	retry := p.GetRetry()
+	selection, ok := getChannelAffinitySelection(p.Ctx)
+	if !ok {
+		return retry, nil
+	}
+	if retry > 0 {
+		retry--
+	}
+	if selection.Group != group {
+		return retry, nil
+	}
+	return retry, &selection.Priority
+}
+
 func (p *RetryParam) SetRetry(retry int) {
 	p.Retry = &retry
 }
@@ -108,15 +123,17 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			autoGroup := autoGroups[i]
 			// Calculate priorityRetry for current group
 			// 计算当前分组的 priorityRetry
-			priorityRetry := param.GetRetry()
+			priorityRetry, skippedPriority := param.getPriorityRetry(autoGroup)
+			retryBudgetIndex := param.GetRetry()
 			// If moved to a new group, reset priorityRetry and update startRetryIndex
 			// 如果切换到新分组，重置 priorityRetry 并更新 startRetryIndex
 			if i > startGroupIndex {
 				priorityRetry = 0
+				retryBudgetIndex = 0
 			}
 			logger.LogDebug(param.Ctx, "Auto selecting group: %s, priorityRetry: %d", autoGroup, priorityRetry)
 
-			channel, _ = model.GetRandomSatisfiedChannel(autoGroup, param.ModelName, priorityRetry, param.RequestPath)
+			channel, _ = model.GetRandomSatisfiedChannelSkippingPriority(autoGroup, param.ModelName, priorityRetry, param.RequestPath, skippedPriority)
 			if channel == nil {
 				// Current group has no available channel for this model, try next group
 				// 当前分组没有该模型的可用渠道，尝试下一个分组
@@ -135,7 +152,7 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 
 			// Prepare state for next retry
 			// 为下一次重试准备状态
-			if crossGroupRetry && priorityRetry >= common.RetryTimes {
+			if crossGroupRetry && retryBudgetIndex >= common.RetryTimes {
 				// Current group has exhausted all retries, prepare to switch to next group
 				// This request still uses current group, but next retry will use next group
 				// 当前分组已用完所有重试次数，准备切换到下一个分组
@@ -154,7 +171,8 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			break
 		}
 	} else {
-		channel, err = model.GetRandomSatisfiedChannel(param.TokenGroup, param.ModelName, param.GetRetry(), param.RequestPath)
+		priorityRetry, skippedPriority := param.getPriorityRetry(param.TokenGroup)
+		channel, err = model.GetRandomSatisfiedChannelSkippingPriority(param.TokenGroup, param.ModelName, priorityRetry, param.RequestPath, skippedPriority)
 		if err != nil {
 			return nil, param.TokenGroup, err
 		}

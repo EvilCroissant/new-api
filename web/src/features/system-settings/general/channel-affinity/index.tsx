@@ -141,6 +141,11 @@ export function ChannelAffinitySection(props: Props) {
   const [defaultTtl, setDefaultTtl] = useState(
     props.defaultValues['channel_affinity_setting.default_ttl_seconds']
   )
+  const [upwardProbeInterval, setUpwardProbeInterval] = useState(
+    props.defaultValues[
+      'channel_affinity_setting.upward_probe_interval_seconds'
+    ]
+  )
   const [rules, setRules] = useState<AffinityRule[]>(() =>
     parseRules(props.defaultValues['channel_affinity_setting.rules'])
   )
@@ -177,6 +182,11 @@ export function ChannelAffinitySection(props: Props) {
     setMaxEntries(props.defaultValues['channel_affinity_setting.max_entries'])
     setDefaultTtl(
       props.defaultValues['channel_affinity_setting.default_ttl_seconds']
+    )
+    setUpwardProbeInterval(
+      props.defaultValues[
+        'channel_affinity_setting.upward_probe_interval_seconds'
+      ]
     )
     const parsed = parseRules(
       props.defaultValues['channel_affinity_setting.rules']
@@ -298,6 +308,17 @@ export function ChannelAffinitySection(props: Props) {
           value: String(defaultTtl),
         })
       }
+      if (
+        upwardProbeInterval !==
+        props.defaultValues[
+          'channel_affinity_setting.upward_probe_interval_seconds'
+        ]
+      ) {
+        updates.push({
+          key: 'channel_affinity_setting.upward_probe_interval_seconds',
+          value: String(upwardProbeInterval),
+        })
+      }
 
       const origRules = props.defaultValues['channel_affinity_setting.rules']
       const origSerialized = (() => {
@@ -413,7 +434,7 @@ export function ChannelAffinitySection(props: Props) {
         </Alert>
 
         {/* Basic Settings */}
-        <div className='grid grid-cols-1 gap-4 md:grid-cols-3'>
+        <div className='grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-4'>
           <SettingsSwitchField
             checked={enabled}
             onCheckedChange={setEnabled}
@@ -437,6 +458,22 @@ export function ChannelAffinitySection(props: Props) {
               value={defaultTtl}
               onChange={(e) => setDefaultTtl(Number(e.target.value))}
             />
+          </div>
+          <div className='grid gap-1.5'>
+            <Label>{t('Upward probe interval (seconds)')}</Label>
+            <Input
+              type='number'
+              min={1}
+              value={upwardProbeInterval}
+              onChange={(e) =>
+                setUpwardProbeInterval(Number(e.target.value))
+              }
+            />
+            <p className='text-muted-foreground text-xs'>
+              {t(
+                'Successful requests on the current affinity channel do not reset this interval.'
+              )}
+            </p>
           </div>
         </div>
 

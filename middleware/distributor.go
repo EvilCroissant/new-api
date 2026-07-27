@@ -114,16 +114,22 @@ func Distribute() func(c *gin.Context) {
 									selectGroup = g
 									common.SetContextKey(c, constant.ContextKeyAutoGroup, g)
 									channel = preferred
+									if probe := service.TryClaimHigherPriorityAffinityProbe(c, g, preferred); probe != nil {
+										channel = probe
+									}
 									affinityUsable = true
-									service.MarkChannelAffinityUsed(c, g, preferred.Id)
+									service.MarkChannelAffinityUsed(c, g, channel.Id, channel.GetPriority())
 									break
 								}
 							}
 						} else if model.IsChannelEnabledForGroupModel(usingGroup, modelRequest.Model, preferred.Id) {
 							channel = preferred
 							selectGroup = usingGroup
+							if probe := service.TryClaimHigherPriorityAffinityProbe(c, usingGroup, preferred); probe != nil {
+								channel = probe
+							}
 							affinityUsable = true
-							service.MarkChannelAffinityUsed(c, usingGroup, preferred.Id)
+							service.MarkChannelAffinityUsed(c, usingGroup, channel.Id, channel.GetPriority())
 						}
 					}
 					if !affinityUsable && !service.ShouldKeepChannelAffinityOnChannelDisabled() {
