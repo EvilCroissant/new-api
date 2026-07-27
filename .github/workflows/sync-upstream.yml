@@ -43,7 +43,12 @@ jobs:
           workflow_ids="$(
             gh api --paginate \
               "repos/${GITHUB_REPOSITORY}/actions/workflows?per_page=100" \
-              --jq '.workflows[] | select(.path != ".github/workflows/sync-upstream.yml" and .state == "active") | .id'
+              --jq '.workflows[] | select(
+                .path != ".github/workflows/sync-upstream.yml" and
+                .path != ".github/workflows/docker-build.yml" and
+                .path != ".github/workflows/docker-image-branch.yml" and
+                .state == "active"
+              ) | .id'
           )"
 
           while IFS= read -r workflow_id; do
