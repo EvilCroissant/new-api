@@ -34,12 +34,38 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
           git fetch upstream main
-          git merge --no-edit upstream/main
-          # Keep fork-owned workflows out of the merge commit. The default
-          # GITHUB_TOKEN cannot push workflow-file changes back to the repo.
-          git restore --source="${fork_main_sha}" --staged --worktree -- .github/workflows
-          git commit --amend --no-edit
-          git push origin HEAD:main
+
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "Fork main is already up to date with upstream/main"
+          else
+            if ! git merge --no-commit --no-ff upstream/main; then
+              non_workflow_conflicts="$(
+                git diff --name-only --diff-filter=U |
+                  grep -v '^\.github/workflows/' || true
+              )"
+              if [ -n "${non_workflow_conflicts}" ]; then
+                git merge --abort
+                echo "::error::upstream/main conflicts outside .github/workflows"
+                echo "${non_workflow_conflicts}"
+                exit 1
+              fi
+            fi
+
+            # Workflow conflicts are resolved by keeping the fork-owned set.
+            # The default GITHUB_TOKEN cannot push workflow-file changes.
+            git rm --recursive --force --ignore-unmatch .github/workflows
+            git restore --source="${fork_main_sha}" --staged --worktree -- .github/workflows
+            remaining_conflicts="$(git diff --name-only --diff-filter=U)"
+            if [ -n "${remaining_conflicts}" ]; then
+              git merge --abort
+              echo "::error::unresolved conflicts remain after preserving fork workflows"
+              echo "${remaining_conflicts}"
+              exit 1
+            fi
+
+            git commit --no-edit
+            git push origin HEAD:main
+          fi
 
       - name: Disable inherited workflows
         env:
@@ -81,14 +107,33 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git fetch origin main develop
 
-          if ! git merge --no-edit origin/main; then
-            git merge --abort
-            echo "::error::origin/main conflicts with develop; resolve the conflict manually"
-            exit 1
-          fi
+          if git merge-base --is-ancestor origin/main HEAD; then
+            echo "Develop is already up to date with origin/main"
+          else
+            if ! git merge --no-commit --no-ff origin/main; then
+              non_workflow_conflicts="$(
+                git diff --name-only --diff-filter=U |
+                  grep -v '^\.github/workflows/' || true
+              )"
+              if [ -n "${non_workflow_conflicts}" ]; then
+                git merge --abort
+                echo "::error::origin/main conflicts with develop outside .github/workflows"
+                echo "${non_workflow_conflicts}"
+                exit 1
+              fi
+            fi
 
-          # Keep develop's fork-owned workflows out of the merge commit for
-          # the same GITHUB_TOKEN workflow-file restriction.
-          git restore --source="${fork_develop_sha}" --staged --worktree -- .github/workflows
-          git commit --amend --no-edit
-          git push origin HEAD:develop
+            # Workflow conflicts are resolved by keeping develop's fork-owned set.
+            git rm --recursive --force --ignore-unmatch .github/workflows
+            git restore --source="${fork_develop_sha}" --staged --worktree -- .github/workflows
+            remaining_conflicts="$(git diff --name-only --diff-filter=U)"
+            if [ -n "${remaining_conflicts}" ]; then
+              git merge --abort
+              echo "::error::unresolved conflicts remain after preserving develop workflows"
+              echo "${remaining_conflicts}"
+              exit 1
+            fi
+
+            git commit --no-edit
+            git push origin HEAD:develop
+          fi
