@@ -29,11 +29,16 @@ jobs:
         env:
           UPSTREAM_REPOSITORY: QuantumNous/new-api
         run: |
+          fork_main_sha="$(git rev-parse HEAD)"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git remote add upstream "https://github.com/${UPSTREAM_REPOSITORY}.git"
           git fetch upstream main
           git merge --no-edit upstream/main
+          # Keep fork-owned workflows out of the merge commit. The default
+          # GITHUB_TOKEN cannot push workflow-file changes back to the repo.
+          git restore --source="${fork_main_sha}" --staged --worktree -- .github/workflows
+          git commit --amend --no-edit
           git push origin HEAD:main
 
       - name: Disable inherited workflows
@@ -71,6 +76,7 @@ jobs:
 
       - name: Merge fork main into develop
         run: |
+          fork_develop_sha="$(git rev-parse HEAD)"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git fetch origin main develop
@@ -81,4 +87,8 @@ jobs:
             exit 1
           fi
 
+          # Keep develop's fork-owned workflows out of the merge commit for
+          # the same GITHUB_TOKEN workflow-file restriction.
+          git restore --source="${fork_develop_sha}" --staged --worktree -- .github/workflows
+          git commit --amend --no-edit
           git push origin HEAD:develop
