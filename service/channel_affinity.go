@@ -758,7 +758,7 @@ func TryClaimHigherPriorityAffinityProbe(c *gin.Context, selectedGroup string, p
 	return next
 }
 
-func AppendChannelAffinityAdminInfo(c *gin.Context, adminInfo map[string]interface{}) {
+func AppendChannelAffinityAdminInfo(c *gin.Context, adminInfo map[string]interface{}, requestSucceeded bool) {
 	if c == nil || adminInfo == nil {
 		return
 	}
@@ -766,7 +766,22 @@ func AppendChannelAffinityAdminInfo(c *gin.Context, adminInfo map[string]interfa
 	if !ok || anyInfo == nil {
 		return
 	}
-	adminInfo["channel_affinity"] = anyInfo
+	info, ok := anyInfo.(map[string]interface{})
+	if !ok {
+		adminInfo["channel_affinity"] = anyInfo
+		return
+	}
+	probeChannelID := c.GetInt(ginKeyChannelAffinityProbeID)
+	if probeChannelID > 0 {
+		requestState, hasState := getChannelAffinityRequestState(c)
+		if hasState && requestState.Found {
+			info["event"] = "upward_probe"
+			info["from_channel_id"] = requestState.State.ChannelID
+			info["to_channel_id"] = probeChannelID
+			info["probe_succeeded"] = requestSucceeded && c.GetInt("channel_id") == probeChannelID
+		}
+	}
+	adminInfo["channel_affinity"] = info
 }
 
 func RecordChannelAffinity(c *gin.Context, channelID int) {

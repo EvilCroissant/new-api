@@ -342,6 +342,12 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
           const channelChain = hasRetryChain
             ? useChannel.join(' → ')
             : undefined
+          const hasSuccessfulUpwardProbe =
+            affinity?.event === 'upward_probe' &&
+            affinity.probe_succeeded === true &&
+            typeof affinity.from_channel_id === 'number' &&
+            typeof affinity.to_channel_id === 'number'
+          const showChannelRoute = hasRetryChain || hasSuccessfulUpwardProbe
           const channelDisplay = log.channel_name
             ? `${log.channel_name} #${log.channel}`
             : `#${log.channel}`
@@ -381,14 +387,18 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
                         aria-label={`${t('Key')} ${multiKeyIndex}`}
                       />
                     )}
-                    {hasRetryChain && (
+                    {showChannelRoute && (
                       <Popover>
                         <PopoverTrigger
                           render={
                             <button
                               type='button'
                               className='text-muted-foreground hover:text-foreground focus-visible:ring-ring inline-flex size-5 shrink-0 items-center justify-center rounded-full transition-colors focus-visible:ring-2 focus-visible:outline-none'
-                              aria-label={t('Retry Chain')}
+                              aria-label={t(
+                                hasRetryChain
+                                  ? 'Retry Chain'
+                                  : 'Channel Optimization'
+                              )}
                               onClick={(e) => e.stopPropagation()}
                             />
                           }
@@ -404,10 +414,27 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
                           className='w-64 text-xs'
                         >
                           <div className='flex flex-col gap-1'>
-                            <p className='font-medium'>{t('Retry Chain')}</p>
-                            <p className='text-muted-foreground font-mono break-all'>
-                              {channelChain}
-                            </p>
+                            {hasRetryChain && (
+                              <div>
+                                <p className='font-medium'>
+                                  {t('Retry Chain')}
+                                </p>
+                                <p className='text-muted-foreground font-mono break-all'>
+                                  {channelChain}
+                                </p>
+                              </div>
+                            )}
+                            {hasSuccessfulUpwardProbe && (
+                              <div>
+                                <p className='font-medium'>
+                                  {t('Channel Optimization')}
+                                </p>
+                                <p className='text-muted-foreground font-mono break-all'>
+                                  #{affinity.from_channel_id} → #
+                                  {affinity.to_channel_id}
+                                </p>
+                              </div>
+                            )}
                           </div>
                         </PopoverContent>
                       </Popover>

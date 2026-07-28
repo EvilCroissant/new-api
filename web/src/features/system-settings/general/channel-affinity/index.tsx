@@ -460,14 +460,12 @@ export function ChannelAffinitySection(props: Props) {
             />
           </div>
           <div className='grid gap-1.5'>
-            <Label>{t('Upward probe interval (seconds)')}</Label>
+            <Label>{t('Channel optimization interval (seconds)')}</Label>
             <Input
               type='number'
               min={1}
               value={upwardProbeInterval}
-              onChange={(e) =>
-                setUpwardProbeInterval(Number(e.target.value))
-              }
+              onChange={(e) => setUpwardProbeInterval(Number(e.target.value))}
             />
             <p className='text-muted-foreground text-xs'>
               {t(
