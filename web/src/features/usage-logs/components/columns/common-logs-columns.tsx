@@ -482,6 +482,17 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
                         {t('Key')}: {multiKeyIndex}
                       </p>
                     )}
+                    {hasSuccessfulUpwardProbe && (
+                      <div className='border-t pt-1 text-xs'>
+                        <p className='font-medium'>
+                          {t('Channel Optimization')}
+                        </p>
+                        <p className='text-muted-foreground font-mono break-all'>
+                          #{affinity.from_channel_id} → #
+                          {affinity.to_channel_id}
+                        </p>
+                      </div>
+                    )}
                     {affinity && (
                       <div className='border-t pt-1 text-xs'>
                         <p className='font-medium'>{t('Channel Affinity')}</p>
