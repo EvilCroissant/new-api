@@ -53,7 +53,7 @@ jobs:
 
             # Workflow conflicts are resolved by keeping the fork-owned set.
             # The default GITHUB_TOKEN cannot push workflow-file changes.
-            git rm --recursive --force --ignore-unmatch .github/workflows
+            git rm -r --force --ignore-unmatch .github/workflows
             git restore --source="${fork_main_sha}" --staged --worktree -- .github/workflows
             remaining_conflicts="$(git diff --name-only --diff-filter=U)"
             if [ -n "${remaining_conflicts}" ]; then
@@ -124,7 +124,7 @@ jobs:
             fi
 
             # Workflow conflicts are resolved by keeping develop's fork-owned set.
-            git rm --recursive --force --ignore-unmatch .github/workflows
+            git rm -r --force --ignore-unmatch .github/workflows
             git restore --source="${fork_develop_sha}" --staged --worktree -- .github/workflows
             remaining_conflicts="$(git diff --name-only --diff-filter=U)"
             if [ -n "${remaining_conflicts}" ]; then
