@@ -105,6 +105,8 @@ export interface ChannelOtherSettings {
   disable_task_polling_sleep?: boolean
   upstream_model_update_check_enabled?: boolean
   upstream_model_update_auto_sync_enabled?: boolean
+  upstream_model_update_auto_add_enabled?: boolean
+  upstream_model_update_auto_delete_enabled?: boolean
   upstream_model_update_ignored_models?: string[]
   upstream_model_update_last_check_time?: number
   upstream_model_update_last_detected_models?: string[]

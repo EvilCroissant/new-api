@@ -83,18 +83,20 @@ type applyAllChannelUpstreamModelUpdatesResult struct {
 }
 
 type detectChannelUpstreamModelUpdatesResult struct {
-	ChannelID       int      `json:"channel_id"`
-	ChannelName     string   `json:"channel_name"`
-	AddModels       []string `json:"add_models"`
-	RemoveModels    []string `json:"remove_models"`
-	LastCheckTime   int64    `json:"last_check_time"`
-	AutoAddedModels int      `json:"auto_added_models"`
+	ChannelID         int      `json:"channel_id"`
+	ChannelName       string   `json:"channel_name"`
+	AddModels         []string `json:"add_models"`
+	RemoveModels      []string `json:"remove_models"`
+	LastCheckTime     int64    `json:"last_check_time"`
+	AutoAddedModels   int      `json:"auto_added_models"`
+	AutoRemovedModels int      `json:"auto_removed_models"`
 }
 
 type upstreamModelUpdateChannelSummary struct {
-	ChannelName string
-	AddCount    int
-	RemoveCount int
+	ChannelName      string
+	AddCount         int
+	RemoveCount      int
+	AutoRemovedCount int
 }
 
 func normalizeModelNames(models []string) []string {
@@ -147,6 +149,44 @@ func applySelectedModelChanges(originModels []string, addModels []string, remove
 	normalizedAdd := normalizeModelNames(addModels)
 	normalizedRemove := subtractModelNames(normalizeModelNames(removeModels), normalizedAdd)
 	return subtractModelNames(mergeModelNames(originModels, normalizedAdd), normalizedRemove)
+}
+
+func applyAutoUpstreamModelChanges(
+	originModels []string,
+	pendingAddModels []string,
+	pendingRemoveModels []string,
+	autoSyncEnabled bool,
+	autoAddEnabled bool,
+	autoDeleteEnabled bool,
+) (nextModels, appliedAddModels, remainingAddModels, remainingRemoveModels []string) {
+	originModels = normalizeModelNames(originModels)
+	pendingAddModels = normalizeModelNames(pendingAddModels)
+	pendingRemoveModels = normalizeModelNames(pendingRemoveModels)
+
+	addModels := []string(nil)
+	removeModels := []string(nil)
+	if autoSyncEnabled && autoAddEnabled {
+		addModels = pendingAddModels
+	}
+	if autoSyncEnabled && autoDeleteEnabled {
+		removeModels = pendingRemoveModels
+	}
+
+	// Calculate the final list once, then persist it and rebuild abilities once.
+	nextModels = applySelectedModelChanges(originModels, addModels, removeModels)
+	appliedAddModels = subtractModelNames(nextModels, originModels)
+
+	if autoSyncEnabled && autoAddEnabled {
+		remainingAddModels = []string{}
+	} else {
+		remainingAddModels = pendingAddModels
+	}
+	if autoSyncEnabled && autoDeleteEnabled {
+		remainingRemoveModels = []string{}
+	} else {
+		remainingRemoveModels = pendingRemoveModels
+	}
+	return
 }
 
 func normalizeChannelModelMapping(channel *model.Channel) map[string]string {
@@ -495,19 +535,23 @@ func checkAndPersistChannelUpstreamModelUpdates(
 		return false, 0, fetchErr
 	}
 
-	if allowAutoApply && settings.UpstreamModelUpdateAutoSyncEnabled && len(pendingAddModels) > 0 {
-		originModels := normalizeModelNames(channel.GetModels())
-		mergedModels := mergeModelNames(originModels, pendingAddModels)
-		if len(mergedModels) > len(originModels) {
-			channel.Models = strings.Join(mergedModels, ",")
-			autoAdded = len(mergedModels) - len(originModels)
-			modelsChanged = true
-		}
-		settings.UpstreamModelUpdateLastDetectedModels = []string{}
-	} else {
-		settings.UpstreamModelUpdateLastDetectedModels = pendingAddModels
+	autoSyncEnabled := allowAutoApply && settings.UpstreamModelUpdateCheckEnabled && settings.UpstreamModelUpdateAutoSyncEnabled
+	nextModels, appliedAddModels, remainingAddModels, remainingRemoveModels := applyAutoUpstreamModelChanges(
+		channel.GetModels(),
+		pendingAddModels,
+		pendingRemoveModels,
+		autoSyncEnabled,
+		settings.UpstreamModelUpdateAutoAddEnabled,
+		settings.UpstreamModelUpdateAutoDeleteEnabled,
+	)
+	originModels := normalizeModelNames(channel.GetModels())
+	modelsChanged = !slices.Equal(originModels, nextModels)
+	if modelsChanged {
+		channel.Models = strings.Join(nextModels, ",")
 	}
-	settings.UpstreamModelUpdateLastRemovedModels = pendingRemoveModels
+	autoAdded = len(appliedAddModels)
+	settings.UpstreamModelUpdateLastDetectedModels = remainingAddModels
+	settings.UpstreamModelUpdateLastRemovedModels = remainingRemoveModels
 
 	if err = updateChannelUpstreamModelSettings(channel, *settings, modelsChanged); err != nil {
 		return false, autoAdded, err
@@ -567,13 +611,18 @@ func buildUpstreamModelUpdateTaskNotificationContent(
 ) string {
 	var builder strings.Builder
 	failedChannels := len(failedChannelIDs)
+	autoRemovedModels := 0
+	for _, summary := range channelSummaries {
+		autoRemovedModels += summary.AutoRemovedCount
+	}
 	builder.WriteString(fmt.Sprintf(
-		"上游模型巡检摘要：检测渠道 %d 个，发现变更 %d 个，新增 %d 个，删除 %d 个，自动同步新增 %d 个，失败 %d 个。",
+		"上游模型巡检摘要：检测渠道 %d 个，发现变更 %d 个，新增 %d 个，删除 %d 个，自动同步新增 %d 个，自动同步删除 %d 个，失败 %d 个。",
 		checkedChannels,
 		changedChannels,
 		detectedAddModels,
 		detectedRemoveModels,
 		autoAddedModels,
+		autoRemovedModels,
 		failedChannels,
 	))
 
@@ -639,6 +688,7 @@ type upstreamModelUpdateSummary struct {
 	DetectedRemoveModels int `json:"detected_remove_models"`
 	FailedChannels       int `json:"failed_channels"`
 	AutoAddedModels      int `json:"auto_added_models"`
+	AutoRemovedModels    int `json:"auto_removed_models"`
 }
 
 // runChannelUpstreamModelUpdateTaskOnce runs one synchronous upstream model
@@ -657,6 +707,7 @@ func runChannelUpstreamModelUpdateTaskOnce(ctx context.Context, force bool, allo
 	detectedAddModels := 0
 	detectedRemoveModels := 0
 	autoAddedModels := 0
+	autoRemovedModels := 0
 	channelSummaries := make([]upstreamModelUpdateChannelSummary, 0)
 	addModelSamples := make([]string, 0)
 	removeModelSamples := make([]string, 0)
@@ -714,6 +765,7 @@ scanLoop:
 			}
 
 			checkedChannels++
+			modelsBeforeCheck := normalizeModelNames(channel.GetModels())
 			modelsChanged, autoAdded, err := checkAndPersistChannelUpstreamModelUpdates(channel, &settings, force, allowAutoApply)
 			if err != nil {
 				failedChannels++
@@ -723,16 +775,18 @@ scanLoop:
 			}
 			currentAddModels := normalizeModelNames(settings.UpstreamModelUpdateLastDetectedModels)
 			currentRemoveModels := normalizeModelNames(settings.UpstreamModelUpdateLastRemovedModels)
+			autoRemoved := len(subtractModelNames(modelsBeforeCheck, channel.GetModels()))
 			currentAddCount := len(currentAddModels) + autoAdded
-			currentRemoveCount := len(currentRemoveModels)
+			currentRemoveCount := len(currentRemoveModels) + autoRemoved
 			detectedAddModels += currentAddCount
 			detectedRemoveModels += currentRemoveCount
 			if currentAddCount > 0 || currentRemoveCount > 0 {
 				changedChannels++
 				channelSummaries = append(channelSummaries, upstreamModelUpdateChannelSummary{
-					ChannelName: channel.Name,
-					AddCount:    currentAddCount,
-					RemoveCount: currentRemoveCount,
+					ChannelName:      channel.Name,
+					AddCount:         currentAddCount,
+					RemoveCount:      currentRemoveCount,
+					AutoRemovedCount: autoRemoved,
 				})
 			}
 			addModelSamples = mergeModelNames(addModelSamples, currentAddModels)
@@ -741,6 +795,7 @@ scanLoop:
 				refreshNeeded = true
 			}
 			autoAddedModels += autoAdded
+			autoRemovedModels += autoRemoved
 
 			if common.RequestInterval > 0 {
 				if ctx == nil {
@@ -775,17 +830,19 @@ scanLoop:
 		DetectedRemoveModels: detectedRemoveModels,
 		FailedChannels:       failedChannels,
 		AutoAddedModels:      autoAddedModels,
+		AutoRemovedModels:    autoRemovedModels,
 	}
 
 	if checkedChannels > 0 || common.DebugEnabled {
 		common.SysLog(fmt.Sprintf(
-			"upstream model update task done: checked_channels=%d changed_channels=%d detected_add_models=%d detected_remove_models=%d failed_channels=%d auto_added_models=%d",
+			"upstream model update task done: checked_channels=%d changed_channels=%d detected_add_models=%d detected_remove_models=%d failed_channels=%d auto_added_models=%d auto_removed_models=%d",
 			checkedChannels,
 			changedChannels,
 			detectedAddModels,
 			detectedRemoveModels,
 			failedChannels,
 			autoAddedModels,
+			autoRemovedModels,
 		))
 	}
 	if changedChannels > 0 || failedChannels > 0 {
@@ -893,11 +950,13 @@ func DetectChannelUpstreamModelUpdates(c *gin.Context) {
 	}
 
 	settings := channel.GetOtherSettings()
+	modelsBeforeCheck := normalizeModelNames(channel.GetModels())
 	modelsChanged, autoAdded, err := checkAndPersistChannelUpstreamModelUpdates(channel, &settings, true, false)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
+	autoRemoved := len(subtractModelNames(modelsBeforeCheck, channel.GetModels()))
 	if modelsChanged {
 		refreshChannelRuntimeCache()
 	}
@@ -906,12 +965,13 @@ func DetectChannelUpstreamModelUpdates(c *gin.Context) {
 		"success": true,
 		"message": "",
 		"data": detectChannelUpstreamModelUpdatesResult{
-			ChannelID:       channel.Id,
-			ChannelName:     channel.Name,
-			AddModels:       normalizeModelNames(settings.UpstreamModelUpdateLastDetectedModels),
-			RemoveModels:    normalizeModelNames(settings.UpstreamModelUpdateLastRemovedModels),
-			LastCheckTime:   settings.UpstreamModelUpdateLastCheckTime,
-			AutoAddedModels: autoAdded,
+			ChannelID:         channel.Id,
+			ChannelName:       channel.Name,
+			AddModels:         normalizeModelNames(settings.UpstreamModelUpdateLastDetectedModels),
+			RemoveModels:      normalizeModelNames(settings.UpstreamModelUpdateLastRemovedModels),
+			LastCheckTime:     settings.UpstreamModelUpdateLastCheckTime,
+			AutoAddedModels:   autoAdded,
+			AutoRemovedModels: autoRemoved,
 		},
 	})
 }

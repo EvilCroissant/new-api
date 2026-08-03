@@ -299,6 +299,8 @@ const SENSITIVE_FORM_FIELDS = [
   'disable_task_polling_sleep',
   'upstream_model_update_check_enabled',
   'upstream_model_update_auto_sync_enabled',
+  'upstream_model_update_auto_add_enabled',
+  'upstream_model_update_auto_delete_enabled',
   'upstream_model_update_ignored_models',
 ] satisfies (keyof ChannelFormValues)[]
 
@@ -347,6 +349,8 @@ function hasAdvancedSettingsValues(values: ChannelFormValues): boolean {
     values.claude_beta_query ||
     values.upstream_model_update_check_enabled ||
     values.upstream_model_update_auto_sync_enabled ||
+    values.upstream_model_update_auto_add_enabled === false ||
+    values.upstream_model_update_auto_delete_enabled ||
     values.upstream_model_update_ignored_models?.trim()
   )
 }
@@ -764,6 +768,12 @@ export function ChannelMutateDrawer({
   const currentUpstreamModelUpdateAutoSyncEnabled = form.watch(
     'upstream_model_update_auto_sync_enabled'
   )
+  const currentUpstreamModelUpdateAutoAddEnabled = form.watch(
+    'upstream_model_update_auto_add_enabled'
+  )
+  const currentUpstreamModelUpdateAutoDeleteEnabled = form.watch(
+    'upstream_model_update_auto_delete_enabled'
+  )
   const currentUpstreamModelUpdateIgnoredModels = form.watch(
     'upstream_model_update_ignored_models'
   )
@@ -1045,6 +1055,8 @@ export function ChannelMutateDrawer({
   const upstreamModelDetectionConfigured = Boolean(
     upstreamModelUpdateCheckEnabled ||
     currentUpstreamModelUpdateAutoSyncEnabled ||
+    currentUpstreamModelUpdateAutoAddEnabled === false ||
+    currentUpstreamModelUpdateAutoDeleteEnabled ||
     currentUpstreamModelUpdateIgnoredModels?.trim()
   )
   const advancedConfigured = Boolean(
@@ -4664,7 +4676,7 @@ export function ChannelMutateDrawer({
                                   control={form.control}
                                   name='upstream_model_update_auto_sync_enabled'
                                   render={({ field }) => (
-                                    <FormItem className='flex items-center justify-between px-4 py-3'>
+                                    <FormItem className='flex items-center justify-between gap-4 px-4 py-3'>
                                       <div className='space-y-0.5'>
                                         <FormLabel>
                                           {t('Auto Sync Upstream Models')}
@@ -4687,6 +4699,64 @@ export function ChannelMutateDrawer({
                                     </FormItem>
                                   )}
                                 />
+                                {currentUpstreamModelUpdateAutoSyncEnabled && (
+                                  <div className='bg-muted/30 divide-border divide-y pl-4'>
+                                    <FormField
+                                      control={form.control}
+                                      name='upstream_model_update_auto_add_enabled'
+                                      render={({ field }) => (
+                                        <FormItem className='flex items-center justify-between gap-4 px-4 py-3'>
+                                          <div className='space-y-0.5'>
+                                            <FormLabel>
+                                              {t('Auto Add Models')}
+                                            </FormLabel>
+                                            <FormDescription>
+                                              {t(
+                                                'Automatically add newly detected upstream models'
+                                              )}
+                                            </FormDescription>
+                                          </div>
+                                          <FormControl>
+                                            <Switch
+                                              checked={field.value}
+                                              disabled={
+                                                !upstreamModelUpdateCheckEnabled
+                                              }
+                                              onCheckedChange={field.onChange}
+                                            />
+                                          </FormControl>
+                                        </FormItem>
+                                      )}
+                                    />
+                                    <FormField
+                                      control={form.control}
+                                      name='upstream_model_update_auto_delete_enabled'
+                                      render={({ field }) => (
+                                        <FormItem className='flex items-center justify-between gap-4 px-4 py-3'>
+                                          <div className='space-y-0.5'>
+                                            <FormLabel>
+                                              {t('Auto Delete Models')}
+                                            </FormLabel>
+                                            <FormDescription>
+                                              {t(
+                                                'Automatically delete models missing from upstream. Enable only if the upstream model list is complete.'
+                                              )}
+                                            </FormDescription>
+                                          </div>
+                                          <FormControl>
+                                            <Switch
+                                              checked={field.value}
+                                              disabled={
+                                                !upstreamModelUpdateCheckEnabled
+                                              }
+                                              onCheckedChange={field.onChange}
+                                            />
+                                          </FormControl>
+                                        </FormItem>
+                                      )}
+                                    />
+                                  </div>
+                                )}
                               </div>
                               <FormField
                                 control={form.control}

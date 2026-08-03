@@ -1005,7 +1005,11 @@ func (channel *Channel) SetSetting(setting dto.ChannelSettings) {
 }
 
 func (channel *Channel) GetOtherSettings() dto.ChannelOtherSettings {
-	setting := dto.ChannelOtherSettings{}
+	// New channels default to automatic additions while keeping automatic
+	// deletion opt-in. Missing fields in legacy JSON retain these defaults.
+	setting := dto.ChannelOtherSettings{
+		UpstreamModelUpdateAutoAddEnabled: true,
+	}
 	if channel.OtherSettings != "" {
 		err := common.UnmarshalJsonStr(channel.OtherSettings, &setting)
 		if err != nil {

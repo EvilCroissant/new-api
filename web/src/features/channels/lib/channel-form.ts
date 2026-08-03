@@ -278,6 +278,8 @@ export const channelFormSchema = z
     // Upstream model update settings (stored in settings JSON)
     upstream_model_update_check_enabled: z.boolean().optional(),
     upstream_model_update_auto_sync_enabled: z.boolean().optional(),
+    upstream_model_update_auto_add_enabled: z.boolean().optional(),
+    upstream_model_update_auto_delete_enabled: z.boolean().optional(),
     upstream_model_update_ignored_models: z.string().optional(),
   })
   .superRefine((data, ctx) => {
@@ -449,6 +451,8 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   disable_task_polling_sleep: false,
   upstream_model_update_check_enabled: false,
   upstream_model_update_auto_sync_enabled: false,
+  upstream_model_update_auto_add_enabled: true,
+  upstream_model_update_auto_delete_enabled: false,
   upstream_model_update_ignored_models: '',
   advanced_custom: '',
 }
@@ -514,6 +518,8 @@ export function transformChannelToFormDefaults(
   let disableTaskPollingSleep = false
   let upstreamModelUpdateCheckEnabled = false
   let upstreamModelUpdateAutoSyncEnabled = false
+  let upstreamModelUpdateAutoAddEnabled = true
+  let upstreamModelUpdateAutoDeleteEnabled = false
   let upstreamModelUpdateIgnoredModels = ''
   let advancedCustom = ''
 
@@ -536,6 +542,10 @@ export function transformChannelToFormDefaults(
         parsed.upstream_model_update_check_enabled === true
       upstreamModelUpdateAutoSyncEnabled =
         parsed.upstream_model_update_auto_sync_enabled === true
+      upstreamModelUpdateAutoAddEnabled =
+        parsed.upstream_model_update_auto_add_enabled !== false
+      upstreamModelUpdateAutoDeleteEnabled =
+        parsed.upstream_model_update_auto_delete_enabled === true
       upstreamModelUpdateIgnoredModels = Array.isArray(
         parsed.upstream_model_update_ignored_models
       )
@@ -593,6 +603,9 @@ export function transformChannelToFormDefaults(
     allow_safety_identifier: allowSafetyIdentifier,
     upstream_model_update_check_enabled: upstreamModelUpdateCheckEnabled,
     upstream_model_update_auto_sync_enabled: upstreamModelUpdateAutoSyncEnabled,
+    upstream_model_update_auto_add_enabled: upstreamModelUpdateAutoAddEnabled,
+    upstream_model_update_auto_delete_enabled:
+      upstreamModelUpdateAutoDeleteEnabled,
     upstream_model_update_ignored_models: upstreamModelUpdateIgnoredModels,
     advanced_custom: advancedCustom,
   }
@@ -724,8 +737,11 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     settingsObj.upstream_model_update_check_enabled =
       formData.upstream_model_update_check_enabled === true
     settingsObj.upstream_model_update_auto_sync_enabled =
-      settingsObj.upstream_model_update_check_enabled === true &&
       formData.upstream_model_update_auto_sync_enabled === true
+    settingsObj.upstream_model_update_auto_add_enabled =
+      formData.upstream_model_update_auto_add_enabled !== false
+    settingsObj.upstream_model_update_auto_delete_enabled =
+      formData.upstream_model_update_auto_delete_enabled === true
     settingsObj.upstream_model_update_ignored_models = [
       ...new Set(
         String(formData.upstream_model_update_ignored_models || '')
