@@ -96,6 +96,7 @@ type upstreamModelUpdateChannelSummary struct {
 	ChannelName      string
 	AddCount         int
 	RemoveCount      int
+	AutoAddedCount   int
 	AutoRemovedCount int
 }
 
@@ -631,6 +632,9 @@ func buildUpstreamModelUpdateTaskNotificationContent(
 		builder.WriteString(fmt.Sprintf("\n\n变更渠道明细（展示 %d/%d）：", displayCount, len(channelSummaries)))
 		for _, summary := range channelSummaries[:displayCount] {
 			builder.WriteString(fmt.Sprintf("\n- %s (+%d / -%d)", summary.ChannelName, summary.AddCount, summary.RemoveCount))
+			if summary.AutoAddedCount > 0 || summary.AutoRemovedCount > 0 {
+				builder.WriteString(fmt.Sprintf("（自动 +%d / -%d）", summary.AutoAddedCount, summary.AutoRemovedCount))
+			}
 		}
 		if len(channelSummaries) > displayCount {
 			builder.WriteString(fmt.Sprintf("\n- 其余 %d 个渠道已省略", len(channelSummaries)-displayCount))
@@ -786,6 +790,7 @@ scanLoop:
 					ChannelName:      channel.Name,
 					AddCount:         currentAddCount,
 					RemoveCount:      currentRemoveCount,
+					AutoAddedCount:   autoAdded,
 					AutoRemovedCount: autoRemoved,
 				})
 			}
