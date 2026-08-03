@@ -467,11 +467,6 @@ export function ChannelAffinitySection(props: Props) {
               value={upwardProbeInterval}
               onChange={(e) => setUpwardProbeInterval(Number(e.target.value))}
             />
-            <p className='text-muted-foreground text-xs'>
-              {t(
-                'Successful requests on the current affinity channel do not reset this interval.'
-              )}
-            </p>
           </div>
         </div>
 
