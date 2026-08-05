@@ -201,6 +201,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	wg.Add(1)
 	gopool.Go(func() {
 		defer func() {
+			info.MarkDownstreamEnd(time.Now())
 			if r := recover(); r != nil {
 				logger.LogError(c, fmt.Sprintf("data handler goroutine panic: %v", r))
 				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonPanic, fmt.Errorf("handler panic: %v", r))
@@ -209,6 +210,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 			wg.Done()
 		}()
 		sr := newStreamResult(info.StreamStatus)
+		firstEventCompleted := false
 		for data := range dataChan {
 			sr.reset()
 			func() {
@@ -217,6 +219,10 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 				ExtendWriteDeadline(c)
 				dataHandler(data, sr)
 			}()
+			if !firstEventCompleted {
+				info.MarkDownstreamFirstEvent(time.Now())
+				firstEventCompleted = true
+			}
 			if sr.IsStopped() {
 				return
 			}

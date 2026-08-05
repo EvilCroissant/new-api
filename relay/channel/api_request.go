@@ -499,6 +499,20 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 					t.ConnIdle = info.IdleTime
 				})
 			},
+			DNSStart: func(_ httptrace.DNSStartInfo) {
+				now := time.Now()
+				record(func(t *common.UpstreamAttemptTiming) {
+					if t.DNSStart.IsZero() {
+						t.DNSStart = now
+					}
+				})
+			},
+			DNSDone: func(_ httptrace.DNSDoneInfo) {
+				now := time.Now()
+				record(func(t *common.UpstreamAttemptTiming) {
+					t.DNSDone = now
+				})
+			},
 			ConnectStart: func(_, _ string) {
 				now := time.Now()
 				record(func(t *common.UpstreamAttemptTiming) {

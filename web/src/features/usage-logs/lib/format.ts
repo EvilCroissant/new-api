@@ -25,7 +25,7 @@ import {
 } from '@/features/pricing/lib/billing-expr'
 
 import type { UsageLog } from '../data/schema'
-import type { LogOtherData } from '../types'
+import type { LogOtherData, UpstreamTimingAttempt } from '../types'
 
 export { normalizeTierLabel }
 
@@ -165,6 +165,14 @@ export function parseLogOther(other: string): LogOtherData | null {
     console.error('Failed to parse log other field:', error)
     return null
   }
+}
+
+export function getUpstreamTimingAttempts(
+  log: UsageLog
+): UpstreamTimingAttempt[] {
+  const attempts = parseLogOther(log.other)?.admin_info?.upstream_timing
+    ?.attempts
+  return Array.isArray(attempts) ? attempts : []
 }
 
 /**

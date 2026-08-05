@@ -13,23 +13,27 @@ type UpstreamAttemptTiming struct {
 	ChannelID  int
 	BodyBytes  int64
 
-	RequestStart      time.Time
-	GetConn           time.Time
-	GotConn           time.Time
-	ConnReused        bool
-	ConnIdle          time.Duration
-	ConnectStart      time.Time
-	ConnectDone       time.Time
-	TLSHandshakeStart time.Time
-	TLSHandshakeDone  time.Time
-	WroteRequest      time.Time
-	WriteErr          error
-	FirstByte         time.Time
-	ResponseHeader    time.Time
-	FirstSSE          time.Time
-	StreamEnd         time.Time
-	StatusCode        int
-	DoErr             error
+	RequestStart         time.Time
+	GetConn              time.Time
+	GotConn              time.Time
+	ConnReused           bool
+	ConnIdle             time.Duration
+	DNSStart             time.Time
+	DNSDone              time.Time
+	ConnectStart         time.Time
+	ConnectDone          time.Time
+	TLSHandshakeStart    time.Time
+	TLSHandshakeDone     time.Time
+	WroteRequest         time.Time
+	WriteErr             error
+	FirstByte            time.Time
+	ResponseHeader       time.Time
+	FirstSSE             time.Time
+	StreamEnd            time.Time
+	DownstreamFirstEvent time.Time
+	DownstreamEnd        time.Time
+	StatusCode           int
+	DoErr                error
 
 	mu sync.Mutex
 }
@@ -112,6 +116,26 @@ func (info *RelayInfo) MarkUpstreamStreamEnd(at time.Time) {
 	})
 }
 
+// MarkDownstreamFirstEvent records when the first upstream event has completed
+// local adaptation and downstream writing.
+func (info *RelayInfo) MarkDownstreamFirstEvent(at time.Time) {
+	info.updateLatestUpstreamAttempt(func(attempt *UpstreamAttemptTiming) {
+		if attempt.DownstreamFirstEvent.IsZero() {
+			attempt.DownstreamFirstEvent = at
+		}
+	})
+}
+
+// MarkDownstreamEnd records when the downstream event handler has drained all
+// events. Comparing it with StreamEnd exposes local write backpressure.
+func (info *RelayInfo) MarkDownstreamEnd(at time.Time) {
+	info.updateLatestUpstreamAttempt(func(attempt *UpstreamAttemptTiming) {
+		if attempt.DownstreamEnd.IsZero() {
+			attempt.DownstreamEnd = at
+		}
+	})
+}
+
 // UpstreamTimingForLog returns compact, admin-only timing data for all
 // upstream attempts. Missing phases are omitted instead of being reported as
 // zero, which keeps failed and non-streaming attempts distinguishable.
@@ -143,6 +167,8 @@ func (attempt *UpstreamAttemptTiming) logMap() map[string]interface{} {
 	gotConn := attempt.GotConn
 	connReused := attempt.ConnReused
 	connIdle := attempt.ConnIdle
+	dnsStart := attempt.DNSStart
+	dnsDone := attempt.DNSDone
 	connectStart := attempt.ConnectStart
 	connectDone := attempt.ConnectDone
 	tlsHandshakeStart := attempt.TLSHandshakeStart
@@ -153,6 +179,8 @@ func (attempt *UpstreamAttemptTiming) logMap() map[string]interface{} {
 	responseHeader := attempt.ResponseHeader
 	firstSSE := attempt.FirstSSE
 	streamEnd := attempt.StreamEnd
+	downstreamFirstEvent := attempt.DownstreamFirstEvent
+	downstreamEnd := attempt.DownstreamEnd
 	statusCode := attempt.StatusCode
 	doErr := attempt.DoErr
 	attempt.mu.Unlock()
@@ -171,6 +199,7 @@ func (attempt *UpstreamAttemptTiming) logMap() map[string]interface{} {
 		}
 	}
 	setDuration(result, "conn_acquire_ms", requestStart, gotConn)
+	setDuration(result, "dns_ms", dnsStart, dnsDone)
 	setDuration(result, "dial_ms", connectStart, connectDone)
 	setDuration(result, "tls_handshake_ms", tlsHandshakeStart, tlsHandshakeDone)
 	setDuration(result, "upload_ms", gotConn, wroteRequest)
@@ -179,6 +208,10 @@ func (attempt *UpstreamAttemptTiming) logMap() map[string]interface{} {
 	setDuration(result, "header_to_first_sse_ms", responseHeader, firstSSE)
 	setDuration(result, "upstream_first_sse_ms", requestStart, firstSSE)
 	setDuration(result, "stream_end_ms", requestStart, streamEnd)
+	setDuration(result, "downstream_first_event_ms", requestStart, downstreamFirstEvent)
+	setDuration(result, "downstream_end_ms", requestStart, downstreamEnd)
+	setDuration(result, "upstream_to_downstream_first_ms", firstSSE, downstreamFirstEvent)
+	setDuration(result, "upstream_to_downstream_end_ms", streamEnd, downstreamEnd)
 	if statusCode != 0 {
 		result["status_code"] = statusCode
 	}

@@ -63,6 +63,8 @@ interface TimingMetricsCellProps {
    * indicator used elsewhere on the mobile card.
    */
   indicator?: 'bar' | 'dot'
+  onClick?: () => void
+  ariaLabel?: string
 }
 
 export function TimingMetricsCell(props: TimingMetricsCellProps) {
@@ -123,13 +125,29 @@ export function TimingMetricsCell(props: TimingMetricsCellProps) {
   )
 
   if (indicator === 'dot') {
-    return (
-      <div className={cn('flex items-stretch', props.className)}>{labels}</div>
+    const className = cn(
+      'flex items-stretch',
+      props.className,
+      props.onClick &&
+        'cursor-pointer rounded-sm text-left transition-colors hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none'
     )
+    if (props.onClick) {
+      return (
+        <button
+          type='button'
+          className={className}
+          onClick={props.onClick}
+          aria-label={props.ariaLabel}
+        >
+          {labels}
+        </button>
+      )
+    }
+    return <div className={className}>{labels}</div>
   }
 
-  return (
-    <div className={cn('flex items-stretch gap-2', props.className)}>
+  const content = (
+    <div className='flex items-stretch gap-2'>
       <span
         aria-hidden
         className={cn(
@@ -147,6 +165,24 @@ export function TimingMetricsCell(props: TimingMetricsCellProps) {
       {labels}
     </div>
   )
+
+  if (props.onClick) {
+    return (
+      <button
+        type='button'
+        className={cn(
+          'cursor-pointer rounded-sm text-left transition-colors hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none',
+          props.className
+        )}
+        onClick={props.onClick}
+        aria-label={props.ariaLabel}
+      >
+        {content}
+      </button>
+    )
+  }
+
+  return <div className={props.className}>{content}</div>
 }
 
 interface StreamTpsCellProps {

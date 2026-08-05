@@ -44,6 +44,7 @@ import { LOG_TYPE_ALL_VALUE } from '../../constants'
 import type { UsageLog } from '../../data/schema'
 import {
   formatModelName,
+  getUpstreamTimingAttempts,
   getTieredBillingSummary,
   hasAnyCacheTokens,
   parseLogOther,
@@ -58,6 +59,7 @@ import {
 } from '../../lib/utils'
 import type { LogOtherData } from '../../types'
 import { DetailsDialog } from '../dialogs/details-dialog'
+import { TimingDetailsDialog } from '../dialogs/timing-details-dialog'
 import { LogCostDisplay } from '../log-cost-display'
 import { ModelBadge } from '../model-badge'
 import { TimingMetricsCell, StreamTpsCell } from '../timing-metrics-cell'
@@ -743,20 +745,36 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
     {
       accessorKey: 'use_time',
       header: t('Timing'),
-      cell: ({ row }) => {
+      cell: function TimingCell({ row }) {
+        const [dialogOpen, setDialogOpen] = useState(false)
         const log = row.original
         if (!isTimingLogType(log.type)) return null
 
         const useTime = row.getValue('use_time') as number
         const other = parseLogOther(log.other)
+        const hasTimingDetails =
+          isAdmin && getUpstreamTimingAttempts(log).length > 0
 
         return (
-          <TimingMetricsCell
-            useTimeSec={useTime}
-            completionTokens={log.completion_tokens}
-            frtMs={other?.frt}
-            isStream={log.is_stream}
-          />
+          <>
+            <TimingMetricsCell
+              useTimeSec={useTime}
+              completionTokens={log.completion_tokens}
+              frtMs={other?.frt}
+              isStream={log.is_stream}
+              onClick={hasTimingDetails ? () => setDialogOpen(true) : undefined}
+              ariaLabel={
+                hasTimingDetails ? t('View timing details') : undefined
+              }
+            />
+            {hasTimingDetails && (
+              <TimingDetailsDialog
+                log={log}
+                open={dialogOpen}
+                onOpenChange={setDialogOpen}
+              />
+            )}
+          </>
         )
       },
     },
