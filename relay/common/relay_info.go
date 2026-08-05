@@ -155,6 +155,10 @@ type RelayInfo struct {
 	// http.Request.ContentLength manually (net/http only auto-detects it for
 	// *bytes.Reader/Buffer/strings.Reader). 0 means "let net/http decide".
 	UpstreamRequestBodySize int64
+	// upstreamTimingState is request-local diagnostic data for each upstream
+	// attempt. It is kept out of the public relay payload and emitted only in
+	// administrator log metadata.
+	upstreamTimingState *upstreamTimingState
 
 	PriceData hosttypes.PriceData
 

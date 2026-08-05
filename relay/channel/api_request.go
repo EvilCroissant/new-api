@@ -2,10 +2,12 @@ package channel
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptrace"
 	"regexp"
 	"strings"
 	"sync"
@@ -475,8 +477,80 @@ func DoRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 	return doRequest(c, req, info)
 }
 func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http.Response, error) {
+	attempt := info.BeginUpstreamAttempt(time.Now())
+	if attempt != nil {
+		record := func(update func(*common.UpstreamAttemptTiming)) {
+			attempt.Update(update)
+		}
+		trace := &httptrace.ClientTrace{
+			GetConn: func(string) {
+				now := time.Now()
+				record(func(t *common.UpstreamAttemptTiming) {
+					if t.GetConn.IsZero() {
+						t.GetConn = now
+					}
+				})
+			},
+			GotConn: func(info httptrace.GotConnInfo) {
+				now := time.Now()
+				record(func(t *common.UpstreamAttemptTiming) {
+					t.GotConn = now
+					t.ConnReused = info.Reused
+					t.ConnIdle = info.IdleTime
+				})
+			},
+			ConnectStart: func(_, _ string) {
+				now := time.Now()
+				record(func(t *common.UpstreamAttemptTiming) {
+					if t.ConnectStart.IsZero() {
+						t.ConnectStart = now
+					}
+				})
+			},
+			ConnectDone: func(_, _ string, _ error) {
+				now := time.Now()
+				record(func(t *common.UpstreamAttemptTiming) {
+					t.ConnectDone = now
+				})
+			},
+			TLSHandshakeStart: func() {
+				now := time.Now()
+				record(func(t *common.UpstreamAttemptTiming) {
+					if t.TLSHandshakeStart.IsZero() {
+						t.TLSHandshakeStart = now
+					}
+				})
+			},
+			TLSHandshakeDone: func(_ tls.ConnectionState, _ error) {
+				now := time.Now()
+				record(func(t *common.UpstreamAttemptTiming) {
+					t.TLSHandshakeDone = now
+				})
+			},
+			WroteRequest: func(info httptrace.WroteRequestInfo) {
+				now := time.Now()
+				record(func(t *common.UpstreamAttemptTiming) {
+					t.WroteRequest = now
+					t.WriteErr = info.Err
+				})
+			},
+			GotFirstResponseByte: func() {
+				now := time.Now()
+				record(func(t *common.UpstreamAttemptTiming) {
+					if t.FirstByte.IsZero() {
+						t.FirstByte = now
+					}
+				})
+			},
+		}
+		req = req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
+	}
+
 	client, err := service.GetHttpClientWithProxySettings(info.ChannelSetting.Proxy, info.ChannelSetting)
 	if err != nil {
+		if attempt != nil {
+			attempt.Update(func(t *common.UpstreamAttemptTiming) { t.DoErr = err })
+		}
 		return nil, fmt.Errorf("new proxy http client failed: %w", err)
 	}
 	if common2.DebugEnabled && req != nil && req.URL != nil {
@@ -511,11 +585,28 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 	}
 
 	resp, err := client.Do(req)
+	responseHeaderTime := time.Now()
+	if attempt != nil {
+		attempt.Update(func(t *common.UpstreamAttemptTiming) {
+			if resp != nil {
+				t.ResponseHeader = responseHeaderTime
+				t.StatusCode = resp.StatusCode
+			}
+			t.DoErr = err
+		})
+	}
 	if err != nil {
 		logger.LogError(c, "do request failed: "+err.Error())
 		return nil, types.NewError(err, types.ErrorCodeDoRequestFailed, types.ErrOptionWithHideErrMsg("upstream error: do request failed"))
 	}
 	if resp == nil {
+		if attempt != nil {
+			attempt.Update(func(t *common.UpstreamAttemptTiming) {
+				if t.DoErr == nil {
+					t.DoErr = errors.New("resp is nil")
+				}
+			})
+		}
 		return nil, errors.New("resp is nil")
 	}
 	if common2.DebugEnabled {

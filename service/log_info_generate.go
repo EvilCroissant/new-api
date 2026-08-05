@@ -50,6 +50,18 @@ func attachQuotaSaturation(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, o
 		clamp.Op, clamp.Kind, clamp.Original, clamp.Clamped, relayInfo.UserId, relayInfo.OriginModelName))
 }
 
+// AppendUpstreamTimingAdminInfo adds per-attempt upstream timing to admin-only
+// log metadata. Keeping it under admin_info avoids exposing transport details
+// in normal user log responses.
+func AppendUpstreamTimingAdminInfo(relayInfo *relaycommon.RelayInfo, adminInfo map[string]interface{}) {
+	if relayInfo == nil || adminInfo == nil {
+		return
+	}
+	if timing := relayInfo.UpstreamTimingForLog(); timing != nil {
+		adminInfo["upstream_timing"] = timing
+	}
+}
+
 func appendRequestPath(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other map[string]interface{}) {
 	if other == nil {
 		return
@@ -107,6 +119,7 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 	}
 
 	AppendChannelAffinityAdminInfo(ctx, adminInfo, true)
+	AppendUpstreamTimingAdminInfo(relayInfo, adminInfo)
 
 	other["admin_info"] = adminInfo
 	appendRequestPath(ctx, relayInfo, other)

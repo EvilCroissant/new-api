@@ -1,12 +1,15 @@
 package channel
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -31,6 +34,47 @@ func TestProcessHeaderOverride_ChannelTestSkipsPassthroughRules(t *testing.T) {
 	headers, err := processHeaderOverride(info, ctx)
 	require.NoError(t, err)
 	require.Empty(t, headers)
+}
+
+func TestDoRequestRecordsUpstreamAttemptTiming(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer server.Close()
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req, err := http.NewRequest(http.MethodPost, server.URL, strings.NewReader("test"))
+	require.NoError(t, err)
+
+	info := &relaycommon.RelayInfo{
+		RetryIndex: 2,
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelId: 77,
+		},
+		UpstreamRequestBodySize: 4,
+	}
+	resp, err := doRequest(ctx, req, info)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	defer resp.Body.Close()
+
+	logged := info.UpstreamTimingForLog()
+	attempts, ok := logged["attempts"].([]map[string]interface{})
+	require.True(t, ok)
+	require.Len(t, attempts, 1)
+	assert.Equal(t, 2, attempts[0]["retry_index"])
+	assert.Equal(t, 77, attempts[0]["channel_id"])
+	assert.Equal(t, int64(4), attempts[0]["body_bytes"])
+	assert.Equal(t, http.StatusAccepted, attempts[0]["status_code"])
+	assert.Contains(t, attempts[0], "conn_reused")
+	assert.Contains(t, attempts[0], "conn_acquire_ms")
+	assert.Contains(t, attempts[0], "upload_ms")
+	assert.Contains(t, attempts[0], "response_header_wait_ms")
 }
 
 func TestProcessHeaderOverride_ChannelTestSkipsClientHeaderPlaceholder(t *testing.T) {

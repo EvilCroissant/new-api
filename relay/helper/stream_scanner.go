@@ -264,6 +264,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 			}
 			if !strings.HasPrefix(data, "[DONE]") {
 				info.SetFirstResponseTime()
+				info.MarkUpstreamFirstSSE(time.Now())
 				info.ReceivedResponseCount++
 
 				select {
@@ -274,6 +275,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 					return
 				}
 			} else {
+				info.MarkUpstreamStreamEnd(time.Now())
 				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonDone, nil)
 				logger.LogDebug(c, "received [DONE], stopping scanner")
 				return
@@ -286,6 +288,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonScannerErr, err)
 			}
 		}
+		info.MarkUpstreamStreamEnd(time.Now())
 		info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonEOF, nil)
 	})
 
