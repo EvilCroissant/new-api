@@ -48,6 +48,7 @@
     "{{count}} incidents in the last 24 hours": "{{count}} инцидентов за последние 24 часа",
     "{{count}} incidents in the last 30 days": "{{count}} инцидентов за последние 30 дней",
     "{{count}} IP(s)": "{{count}} IP",
+    "{{count}} local channels": "Локальных каналов: {{count}}",
     "{{count}} log entries removed.": "Удалено {{count}} записей журнала.",
     "{{count}} minutes ago": "{{count}} минут назад",
     "{{count}} models": "моделей: {{count}}",

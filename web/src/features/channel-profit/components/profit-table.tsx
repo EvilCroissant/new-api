@@ -92,73 +92,82 @@ function providerLabel(provider: ChannelProfitProvider) {
   return ''
 }
 
-function uniqueUpstreamRates(row: ChannelProfitRow) {
-  const seen = new Set<string>()
-  return row.keys.filter((key) => {
-    if (!key.ratio_available) return false
-    const identity = `${key.upstream_group}:${key.upstream_group_ratio}`
-    if (seen.has(identity)) return false
-    seen.add(identity)
-    return true
-  })
-}
-
 function ProfitKeyDetails(props: { row: ChannelProfitRow }) {
   const { t } = useTranslation()
 
   return (
-    <div className='divide-border divide-y'>
-      <div className='text-muted-foreground grid grid-cols-[minmax(180px,1.3fr)_minmax(150px,1fr)_100px_minmax(140px,1fr)_110px_100px_110px] gap-3 px-3 py-2 text-xs font-medium'>
-        <span>{t('Upstream key')}</span>
-        <span>{t('Local channels')}</span>
-        <span>{t('Backend')}</span>
-        <span>{t('Upstream group')}</span>
-        <span>{t('Upstream ratio')}</span>
-        <span className='text-right'>{t('Cost')}</span>
-        <span className='text-right'>{t('Status')}</span>
-      </div>
-      {props.row.keys.map((key) => (
-        <div
-          key={key.key_id}
-          className='grid grid-cols-[minmax(180px,1.3fr)_minmax(150px,1fr)_100px_minmax(140px,1fr)_110px_100px_110px] items-center gap-3 px-3 py-2.5 text-xs'
-        >
-          <div className='min-w-0'>
-            <p className='truncate font-medium'>{key.key_name || '-'}</p>
-            <code className='text-muted-foreground'>{key.key_hint}</code>
-          </div>
-          <div className='flex min-w-0 flex-wrap gap-1'>
-            {key.channel_names.map((name, index) => (
-              <Badge
-                key={`${key.channel_ids[index]}:${name}`}
-                variant='outline'
-              >
-                #{key.channel_ids[index]} {name}
+    <div className='space-y-3'>
+      <div>
+        <p className='text-muted-foreground mb-2 text-xs font-medium'>
+          {t('Channel ratio')}
+        </p>
+        {props.row.downstream_rates.length > 0 ? (
+          <div className='flex flex-wrap gap-1.5'>
+            {props.row.downstream_rates.map((rate) => (
+              <Badge key={rate.group} variant='outline'>
+                {rate.group} {ratioText(rate.ratio)}
               </Badge>
             ))}
           </div>
-          <span>{providerLabel(key.provider) || '-'}</span>
-          <span className='truncate'>{key.upstream_group || '-'}</span>
-          <span>
-            {key.ratio_available
-              ? ratioText(key.upstream_group_ratio)
-              : t('Unknown ratio')}
-          </span>
-          <span className='text-right tabular-nums'>
-            {key.cost_available
-              ? formatBillingCurrencyFromUSD(key.cost_usd)
-              : '-'}
-          </span>
-          <span
-            className={cn(
-              'truncate text-right',
-              key.last_error && 'text-destructive'
-            )}
-            title={key.last_error}
-          >
-            {key.last_error ? t('Sync failed') : t('Synchronized')}
-          </span>
+        ) : (
+          <span className='text-muted-foreground text-xs'>-</span>
+        )}
+      </div>
+      <div className='overflow-x-auto rounded-md border'>
+        <div className='divide-border min-w-[960px] divide-y'>
+          <div className='bg-muted/30 text-muted-foreground grid grid-cols-[minmax(180px,1.3fr)_minmax(150px,1fr)_100px_minmax(140px,1fr)_110px_100px_110px] gap-3 px-3 py-2 text-xs font-medium'>
+            <span>{t('Upstream key')}</span>
+            <span>{t('Local channels')}</span>
+            <span>{t('Backend')}</span>
+            <span>{t('Upstream group')}</span>
+            <span>{t('Upstream ratio')}</span>
+            <span className='text-right'>{t('Cost')}</span>
+            <span className='text-right'>{t('Status')}</span>
+          </div>
+          {props.row.keys.map((key) => (
+            <div
+              key={key.key_id}
+              className='grid grid-cols-[minmax(180px,1.3fr)_minmax(150px,1fr)_100px_minmax(140px,1fr)_110px_100px_110px] items-center gap-3 px-3 py-2.5 text-xs'
+            >
+              <div className='min-w-0'>
+                <p className='truncate font-medium'>{key.key_name || '-'}</p>
+                <code className='text-muted-foreground'>{key.key_hint}</code>
+              </div>
+              <div className='flex min-w-0 flex-wrap gap-1'>
+                {key.channel_names.map((name, index) => (
+                  <Badge
+                    key={`${key.channel_ids[index]}:${name}`}
+                    variant='outline'
+                  >
+                    #{key.channel_ids[index]} {name}
+                  </Badge>
+                ))}
+              </div>
+              <span>{providerLabel(key.provider) || '-'}</span>
+              <span className='truncate'>{key.upstream_group || '-'}</span>
+              <span>
+                {key.ratio_available
+                  ? ratioText(key.upstream_group_ratio)
+                  : t('Unknown ratio')}
+              </span>
+              <span className='text-right tabular-nums'>
+                {key.cost_available
+                  ? formatBillingCurrencyFromUSD(key.cost_usd)
+                  : '-'}
+              </span>
+              <span
+                className={cn(
+                  'truncate text-right',
+                  key.last_error && 'text-destructive'
+                )}
+                title={key.last_error}
+              >
+                {key.last_error ? t('Sync failed') : t('Synchronized')}
+              </span>
+            </div>
+          ))}
         </div>
-      ))}
+      </div>
     </div>
   )
 }
@@ -197,34 +206,22 @@ export function ProfitTable(props: ProfitTableProps) {
   return (
     <TooltipProvider>
       <div className='overflow-x-auto rounded-lg border'>
-        <Table className='min-w-[1240px]'>
+        <Table className='min-w-[720px] table-fixed'>
           <TableHeader>
             <TableRow className='bg-muted/40 hover:bg-muted/40'>
-              <TableHead className='h-9 w-[220px] px-4 text-xs'>
-                {t('Channel')}
-              </TableHead>
-              <TableHead className='h-9 w-[155px] text-xs'>
-                {t('Channel ratio')}
-              </TableHead>
-              <TableHead className='h-9 w-[145px] text-xs'>
-                {t('Upstream keys')}
-              </TableHead>
-              <TableHead className='h-9 min-w-[175px] text-xs'>
-                {t('Upstream ratio')}
-              </TableHead>
-              <TableHead className='h-9 w-[90px] text-right text-xs'>
+              <TableHead className='h-9 w-[18%] px-4 text-right text-xs'>
                 {t('Revenue')}
               </TableHead>
-              <TableHead className='h-9 w-[90px] text-right text-xs'>
+              <TableHead className='h-9 w-[18%] text-right text-xs'>
                 {t('Cost')}
               </TableHead>
-              <TableHead className='h-9 w-[115px] text-right text-xs'>
+              <TableHead className='h-9 w-[24%] text-right text-xs'>
                 {t('Profit')}
               </TableHead>
-              <TableHead className='h-9 w-[120px] text-right text-xs'>
+              <TableHead className='h-9 w-[24%] text-right text-xs'>
                 {t('Status')}
               </TableHead>
-              <TableHead className='h-9 w-[120px] pr-4 text-right text-xs'>
+              <TableHead className='h-9 w-[16%] pr-4 text-right text-xs'>
                 {t('Actions')}
               </TableHead>
             </TableRow>
@@ -232,15 +229,15 @@ export function ProfitTable(props: ProfitTableProps) {
           <TableBody>
             {props.rows.map((row) => {
               const expanded = expandedGroups.has(row.group_id)
-              const upstreamRates = uniqueUpstreamRates(row)
               return (
                 <Fragment key={row.group_id}>
                   <TableRow
-                    className='hover:bg-muted/30'
+                    data-profit-group-header={row.group_id}
+                    className='bg-muted/20 hover:bg-muted/30'
                     aria-expanded={expanded}
                   >
-                    <TableCell className='px-4 py-3 align-top'>
-                      <div className='flex items-start gap-2'>
+                    <TableCell colSpan={5} className='px-4 py-3'>
+                      <div className='flex min-w-0 items-start gap-2'>
                         <Button
                           type='button'
                           variant='ghost'
@@ -261,21 +258,87 @@ export function ProfitTable(props: ProfitTableProps) {
                           />
                         </Button>
                         <div className='min-w-0'>
-                          <p className='truncate font-medium'>
-                            {row.channel_name}
-                          </p>
+                          <div className='flex min-w-0 items-center gap-1'>
+                            <p className='min-w-0 truncate font-medium'>
+                              {row.channel_name}
+                            </p>
+                            {props.isRoot && (
+                              <>
+                                <Tooltip>
+                                  <TooltipTrigger
+                                    render={
+                                      <Button
+                                        type='button'
+                                        variant='ghost'
+                                        size='icon-xs'
+                                        onClick={() =>
+                                          props.onSync(row.channel_id)
+                                        }
+                                        disabled={
+                                          !row.enabled ||
+                                          props.syncingChannelId ===
+                                            row.channel_id
+                                        }
+                                        aria-label={t('Sync this channel')}
+                                      />
+                                    }
+                                  >
+                                    <HugeiconsIcon
+                                      icon={RefreshIcon}
+                                      strokeWidth={2}
+                                      aria-hidden='true'
+                                      className={cn(
+                                        props.syncingChannelId ===
+                                          row.channel_id && 'animate-spin'
+                                      )}
+                                    />
+                                  </TooltipTrigger>
+                                  <TooltipContent>
+                                    {t('Sync this channel')}
+                                  </TooltipContent>
+                                </Tooltip>
+                                <Tooltip>
+                                  <TooltipTrigger
+                                    render={
+                                      <Button
+                                        type='button'
+                                        variant='ghost'
+                                        size='icon-xs'
+                                        onClick={() => setSettingsRow(row)}
+                                        aria-label={t('Settings')}
+                                      />
+                                    }
+                                  >
+                                    <HugeiconsIcon
+                                      icon={Settings02Icon}
+                                      strokeWidth={2}
+                                      aria-hidden='true'
+                                    />
+                                  </TooltipTrigger>
+                                  <TooltipContent>
+                                    {t('Settings')}
+                                  </TooltipContent>
+                                </Tooltip>
+                              </>
+                            )}
+                          </div>
                           <p
-                            className='text-muted-foreground mt-1 max-w-[170px] truncate font-mono text-[11px]'
+                            className='text-muted-foreground mt-0.5 max-w-[560px] truncate font-mono text-[11px]'
                             title={row.base_url}
                           >
                             {row.base_url}
                           </p>
-                          <div className='mt-1 flex flex-wrap gap-1'>
-                            {row.channel_ids.map((id) => (
-                              <Badge key={id} variant='outline'>
-                                #{id}
-                              </Badge>
-                            ))}
+                          <div className='text-muted-foreground mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs'>
+                            <span>
+                              {t('{{count}} local channels', {
+                                count: row.channel_ids.length,
+                              })}
+                            </span>
+                            <span>
+                              {t('{{count}} upstream keys', {
+                                count: row.keys.length,
+                              })}
+                            </span>
                             {providerLabel(row.provider) && (
                               <Badge variant='outline'>
                                 {providerLabel(row.provider)}
@@ -285,55 +348,19 @@ export function ProfitTable(props: ProfitTableProps) {
                         </div>
                       </div>
                     </TableCell>
-                    <TableCell className='py-3 align-top'>
-                      {row.downstream_rates.length > 0 ? (
-                        <div className='flex flex-wrap gap-1.5'>
-                          {row.downstream_rates.map((rate) => (
-                            <Badge key={rate.group} variant='outline'>
-                              {rate.group} {ratioText(rate.ratio)}
-                            </Badge>
-                          ))}
-                        </div>
-                      ) : (
-                        <span className='text-muted-foreground'>-</span>
-                      )}
-                    </TableCell>
-                    <TableCell className='py-3 align-top'>
-                      <button
-                        type='button'
-                        className='hover:text-foreground text-muted-foreground text-left text-xs underline-offset-4 hover:underline'
-                        onClick={() => toggleExpanded(row.group_id)}
-                      >
-                        {t('{{count}} upstream keys', {
-                          count: row.keys.length,
-                        })}
-                      </button>
-                    </TableCell>
-                    <TableCell className='py-3 align-top'>
-                      {upstreamRates.length > 0 ? (
-                        <div className='flex flex-wrap gap-1.5'>
-                          {upstreamRates.map((key) => (
-                            <Badge key={key.key_id} variant='outline'>
-                              {key.upstream_group || t('Unknown group')}{' '}
-                              {ratioText(key.upstream_group_ratio)}
-                            </Badge>
-                          ))}
-                        </div>
-                      ) : (
-                        <span className='text-muted-foreground'>-</span>
-                      )}
-                    </TableCell>
-                    <TableCell className='py-3 text-right align-top font-medium tabular-nums'>
+                  </TableRow>
+                  <TableRow className='hover:bg-muted/20'>
+                    <TableCell className='px-4 py-3 text-right font-medium tabular-nums'>
                       {formatBillingCurrencyFromUSD(row.revenue_usd)}
                     </TableCell>
-                    <TableCell className='py-3 text-right align-top tabular-nums'>
+                    <TableCell className='py-3 text-right tabular-nums'>
                       {row.cost_available
                         ? formatBillingCurrencyFromUSD(row.cost_usd)
                         : '-'}
                     </TableCell>
                     <TableCell
                       className={cn(
-                        'py-3 text-right align-top font-medium tabular-nums',
+                        'py-3 text-right font-medium tabular-nums',
                         row.profit_available && row.profit_usd < 0
                           ? 'text-destructive'
                           : row.profit_available &&
@@ -349,7 +376,7 @@ export function ProfitTable(props: ProfitTableProps) {
                         </span>
                       )}
                     </TableCell>
-                    <TableCell className='py-3 text-right align-top'>
+                    <TableCell className='py-3 text-right'>
                       <Badge variant={STATUS_VARIANT[row.status]}>
                         {statusLabel[row.status]}
                       </Badge>
@@ -362,85 +389,45 @@ export function ProfitTable(props: ProfitTableProps) {
                         </p>
                       )}
                     </TableCell>
-                    <TableCell className='py-3 pr-4 align-top'>
+                    <TableCell
+                      data-profit-monitoring-action={row.group_id}
+                      className='py-3 pr-4 text-right'
+                    >
                       {props.isRoot && (
-                        <div className='flex justify-end gap-1'>
-                          <Tooltip>
-                            <TooltipTrigger
-                              render={
-                                <Button
-                                  type='button'
-                                  variant='ghost'
-                                  size='icon-sm'
-                                  onClick={() => props.onSync(row.channel_id)}
-                                  disabled={
-                                    !row.enabled ||
-                                    props.syncingChannelId === row.channel_id
-                                  }
-                                  aria-label={t('Sync this channel')}
-                                />
-                              }
-                            >
-                              <HugeiconsIcon
-                                icon={RefreshIcon}
-                                strokeWidth={2}
-                                aria-hidden='true'
-                                className={cn(
-                                  props.syncingChannelId === row.channel_id &&
-                                    'animate-spin'
-                                )}
-                              />
-                            </TooltipTrigger>
-                            <TooltipContent>
-                              {t('Sync this channel')}
-                            </TooltipContent>
-                          </Tooltip>
-                          {row.provider === 'new_api' && (
-                            <Tooltip>
-                              <TooltipTrigger
-                                render={
-                                  <Button
-                                    type='button'
-                                    variant='ghost'
-                                    size='icon-sm'
-                                    onClick={() => setSettingsRow(row)}
-                                    aria-label={t('Settings')}
-                                  />
+                        <Tooltip>
+                          <TooltipTrigger
+                            render={
+                              <Switch
+                                size='sm'
+                                checked={row.enabled}
+                                disabled={
+                                  props.togglingChannelId === row.channel_id
                                 }
-                              >
-                                <HugeiconsIcon
-                                  icon={Settings02Icon}
-                                  strokeWidth={2}
-                                  aria-hidden='true'
-                                />
-                              </TooltipTrigger>
-                              <TooltipContent>{t('Settings')}</TooltipContent>
-                            </Tooltip>
-                          )}
-                          <Switch
-                            size='sm'
-                            checked={row.enabled}
-                            disabled={
-                              props.togglingChannelId === row.channel_id
-                            }
-                            onCheckedChange={(enabled) =>
-                              props.onToggle(row.channel_id, enabled)
-                            }
-                            aria-label={
-                              row.enabled
-                                ? t('Disable monitoring')
-                                : t('Enable monitoring')
+                                onCheckedChange={(enabled) =>
+                                  props.onToggle(row.channel_id, enabled)
+                                }
+                                aria-label={
+                                  row.enabled
+                                    ? t('Disable monitoring')
+                                    : t('Enable monitoring')
+                                }
+                              />
                             }
                           />
-                        </div>
+                          <TooltipContent>
+                            {row.enabled
+                              ? t('Disable monitoring')
+                              : t('Enable monitoring')}
+                          </TooltipContent>
+                        </Tooltip>
                       )}
                     </TableCell>
                   </TableRow>
                   {expanded && (
                     <TableRow className='bg-muted/20 hover:bg-muted/20'>
                       <TableCell
-                        colSpan={9}
-                        className='px-10 py-2 whitespace-normal'
+                        colSpan={5}
+                        className='bg-muted/10 px-10 py-3 whitespace-normal'
                       >
                         <ProfitKeyDetails row={row} />
                       </TableCell>

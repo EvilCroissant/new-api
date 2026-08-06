@@ -48,6 +48,7 @@
     "{{count}} incidents in the last 24 hours": "{{count}} sự cố trong 24 giờ qua",
     "{{count}} incidents in the last 30 days": "{{count}} sự cố trong 30 ngày qua",
     "{{count}} IP(s)": "{{count}} IP",
+    "{{count}} local channels": "{{count}} kênh cục bộ",
     "{{count}} log entries removed.": "Đã xóa {{count}} mục nhật ký.",
     "{{count}} minutes ago": "{{count}} phút trước",
     "{{count}} models": "{{count}} mô hình",

@@ -48,6 +48,7 @@
     "{{count}} incidents in the last 24 hours": "最近 24 小時 {{count}} 個異常桶",
     "{{count}} incidents in the last 30 days": "最近 30 天 {{count}} 宗事件",
     "{{count}} IP(s)": "{{count}} 個 IP",
+    "{{count}} local channels": "{{count}} 個子渠道",
     "{{count}} log entries removed.": "已刪除 {{count}} 條日誌。",
     "{{count}} minutes ago": "{{count}} 分鐘前",
     "{{count}} models": "{{count}} 個模型",

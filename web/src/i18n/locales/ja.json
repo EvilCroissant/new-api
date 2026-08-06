@@ -48,6 +48,7 @@
     "{{count}} incidents in the last 24 hours": "過去 24 時間に {{count}} 件のインシデント",
     "{{count}} incidents in the last 30 days": "過去 30 日間で {{count}} 件のインシデント",
     "{{count}} IP(s)": "{{count}} IP",
+    "{{count}} local channels": "ローカルチャネル {{count}} 件",
     "{{count}} log entries removed.": "{{count}} 件のログエントリを削除しました。",
     "{{count}} minutes ago": "{{count}} 分前",
     "{{count}} models": "{{count}} モデル",
