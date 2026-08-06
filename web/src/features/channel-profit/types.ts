@@ -37,6 +37,7 @@ export type ChannelProfitKey = {
   key_name: string
   channel_ids: number[]
   channel_names: string[]
+  downstream_rates: ChannelProfitGroupRatio[]
   provider: ChannelProfitProvider
   upstream_group: string
   upstream_group_ratio: number
@@ -54,6 +55,7 @@ export type ChannelProfitRow = {
   group_id: string
   channel_id: number
   channel_ids: number[]
+  channel_names: string[]
   channel_name: string
   base_url: string
   provider: ChannelProfitProvider

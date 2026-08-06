@@ -18,7 +18,10 @@ For commercial licensing, please contact support@quantumnous.com
 */
 
 import {
+  Analytics01Icon,
   ArrowRight01Icon,
+  MoreHorizontalIcon,
+  Plug01Icon,
   RefreshIcon,
   Settings02Icon,
 } from '@hugeicons/core-free-icons'
@@ -30,6 +33,17 @@ import { useTranslation } from 'react-i18next'
 import { EmptyState } from '@/components/empty-state'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import { Separator } from '@/components/ui/separator'
 import { Switch } from '@/components/ui/switch'
 import {
   Table,
@@ -73,8 +87,11 @@ type ProfitTableProps = {
   togglingChannelId?: number
   syncingChannelId?: number
   savingChannelId?: number
+  testingChannelId?: number
   onToggle: (channelId: number, enabled: boolean) => void
   onSync: (channelId: number) => void
+  onViewLogs: (channelId: number) => void
+  onTest: (channelId: number, channelName: string) => void
   onSaveSettings: (
     channelId: number,
     input: ChannelProfitConfigInput
@@ -96,79 +113,237 @@ function ProfitKeyDetails(props: { row: ChannelProfitRow }) {
   const { t } = useTranslation()
 
   return (
-    <div className='space-y-3'>
-      <div>
-        <p className='text-muted-foreground mb-2 text-xs font-medium'>
-          {t('Channel ratio')}
-        </p>
-        {props.row.downstream_rates.length > 0 ? (
-          <div className='flex flex-wrap gap-1.5'>
-            {props.row.downstream_rates.map((rate) => (
-              <Badge key={rate.group} variant='outline'>
-                {rate.group} {ratioText(rate.ratio)}
-              </Badge>
-            ))}
-          </div>
-        ) : (
-          <span className='text-muted-foreground text-xs'>-</span>
-        )}
+    <div
+      data-profit-group-details={props.row.group_id}
+      className='bg-background flex flex-col gap-3 rounded-md border p-4 shadow-xs'
+    >
+      <div className='flex min-w-0 flex-wrap items-center justify-between gap-2'>
+        <h4 className='min-w-0 truncate text-sm font-semibold'>
+          {props.row.channel_name} · {t('Channel and upstream key details')}
+        </h4>
+        <span className='text-muted-foreground shrink-0 text-xs'>
+          {t('{{count}} upstream keys', { count: props.row.keys.length })}
+        </span>
       </div>
+      <Separator />
       <div className='overflow-x-auto rounded-md border'>
-        <div className='divide-border min-w-[960px] divide-y'>
-          <div className='bg-muted/30 text-muted-foreground grid grid-cols-[minmax(180px,1.3fr)_minmax(150px,1fr)_100px_minmax(140px,1fr)_110px_100px_110px] gap-3 px-3 py-2 text-xs font-medium'>
-            <span>{t('Upstream key')}</span>
-            <span>{t('Local channels')}</span>
-            <span>{t('Backend')}</span>
-            <span>{t('Upstream group')}</span>
-            <span>{t('Upstream ratio')}</span>
-            <span className='text-right'>{t('Cost')}</span>
-            <span className='text-right'>{t('Status')}</span>
-          </div>
-          {props.row.keys.map((key) => (
-            <div
-              key={key.key_id}
-              className='grid grid-cols-[minmax(180px,1.3fr)_minmax(150px,1fr)_100px_minmax(140px,1fr)_110px_100px_110px] items-center gap-3 px-3 py-2.5 text-xs'
-            >
-              <div className='min-w-0'>
-                <p className='truncate font-medium'>{key.key_name || '-'}</p>
-                <code className='text-muted-foreground'>{key.key_hint}</code>
-              </div>
-              <div className='flex min-w-0 flex-wrap gap-1'>
-                {key.channel_names.map((name, index) => (
-                  <Badge
-                    key={`${key.channel_ids[index]}:${name}`}
-                    variant='outline'
-                  >
-                    #{key.channel_ids[index]} {name}
-                  </Badge>
-                ))}
-              </div>
-              <span>{providerLabel(key.provider) || '-'}</span>
-              <span className='truncate'>{key.upstream_group || '-'}</span>
-              <span>
-                {key.ratio_available
-                  ? ratioText(key.upstream_group_ratio)
-                  : t('Unknown ratio')}
-              </span>
-              <span className='text-right tabular-nums'>
-                {key.cost_available
-                  ? formatBillingCurrencyFromUSD(key.cost_usd)
-                  : '-'}
-              </span>
-              <span
-                className={cn(
-                  'truncate text-right',
-                  key.last_error && 'text-destructive'
-                )}
-                title={key.last_error}
-              >
-                {key.last_error ? t('Sync failed') : t('Synchronized')}
-              </span>
-            </div>
-          ))}
-        </div>
+        <Table className='min-w-[900px] table-fixed text-xs'>
+          <TableHeader>
+            <TableRow className='bg-muted/40 hover:bg-muted/40'>
+              <TableHead className='h-9 w-[24%] px-3 text-xs'>
+                {t('Upstream key')}
+              </TableHead>
+              <TableHead className='h-9 w-[27%] px-3 text-xs'>
+                {t('Local channels')}
+              </TableHead>
+              <TableHead className='h-9 w-[25%] px-3 text-xs'>
+                {t('Downstream ratio')}
+              </TableHead>
+              <TableHead className='h-9 w-[12%] px-3 text-xs'>
+                {t('Upstream ratio')}
+              </TableHead>
+              <TableHead className='h-9 w-[12%] px-3 text-right text-xs'>
+                {t('Cost')}
+              </TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {props.row.keys.map((key) => (
+              <TableRow key={key.key_id} className='hover:bg-muted/20'>
+                <TableCell className='px-3 py-2.5 align-top'>
+                  <div className='flex min-w-0 flex-col gap-1'>
+                    <p className='truncate font-medium'>{key.key_name || '-'}</p>
+                    <code className='text-muted-foreground truncate'>
+                      {key.key_hint}
+                    </code>
+                    <div className='flex flex-wrap gap-1'>
+                      {providerLabel(key.provider) && (
+                        <Badge variant='outline'>
+                          {providerLabel(key.provider)}
+                        </Badge>
+                      )}
+                      {key.upstream_group && (
+                        <Badge variant='secondary'>{key.upstream_group}</Badge>
+                      )}
+                    </div>
+                    {key.last_error && (
+                      <p
+                        className='text-destructive truncate text-[11px]'
+                        title={key.last_error}
+                      >
+                        {key.last_error}
+                      </p>
+                    )}
+                  </div>
+                </TableCell>
+                <TableCell className='px-3 py-2.5 align-top'>
+                  <div className='flex min-w-0 flex-wrap gap-1'>
+                    {key.channel_names.map((name, index) => (
+                      <Badge
+                        key={`${key.channel_ids[index]}:${name}`}
+                        variant='outline'
+                      >
+                        #{key.channel_ids[index]} {name}
+                      </Badge>
+                    ))}
+                  </div>
+                </TableCell>
+                <TableCell className='px-3 py-2.5 align-top'>
+                  {(key.downstream_rates ?? []).length > 0 ? (
+                    <div className='flex flex-wrap gap-1'>
+                      {(key.downstream_rates ?? []).map((rate) => (
+                        <Badge key={rate.group} variant='outline'>
+                          {rate.group} {ratioText(rate.ratio)}
+                        </Badge>
+                      ))}
+                    </div>
+                  ) : (
+                    <span className='text-muted-foreground'>-</span>
+                  )}
+                </TableCell>
+                <TableCell className='px-3 py-2.5 align-top tabular-nums'>
+                  {key.ratio_available
+                    ? ratioText(key.upstream_group_ratio)
+                    : t('Unknown ratio')}
+                </TableCell>
+                <TableCell className='px-3 py-2.5 text-right align-top font-medium tabular-nums'>
+                  {key.cost_available
+                    ? formatBillingCurrencyFromUSD(key.cost_usd)
+                    : '-'}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
       </div>
     </div>
+  )
+}
+
+function ProfitRowMenu(props: {
+  row: ChannelProfitRow
+  testingChannelId?: number
+  onSettings: () => void
+  onViewLogs: (channelId: number) => void
+  onTest: (channelId: number, channelName: string) => void
+}) {
+  const { t } = useTranslation()
+  const hasMultipleChannels = props.row.channel_ids.length > 1
+
+  const channelItems = props.row.channel_ids.map((channelId, index) => ({
+    id: channelId,
+    name: props.row.channel_names?.[index] || `#${channelId}`,
+  }))
+
+  return (
+    <DropdownMenu modal={false}>
+      <DropdownMenuTrigger
+        render={
+          <Button
+            type='button'
+            variant='ghost'
+            size='icon-xs'
+            aria-label={t('Open menu')}
+          />
+        }
+      >
+        <HugeiconsIcon
+          icon={MoreHorizontalIcon}
+          strokeWidth={2}
+          aria-hidden='true'
+        />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align='end' className='w-52'>
+        <DropdownMenuGroup>
+          <DropdownMenuItem onClick={props.onSettings}>
+            <HugeiconsIcon
+              icon={Settings02Icon}
+              strokeWidth={2}
+              aria-hidden='true'
+            />
+            {t('Settings')}
+          </DropdownMenuItem>
+          {hasMultipleChannels ? (
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger>
+                <HugeiconsIcon
+                  icon={Analytics01Icon}
+                  strokeWidth={2}
+                  aria-hidden='true'
+                />
+                {t('Usage logs')}
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent className='w-60'>
+                <DropdownMenuGroup>
+                  {channelItems.map((channel) => (
+                    <DropdownMenuItem
+                      key={channel.id}
+                      onClick={() => props.onViewLogs(channel.id)}
+                    >
+                      <span className='truncate'>
+                        #{channel.id} {channel.name}
+                      </span>
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuGroup>
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+          ) : (
+            <DropdownMenuItem
+              onClick={() => props.onViewLogs(channelItems[0].id)}
+            >
+              <HugeiconsIcon
+                icon={Analytics01Icon}
+                strokeWidth={2}
+                aria-hidden='true'
+              />
+              {t('Usage logs')}
+            </DropdownMenuItem>
+          )}
+          {hasMultipleChannels ? (
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger>
+                <HugeiconsIcon
+                  icon={Plug01Icon}
+                  strokeWidth={2}
+                  aria-hidden='true'
+                />
+                {t('Test Connection')}
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent className='w-60'>
+                <DropdownMenuGroup>
+                  {channelItems.map((channel) => (
+                    <DropdownMenuItem
+                      key={channel.id}
+                      disabled={props.testingChannelId === channel.id}
+                      onClick={() => props.onTest(channel.id, channel.name)}
+                    >
+                      <span className='truncate'>
+                        #{channel.id} {channel.name}
+                      </span>
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuGroup>
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+          ) : (
+            <DropdownMenuItem
+              disabled={props.testingChannelId === channelItems[0].id}
+              onClick={() =>
+                props.onTest(channelItems[0].id, channelItems[0].name)
+              }
+            >
+              <HugeiconsIcon
+                icon={Plug01Icon}
+                strokeWidth={2}
+                aria-hidden='true'
+              />
+              {t('Test Connection')}
+            </DropdownMenuItem>
+          )}
+        </DropdownMenuGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
   )
 }
 
@@ -206,26 +381,25 @@ export function ProfitTable(props: ProfitTableProps) {
   return (
     <TooltipProvider>
       <div className='overflow-x-auto rounded-lg border'>
-        <Table className='min-w-[960px] table-fixed'>
+        <Table className='min-w-[1080px] table-fixed'>
           <TableHeader>
             <TableRow className='bg-muted/40 hover:bg-muted/40'>
-              <TableHead
-                className='h-9 w-[32%] px-4 text-xs'
-                aria-label={t('Channel')}
-              />
-              <TableHead className='h-9 w-[12%] text-right text-xs'>
-                {t('Revenue')}
+              <TableHead className='h-9 w-[32%] px-4 text-xs'>
+                {t('Channel / Site')}
               </TableHead>
               <TableHead className='h-9 w-[12%] text-right text-xs'>
-                {t('Cost')}
+                {t('Downstream revenue')}
+              </TableHead>
+              <TableHead className='h-9 w-[12%] text-right text-xs'>
+                {t('Upstream cost')}
               </TableHead>
               <TableHead className='h-9 w-[16%] text-right text-xs'>
-                {t('Profit')}
+                {t('Net profit')}
               </TableHead>
-              <TableHead className='h-9 w-[16%] text-right text-xs'>
-                {t('Status')}
+              <TableHead className='h-9 w-[14%] text-right text-xs'>
+                {t('Data sync')}
               </TableHead>
-              <TableHead className='h-9 w-[12%] pr-4 text-right text-xs'>
+              <TableHead className='h-9 w-[14%] pr-4 text-right text-xs'>
                 {t('Actions')}
               </TableHead>
             </TableRow>
@@ -262,69 +436,10 @@ export function ProfitTable(props: ProfitTableProps) {
                           />
                         </Button>
                         <div className='min-w-0'>
-                          <div className='flex min-w-0 items-center gap-1'>
+                          <div className='flex min-w-0 items-center'>
                             <p className='min-w-0 truncate font-medium'>
                               {row.channel_name}
                             </p>
-                            {props.isRoot && (
-                              <>
-                                <Tooltip>
-                                  <TooltipTrigger
-                                    render={
-                                      <Button
-                                        type='button'
-                                        variant='ghost'
-                                        size='icon-xs'
-                                        onClick={() =>
-                                          props.onSync(row.channel_id)
-                                        }
-                                        disabled={
-                                          !row.enabled ||
-                                          props.syncingChannelId ===
-                                            row.channel_id
-                                        }
-                                        aria-label={t('Sync this channel')}
-                                      />
-                                    }
-                                  >
-                                    <HugeiconsIcon
-                                      icon={RefreshIcon}
-                                      strokeWidth={2}
-                                      aria-hidden='true'
-                                      className={cn(
-                                        props.syncingChannelId ===
-                                          row.channel_id && 'animate-spin'
-                                      )}
-                                    />
-                                  </TooltipTrigger>
-                                  <TooltipContent>
-                                    {t('Sync this channel')}
-                                  </TooltipContent>
-                                </Tooltip>
-                                <Tooltip>
-                                  <TooltipTrigger
-                                    render={
-                                      <Button
-                                        type='button'
-                                        variant='ghost'
-                                        size='icon-xs'
-                                        onClick={() => setSettingsRow(row)}
-                                        aria-label={t('Settings')}
-                                      />
-                                    }
-                                  >
-                                    <HugeiconsIcon
-                                      icon={Settings02Icon}
-                                      strokeWidth={2}
-                                      aria-hidden='true'
-                                    />
-                                  </TooltipTrigger>
-                                  <TooltipContent>
-                                    {t('Settings')}
-                                  </TooltipContent>
-                                </Tooltip>
-                              </>
-                            )}
                           </div>
                           <p
                             className='text-muted-foreground mt-0.5 max-w-[560px] truncate font-mono text-[11px]'
@@ -396,32 +511,71 @@ export function ProfitTable(props: ProfitTableProps) {
                       className='py-3 pr-4 text-right'
                     >
                       {props.isRoot && (
-                        <Tooltip>
-                          <TooltipTrigger
-                            render={
-                              <Switch
-                                size='sm'
-                                checked={row.enabled}
-                                disabled={
-                                  props.togglingChannelId === row.channel_id
-                                }
-                                onCheckedChange={(enabled) =>
-                                  props.onToggle(row.channel_id, enabled)
-                                }
-                                aria-label={
-                                  row.enabled
-                                    ? t('Disable monitoring')
-                                    : t('Enable monitoring')
-                                }
+                        <div className='flex items-center justify-end gap-1'>
+                          <Tooltip>
+                            <TooltipTrigger
+                              render={
+                                <Button
+                                  type='button'
+                                  variant='ghost'
+                                  size='icon-xs'
+                                  onClick={() => props.onSync(row.channel_id)}
+                                  disabled={
+                                    !row.enabled ||
+                                    props.syncingChannelId === row.channel_id
+                                  }
+                                  aria-label={t('Sync this channel')}
+                                />
+                              }
+                            >
+                              <HugeiconsIcon
+                                icon={RefreshIcon}
+                                strokeWidth={2}
+                                aria-hidden='true'
+                                className={cn(
+                                  props.syncingChannelId === row.channel_id &&
+                                    'animate-spin'
+                                )}
                               />
-                            }
+                            </TooltipTrigger>
+                            <TooltipContent>
+                              {t('Sync this channel')}
+                            </TooltipContent>
+                          </Tooltip>
+                          <Tooltip>
+                            <TooltipTrigger
+                              render={
+                                <Switch
+                                  size='sm'
+                                  checked={row.enabled}
+                                  disabled={
+                                    props.togglingChannelId === row.channel_id
+                                  }
+                                  onCheckedChange={(enabled) =>
+                                    props.onToggle(row.channel_id, enabled)
+                                  }
+                                  aria-label={
+                                    row.enabled
+                                      ? t('Disable monitoring')
+                                      : t('Enable monitoring')
+                                  }
+                                />
+                              }
+                            />
+                            <TooltipContent>
+                              {row.enabled
+                                ? t('Disable monitoring')
+                                : t('Enable monitoring')}
+                            </TooltipContent>
+                          </Tooltip>
+                          <ProfitRowMenu
+                            row={row}
+                            testingChannelId={props.testingChannelId}
+                            onSettings={() => setSettingsRow(row)}
+                            onViewLogs={props.onViewLogs}
+                            onTest={props.onTest}
                           />
-                          <TooltipContent>
-                            {row.enabled
-                              ? t('Disable monitoring')
-                              : t('Enable monitoring')}
-                          </TooltipContent>
-                        </Tooltip>
+                        </div>
                       )}
                     </TableCell>
                   </TableRow>
@@ -429,7 +583,7 @@ export function ProfitTable(props: ProfitTableProps) {
                     <TableRow className='bg-muted/20 hover:bg-muted/20'>
                       <TableCell
                         colSpan={6}
-                        className='bg-muted/10 px-10 py-3 whitespace-normal'
+                        className='bg-muted/10 px-8 py-3 whitespace-normal sm:px-12'
                       >
                         <ProfitKeyDetails row={row} />
                       </TableCell>

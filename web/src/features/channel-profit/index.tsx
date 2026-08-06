@@ -20,6 +20,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { RefreshIcon } from '@hugeicons/core-free-icons'
 import { HugeiconsIcon } from '@hugeicons/react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useNavigate } from '@tanstack/react-router'
 import dayjs from 'dayjs'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -35,6 +36,7 @@ import { formatTimestampRelative } from '@/lib/format'
 import { ROLE } from '@/lib/roles'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
+import { handleTestChannel } from '@/features/channels/lib/channel-actions'
 
 import {
   getChannelProfit,
@@ -51,6 +53,7 @@ const PROFIT_REFRESH_INTERVAL_MS = 30 * 1000
 
 export function ChannelProfit() {
   const { t } = useTranslation()
+  const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [usageDate, setUsageDate] = useState(dayjs().format('YYYY-MM-DD'))
   const isRoot = useAuthStore(
@@ -132,6 +135,12 @@ export function ChannelProfit() {
     onError: (error) => {
       toast.error(error instanceof Error ? error.message : t('Update failed'))
     },
+  })
+  const channelTestMutation = useMutation({
+    mutationFn: async (variables: { channelId: number; channelName: string }) =>
+      handleTestChannel(variables.channelId, {
+        channelName: variables.channelName,
+      }),
   })
 
   const summary = profitQuery.data
@@ -221,10 +230,30 @@ export function ChannelProfit() {
                   ? configMutation.variables?.channelId
                   : undefined
               }
+              testingChannelId={
+                channelTestMutation.isPending
+                  ? channelTestMutation.variables?.channelId
+                  : undefined
+              }
               onToggle={(channelId, enabled) =>
                 monitoringMutation.mutate({ channelId, enabled })
               }
               onSync={(channelId) => syncMutation.mutate(channelId)}
+              onViewLogs={(channelId) => {
+                void navigate({
+                  to: '/usage-logs/$section',
+                  params: { section: 'common' },
+                  search: {
+                    page: 1,
+                    channel: String(channelId),
+                    startTime: dayjs(usageDate).startOf('day').valueOf(),
+                    endTime: dayjs(usageDate).endOf('day').valueOf(),
+                  },
+                })
+              }}
+              onTest={(channelId, channelName) =>
+                channelTestMutation.mutate({ channelId, channelName })
+              }
               onSaveSettings={async (channelId, input) => {
                 await configMutation.mutateAsync({ channelId, input })
               }}

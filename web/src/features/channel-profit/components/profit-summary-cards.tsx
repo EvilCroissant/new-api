@@ -63,7 +63,7 @@ export function ProfitSummaryCards(props: ProfitSummaryCardsProps) {
       icon: ReceiptText,
     },
     {
-      label: t('Profit'),
+      label: t('Net profit'),
       value: props.summary.profit_available
         ? formatBillingCurrencyFromUSD(props.summary.profit_usd)
         : '-',
