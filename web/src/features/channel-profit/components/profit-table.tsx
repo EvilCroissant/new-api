@@ -34,7 +34,11 @@ import {
 import { formatBillingCurrencyFromUSD } from '@/lib/currency'
 import { cn } from '@/lib/utils'
 
-import type { ChannelProfitRow, ChannelProfitStatus } from '../types'
+import type {
+  ChannelProfitProvider,
+  ChannelProfitRow,
+  ChannelProfitStatus,
+} from '../types'
 
 const STATUS_VARIANT: Record<
   ChannelProfitStatus,
@@ -56,6 +60,12 @@ type ProfitTableProps = {
 
 function ratioText(ratio: number) {
   return `${ratio.toFixed(4).replace(/0+$/, '').replace(/\.$/, '')}x`
+}
+
+function providerLabel(provider: ChannelProfitProvider) {
+  if (provider === 'new_api') return 'New API'
+  if (provider === 'sub2api') return 'Sub2API'
+  return ''
 }
 
 export function ProfitTable(props: ProfitTableProps) {
@@ -113,9 +123,19 @@ export function ProfitTable(props: ProfitTableProps) {
                 <div className='flex items-start justify-between gap-3'>
                   <div className='min-w-0'>
                     <p className='truncate font-medium'>{row.channel_name}</p>
-                    <p className='text-muted-foreground font-mono text-[11px]'>
-                      #{row.channel_id}
-                    </p>
+                    <div className='mt-1 flex flex-wrap items-center gap-1.5'>
+                      <span className='text-muted-foreground font-mono text-[11px]'>
+                        #{row.channel_id}
+                      </span>
+                      {providerLabel(row.provider) && (
+                        <Badge
+                          variant='outline'
+                          className='px-1.5 py-0 text-[10px]'
+                        >
+                          {providerLabel(row.provider)}
+                        </Badge>
+                      )}
+                    </div>
                   </div>
                   {props.isRoot && (
                     <Switch
@@ -158,7 +178,12 @@ export function ProfitTable(props: ProfitTableProps) {
                         <code className='bg-muted rounded px-1.5 py-0.5'>
                           {key.key_hint}
                         </code>
-                        <span>{key.upstream_group || t('Unknown group')}</span>
+                        {key.upstream_group && (
+                          <span>{key.upstream_group}</span>
+                        )}
+                        {!key.upstream_group && key.provider !== 'sub2api' && (
+                          <span>{t('Unknown group')}</span>
+                        )}
                         <Badge variant='outline'>
                           {key.ratio_available
                             ? ratioText(key.upstream_group_ratio)

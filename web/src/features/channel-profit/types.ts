@@ -24,6 +24,8 @@ export type ChannelProfitStatus =
   | 'partial'
   | 'error'
 
+export type ChannelProfitProvider = '' | 'new_api' | 'sub2api' | 'mixed'
+
 export type ChannelProfitGroupRatio = {
   group: string
   ratio: number
@@ -32,6 +34,7 @@ export type ChannelProfitGroupRatio = {
 export type ChannelProfitKey = {
   key_id: string
   key_hint: string
+  provider: ChannelProfitProvider
   upstream_group: string
   upstream_group_ratio: number
   ratio_available: boolean
@@ -47,6 +50,7 @@ export type ChannelProfitKey = {
 export type ChannelProfitRow = {
   channel_id: number
   channel_name: string
+  provider: ChannelProfitProvider
   enabled: boolean
   revenue_usd: number
   cost_usd: number

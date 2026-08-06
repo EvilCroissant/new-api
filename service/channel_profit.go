@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -24,11 +26,17 @@ const (
 	channelProfitHTTPTimeout  = 12 * time.Second
 	channelProfitMaxBodyBytes = 2 << 20
 	channelProfitMaxWorkers   = 4
+	channelProfitUsageDays    = 1
+
+	channelProfitProviderNewAPI  = "new_api"
+	channelProfitProviderSub2API = "sub2api"
+	channelProfitProviderMixed   = "mixed"
 )
 
 type ChannelProfitKeySummary struct {
 	KeyId                 string  `json:"key_id"`
 	KeyHint               string  `json:"key_hint"`
+	Provider              string  `json:"provider"`
 	UpstreamGroup         string  `json:"upstream_group"`
 	UpstreamGroupRatio    float64 `json:"upstream_group_ratio"`
 	RatioAvailable        bool    `json:"ratio_available"`
@@ -49,6 +57,7 @@ type ChannelProfitGroupRatio struct {
 type ChannelProfitRow struct {
 	ChannelId       int                       `json:"channel_id"`
 	ChannelName     string                    `json:"channel_name"`
+	Provider        string                    `json:"provider"`
 	Enabled         bool                      `json:"enabled"`
 	RevenueUSD      float64                   `json:"revenue_usd"`
 	CostUSD         float64                   `json:"cost_usd"`
@@ -123,8 +132,8 @@ func SetChannelProfitMonitoring(channelId int, enabled bool) (*model.ChannelProf
 	if err != nil {
 		return nil, err
 	}
-	if channel.Type != constant.ChannelTypeNewAPI {
-		return nil, errors.New("profit monitoring only supports New API channels")
+	if !channelProfitSupportsType(channel.Type) {
+		return nil, errors.New("profit monitoring only supports New API or Sub2API channels")
 	}
 	if !enabled {
 		return model.SetChannelProfitConfig(channelId, false)
@@ -244,7 +253,7 @@ func syncChannelProfit(ctx context.Context, channel *model.Channel, usageDate st
 		}
 		return 0, len(keys)
 	}
-	quotaPerUnit, err := fetchChannelProfitQuotaPerUnit(ctx, client, baseURL)
+	backend, err := detectChannelProfitBackend(ctx, client, baseURL, keys, usageDate)
 	if err != nil {
 		for _, key := range keys {
 			saveChannelProfitFailure(channel.Id, usageDate, key, err)
@@ -263,15 +272,57 @@ func syncChannelProfit(ctx context.Context, channel *model.Channel, usageDate st
 			continue
 		}
 
-		usage, err := fetchChannelProfitUsage(ctx, client, baseURL, key)
-		if err != nil {
-			saveChannelProfitFailure(channel.Id, usageDate, key, err)
-			failed++
-			continue
+		var updateErr error
+		switch backend.Provider {
+		case channelProfitProviderNewAPI:
+			usage, err := fetchChannelProfitUsage(ctx, client, baseURL, key)
+			if err != nil {
+				saveChannelProfitFailure(channel.Id, usageDate, key, err)
+				failed++
+				continue
+			}
+			group, ratio, ratioAvailable, ratioErr := fetchChannelProfitGroup(ctx, client, baseURL, key)
+			updateErr = updateChannelProfitSnapshot(
+				channel.Id,
+				usageDate,
+				key,
+				usage,
+				backend.QuotaPerUnit,
+				group,
+				ratio,
+				ratioAvailable,
+				ratioErr,
+			)
+		case channelProfitProviderSub2API:
+			costUSD, ok := backend.Sub2APICostByKey[fingerprint]
+			if !ok {
+				costUSD, err = fetchChannelProfitSub2APIUsage(ctx, client, baseURL, key, usageDate)
+				if err != nil {
+					saveChannelProfitFailure(channel.Id, usageDate, key, err)
+					failed++
+					continue
+				}
+			}
+			group, ratio, ratioAvailable, ratioErr := fetchChannelProfitSub2APIGroup(ctx, client, baseURL, key)
+			updateErr = updateChannelProfitSnapshotForProvider(
+				channel.Id,
+				usageDate,
+				key,
+				channelProfitProviderSub2API,
+				0,
+				0,
+				costUSD,
+				true,
+				group,
+				ratio,
+				ratioAvailable,
+				ratioErr,
+			)
+		default:
+			updateErr = errors.New("unsupported profit monitoring backend")
 		}
-		group, ratio, ratioAvailable, ratioErr := fetchChannelProfitGroup(ctx, client, baseURL, key)
-		if err := updateChannelProfitSnapshot(channel.Id, usageDate, key, usage, quotaPerUnit, group, ratio, ratioAvailable, ratioErr); err != nil {
-			saveChannelProfitFailure(channel.Id, usageDate, key, err)
+		if updateErr != nil {
+			saveChannelProfitFailure(channel.Id, usageDate, key, updateErr)
 			failed++
 			continue
 		}
@@ -291,25 +342,77 @@ func updateChannelProfitSnapshot(
 	ratioAvailable bool,
 	ratioErr error,
 ) error {
+	return updateChannelProfitSnapshotForProvider(
+		channelId,
+		usageDate,
+		key,
+		channelProfitProviderNewAPI,
+		currentQuota,
+		quotaPerUnit,
+		0,
+		false,
+		group,
+		ratio,
+		ratioAvailable,
+		ratioErr,
+	)
+}
+
+func updateChannelProfitSnapshotForProvider(
+	channelId int,
+	usageDate string,
+	key string,
+	provider string,
+	currentQuota int64,
+	quotaPerUnit float64,
+	directCostUSD float64,
+	directCostAvailable bool,
+	group string,
+	ratio float64,
+	ratioAvailable bool,
+	ratioErr error,
+) error {
+	if provider != channelProfitProviderNewAPI && provider != channelProfitProviderSub2API {
+		return errors.New("unsupported profit monitoring backend")
+	}
+	if directCostAvailable && (directCostUSD < 0 || math.IsNaN(directCostUSD) || math.IsInf(directCostUSD, 0)) {
+		return errors.New("upstream returned an invalid direct cost")
+	}
+
 	now := common.GetTimestamp()
 	fingerprint := channelProfitKeyFingerprint(key)
 	snapshot, err := model.GetChannelProfitSnapshot(channelId, usageDate, fingerprint)
 	if err == nil {
-		if currentQuota < snapshot.CurrentQuota {
+		existingProvider := channelProfitSnapshotProvider(snapshot)
+		providerChanged := existingProvider != "" && existingProvider != provider
+		if provider == channelProfitProviderNewAPI && !providerChanged && currentQuota < snapshot.CurrentQuota {
 			snapshot.LastSyncedAt = now
 			snapshot.LastError = "upstream cumulative usage counter decreased"
 			return model.SaveChannelProfitSnapshot(snapshot)
 		}
-		if !ratioAvailable && snapshot.RatioAvailable {
+		if !ratioAvailable && snapshot.RatioAvailable && !providerChanged {
 			group = snapshot.UpstreamGroup
 			ratio = snapshot.UpstreamGroupRatio
 			ratioAvailable = true
 		}
+		snapshot.Provider = provider
 		snapshot.CurrentQuota = currentQuota
 		snapshot.UpstreamQuotaPerUnit = quotaPerUnit
+		snapshot.DirectCostUSD = directCostUSD
+		snapshot.DirectCostAvailable = directCostAvailable
 		snapshot.UpstreamGroup = group
 		snapshot.UpstreamGroupRatio = ratio
 		snapshot.RatioAvailable = ratioAvailable
+		if providerChanged {
+			snapshot.BaselineQuota = currentQuota
+			snapshot.Partial = provider == channelProfitProviderNewAPI
+		}
+		if provider == channelProfitProviderSub2API {
+			snapshot.BaselineQuota = 0
+			snapshot.CurrentQuota = 0
+			snapshot.UpstreamQuotaPerUnit = 0
+			snapshot.Partial = false
+		}
 		snapshot.LastSyncedAt = now
 		snapshot.LastError = errorText(ratioErr)
 		return model.SaveChannelProfitSnapshot(snapshot)
@@ -323,25 +426,34 @@ func updateChannelProfitSnapshot(
 	lastError := errorText(ratioErr)
 	previous, previousErr := model.GetLatestChannelProfitSnapshot(channelId, fingerprint)
 	if previousErr == nil {
-		if !ratioAvailable && previous.RatioAvailable {
+		previousProvider := channelProfitSnapshotProvider(previous)
+		if !ratioAvailable && previous.RatioAvailable && previousProvider == provider {
 			group = previous.UpstreamGroup
 			ratio = previous.UpstreamGroupRatio
 			ratioAvailable = true
 		}
-		currentDate, parseErr := time.ParseInLocation("2006-01-02", usageDate, time.Local)
-		if parseErr != nil {
-			return parseErr
-		}
-		previousIsRecent := previous.UsageDate == currentDate.AddDate(0, 0, -1).Format("2006-01-02") &&
-			previous.LastSyncedAt >= currentDate.Add(-2*channelProfitSyncInterval).Unix()
-		if currentQuota >= previous.CurrentQuota && previousIsRecent {
-			baseline = previous.CurrentQuota
-			partial = false
-		} else if currentQuota < previous.CurrentQuota {
-			lastError = "upstream cumulative usage counter decreased"
+		if provider == channelProfitProviderNewAPI && previousProvider == provider {
+			currentDate, parseErr := time.ParseInLocation("2006-01-02", usageDate, time.Local)
+			if parseErr != nil {
+				return parseErr
+			}
+			previousIsRecent := previous.UsageDate == currentDate.AddDate(0, 0, -1).Format("2006-01-02") &&
+				previous.LastSyncedAt >= currentDate.Add(-2*channelProfitSyncInterval).Unix()
+			if currentQuota >= previous.CurrentQuota && previousIsRecent {
+				baseline = previous.CurrentQuota
+				partial = false
+			} else if currentQuota < previous.CurrentQuota {
+				lastError = "upstream cumulative usage counter decreased"
+			}
 		}
 	} else if !errors.Is(previousErr, gorm.ErrRecordNotFound) {
 		return previousErr
+	}
+	if provider == channelProfitProviderSub2API {
+		baseline = 0
+		currentQuota = 0
+		quotaPerUnit = 0
+		partial = false
 	}
 
 	snapshot = &model.ChannelProfitSnapshot{
@@ -349,9 +461,12 @@ func updateChannelProfitSnapshot(
 		UsageDate:            usageDate,
 		KeyFingerprint:       fingerprint,
 		KeyHint:              model.MaskTokenKey(key),
+		Provider:             provider,
 		BaselineQuota:        baseline,
 		CurrentQuota:         currentQuota,
 		UpstreamQuotaPerUnit: quotaPerUnit,
+		DirectCostUSD:        directCostUSD,
+		DirectCostAvailable:  directCostAvailable,
 		UpstreamGroup:        group,
 		UpstreamGroupRatio:   ratio,
 		RatioAvailable:       ratioAvailable,
@@ -423,7 +538,7 @@ func GetChannelProfitSummary(usageDate string, includeDisabled bool) (*ChannelPr
 	allCostsAvailable := true
 	enabledRows := 0
 	for _, channel := range channels {
-		if channel.Type != constant.ChannelTypeNewAPI {
+		if !channelProfitSupportsType(channel.Type) {
 			continue
 		}
 		enabled := configByChannel[channel.Id]
@@ -485,12 +600,25 @@ func buildChannelProfitRow(channel *model.Channel, enabled bool, revenueQuota in
 	row.CostAvailable = expectedKeys > 0 && len(snapshots) == expectedKeys
 	row.Status = "synced"
 	for _, snapshot := range snapshots {
+		provider := channelProfitSnapshotProvider(snapshot)
+		if row.Provider == "" {
+			row.Provider = provider
+		} else if provider != "" && row.Provider != provider {
+			row.Provider = channelProfitProviderMixed
+		}
 		consumed := snapshot.CurrentQuota - snapshot.BaselineQuota
-		costAvailable := snapshot.UpstreamQuotaPerUnit > 0 && consumed >= 0
+		costAvailable := false
 		cost := 0.0
-		if costAvailable {
+		if snapshot.DirectCostAvailable {
+			costAvailable = snapshot.DirectCostUSD >= 0 && !math.IsNaN(snapshot.DirectCostUSD) && !math.IsInf(snapshot.DirectCostUSD, 0)
+			if costAvailable {
+				cost = snapshot.DirectCostUSD
+			}
+		} else if provider == channelProfitProviderNewAPI && snapshot.UpstreamQuotaPerUnit > 0 && consumed >= 0 {
+			costAvailable = true
 			cost = float64(consumed) / snapshot.UpstreamQuotaPerUnit
-		} else {
+		}
+		if !costAvailable {
 			row.CostAvailable = false
 		}
 		keyId := snapshot.KeyFingerprint
@@ -500,6 +628,7 @@ func buildChannelProfitRow(channel *model.Channel, enabled bool, revenueQuota in
 		key := ChannelProfitKeySummary{
 			KeyId:                 keyId,
 			KeyHint:               snapshot.KeyHint,
+			Provider:              provider,
 			UpstreamGroup:         snapshot.UpstreamGroup,
 			UpstreamGroupRatio:    snapshot.UpstreamGroupRatio,
 			RatioAvailable:        snapshot.RatioAvailable,
@@ -569,6 +698,76 @@ type channelProfitLogResponse struct {
 	} `json:"data"`
 }
 
+type channelProfitSub2APIUsageResponse struct {
+	DailyUsage *[]struct {
+		Date       string  `json:"date"`
+		ActualCost float64 `json:"actual_cost"`
+	} `json:"daily_usage"`
+	Usage *struct {
+		Today *struct {
+			ActualCost *float64 `json:"actual_cost"`
+		} `json:"today"`
+	} `json:"usage"`
+}
+
+type channelProfitSub2APIBillingResponse struct {
+	Object              string   `json:"object"`
+	GroupRateMultiplier *float64 `json:"group_rate_multiplier"`
+}
+
+type channelProfitBackend struct {
+	Provider         string
+	QuotaPerUnit     float64
+	Sub2APICostByKey map[string]float64
+}
+
+type channelProfitHTTPError struct {
+	StatusCode int
+}
+
+func (err *channelProfitHTTPError) Error() string {
+	return fmt.Sprintf("upstream returned HTTP %d", err.StatusCode)
+}
+
+func detectChannelProfitBackend(
+	ctx context.Context,
+	client *http.Client,
+	baseURL string,
+	keys []string,
+	usageDate string,
+) (channelProfitBackend, error) {
+	quotaPerUnit, newAPIErr := fetchChannelProfitQuotaPerUnit(ctx, client, baseURL)
+	if newAPIErr == nil {
+		return channelProfitBackend{
+			Provider:     channelProfitProviderNewAPI,
+			QuotaPerUnit: quotaPerUnit,
+		}, nil
+	}
+
+	costByKey := make(map[string]float64)
+	var sub2APIErr error
+	for _, key := range keys {
+		costUSD, err := fetchChannelProfitSub2APIUsage(ctx, client, baseURL, key, usageDate)
+		if err != nil {
+			sub2APIErr = err
+			continue
+		}
+		costByKey[channelProfitKeyFingerprint(key)] = costUSD
+		return channelProfitBackend{
+			Provider:         channelProfitProviderSub2API,
+			Sub2APICostByKey: costByKey,
+		}, nil
+	}
+	if sub2APIErr == nil {
+		sub2APIErr = errors.New("channel has no upstream key")
+	}
+	return channelProfitBackend{}, fmt.Errorf(
+		"upstream is neither a supported New API nor Sub2API backend (New API probe: %v; Sub2API probe: %v)",
+		newAPIErr,
+		sub2APIErr,
+	)
+}
+
 func fetchChannelProfitQuotaPerUnit(ctx context.Context, client *http.Client, baseURL string) (float64, error) {
 	response := channelProfitStatusResponse{}
 	if err := fetchChannelProfitJSON(ctx, client, baseURL+"/api/status", "", &response); err != nil {
@@ -618,6 +817,66 @@ func fetchChannelProfitGroup(ctx context.Context, client *http.Client, baseURL s
 	return group, ratio, true, nil
 }
 
+func fetchChannelProfitSub2APIUsage(
+	ctx context.Context,
+	client *http.Client,
+	baseURL string,
+	key string,
+	usageDate string,
+) (float64, error) {
+	query := url.Values{}
+	query.Set("days", strconv.Itoa(channelProfitUsageDays))
+	if timezone := time.Local.String(); timezone != "" && timezone != "Local" {
+		query.Set("timezone", timezone)
+	}
+	targetURL := baseURL + "/v1/usage?" + query.Encode()
+	response := channelProfitSub2APIUsageResponse{}
+	if err := fetchChannelProfitJSON(ctx, client, targetURL, key, &response); err != nil {
+		return 0, err
+	}
+	if response.DailyUsage != nil {
+		for _, usage := range *response.DailyUsage {
+			if usage.Date != usageDate {
+				continue
+			}
+			if usage.ActualCost < 0 || math.IsNaN(usage.ActualCost) || math.IsInf(usage.ActualCost, 0) {
+				return 0, errors.New("Sub2API returned an invalid daily actual_cost")
+			}
+			return usage.ActualCost, nil
+		}
+		return 0, nil
+	}
+	if usageDate == time.Now().In(time.Local).Format("2006-01-02") &&
+		response.Usage != nil && response.Usage.Today != nil && response.Usage.Today.ActualCost != nil {
+		cost := *response.Usage.Today.ActualCost
+		if cost < 0 || math.IsNaN(cost) || math.IsInf(cost, 0) {
+			return 0, errors.New("Sub2API returned an invalid today actual_cost")
+		}
+		return cost, nil
+	}
+	return 0, errors.New("upstream usage response did not include Sub2API daily usage")
+}
+
+func fetchChannelProfitSub2APIGroup(ctx context.Context, client *http.Client, baseURL string, key string) (string, float64, bool, error) {
+	response := channelProfitSub2APIBillingResponse{}
+	if err := fetchChannelProfitJSON(ctx, client, baseURL+"/v1/sub2api/billing", key, &response); err != nil {
+		httpErr := &channelProfitHTTPError{}
+		if errors.As(err, &httpErr) &&
+			(httpErr.StatusCode == http.StatusForbidden || httpErr.StatusCode == http.StatusNotFound || httpErr.StatusCode == http.StatusMethodNotAllowed) {
+			return "", 0, false, nil
+		}
+		return "", 0, false, err
+	}
+	if response.Object != "sub2api.key_billing" || response.GroupRateMultiplier == nil {
+		return "", 0, false, errors.New("Sub2API billing response did not include group_rate_multiplier")
+	}
+	ratio := *response.GroupRateMultiplier
+	if ratio < 0 || math.IsNaN(ratio) || math.IsInf(ratio, 0) {
+		return "", 0, false, errors.New("Sub2API returned an invalid group_rate_multiplier")
+	}
+	return "", ratio, true, nil
+}
+
 func fetchChannelProfitJSON(ctx context.Context, client *http.Client, targetURL string, key string, dest any) error {
 	requestCtx, cancel := context.WithTimeout(ctx, channelProfitHTTPTimeout)
 	defer cancel()
@@ -628,6 +887,7 @@ func fetchChannelProfitJSON(ctx context.Context, client *http.Client, targetURL 
 	if key != "" {
 		req.Header.Set("Authorization", "Bearer "+key)
 	}
+	req.Header.Set("Accept", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
@@ -635,7 +895,7 @@ func fetchChannelProfitJSON(ctx context.Context, client *http.Client, targetURL 
 	defer resp.Body.Close()
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 32<<10))
-		return fmt.Errorf("upstream returned HTTP %d", resp.StatusCode)
+		return &channelProfitHTTPError{StatusCode: resp.StatusCode}
 	}
 	if err := common.DecodeJson(io.LimitReader(resp.Body, channelProfitMaxBodyBytes), dest); err != nil {
 		return err
@@ -656,6 +916,23 @@ func channelProfitBaseURL(channel *model.Channel) (string, error) {
 		return "", errors.New("channel base URL is invalid")
 	}
 	return baseURL, nil
+}
+
+func channelProfitSupportsType(channelType int) bool {
+	return channelType == constant.ChannelTypeNewAPI || channelType == constant.ChannelTypeSub2API
+}
+
+func channelProfitSnapshotProvider(snapshot *model.ChannelProfitSnapshot) string {
+	if snapshot.Provider != "" {
+		return snapshot.Provider
+	}
+	if snapshot.DirectCostAvailable {
+		return channelProfitProviderSub2API
+	}
+	if snapshot.UpstreamQuotaPerUnit > 0 {
+		return channelProfitProviderNewAPI
+	}
+	return ""
 }
 
 func uniqueChannelProfitKeys(channel *model.Channel) []string {

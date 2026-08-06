@@ -20,9 +20,12 @@ type ChannelProfitSnapshot struct {
 	UsageDate            string  `json:"usage_date" gorm:"type:varchar(10);uniqueIndex:idx_profit_snapshot_key,priority:2;index;not null"`
 	KeyFingerprint       string  `json:"-" gorm:"type:varchar(64);uniqueIndex:idx_profit_snapshot_key,priority:3;not null"`
 	KeyHint              string  `json:"key_hint" gorm:"type:varchar(32);not null"`
+	Provider             string  `json:"provider" gorm:"type:varchar(16)"`
 	BaselineQuota        int64   `json:"baseline_quota" gorm:"not null"`
 	CurrentQuota         int64   `json:"current_quota" gorm:"not null"`
 	UpstreamQuotaPerUnit float64 `json:"upstream_quota_per_unit" gorm:"not null"`
+	DirectCostUSD        float64 `json:"direct_cost_usd"`
+	DirectCostAvailable  bool    `json:"direct_cost_available"`
 	UpstreamGroup        string  `json:"upstream_group" gorm:"type:varchar(64)"`
 	UpstreamGroupRatio   float64 `json:"upstream_group_ratio"`
 	RatioAvailable       bool    `json:"ratio_available"`
