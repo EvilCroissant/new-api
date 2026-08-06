@@ -81,6 +81,8 @@ var auditRouteActions = map[string]string{
 	"PUT /api/models/":               "model.update",
 	"DELETE /api/models/:id":         "model.delete",
 	"POST /api/models/sync_upstream": "model.sync_upstream",
+	"PUT /api/channel-profit/:id":    "channel_profit.update",
+	"POST /api/channel-profit/sync":  "channel_profit.sync",
 
 	// 部署
 	"POST /api/deployments/":      "deployment.create",

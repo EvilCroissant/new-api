@@ -232,6 +232,13 @@ func SetApiRouter(router *gin.Engine) {
 			ratioSyncRoute.POST("/fetch", controller.FetchUpstreamRatios)
 		}
 		registerChannelRoutes(apiRouter)
+		channelProfitRoute := apiRouter.Group("/channel-profit")
+		channelProfitRoute.Use(middleware.AdminAuth())
+		{
+			channelProfitRoute.GET("/", controller.GetChannelProfit)
+			channelProfitRoute.PUT("/:id", middleware.RootAuth(), controller.UpdateChannelProfitConfig)
+			channelProfitRoute.POST("/sync", middleware.RootAuth(), controller.SyncChannelProfit)
+		}
 		registerAuthzRoutes(apiRouter)
 		tokenRoute := apiRouter.Group("/token")
 		tokenRoute.Use(middleware.UserAuth())

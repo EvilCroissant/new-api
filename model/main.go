@@ -260,6 +260,8 @@ func migrateDB() error {
 
 	err := DB.AutoMigrate(
 		&Channel{},
+		&ChannelProfitConfig{},
+		&ChannelProfitSnapshot{},
 		&Token{},
 		&User{},
 		&UserSession{},
@@ -323,6 +325,8 @@ func migrateDBFast() error {
 		name  string
 	}{
 		{&Channel{}, "Channel"},
+		{&ChannelProfitConfig{}, "ChannelProfitConfig"},
+		{&ChannelProfitSnapshot{}, "ChannelProfitSnapshot"},
 		{&Token{}, "Token"},
 		{&User{}, "User"},
 		{&UserSession{}, "UserSession"},

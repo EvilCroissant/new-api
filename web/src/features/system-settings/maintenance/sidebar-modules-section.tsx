@@ -134,6 +134,10 @@ export function SidebarModulesSection({
         title: t('Channels'),
         description: t('Configure upstream providers and routing.'),
       },
+      profit: {
+        title: t('Profit'),
+        description: t('Compare downstream revenue with upstream costs.'),
+      },
       models: {
         title: t('Models'),
         description: t('Manage catalog visibility and pricing.'),

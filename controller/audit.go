@@ -44,6 +44,9 @@ var auditContentTemplates = map[string]string{
 	"channel.multi_key_manage":   "Multi-key management ${action} on channel (ID: ${id})",
 	"channel.upstream_apply":     "Applied upstream model changes to channel (ID: ${id})",
 	"channel.upstream_apply_all": "Applied upstream model changes to ${count} channels",
+	"channel_profit.enable":      "Enabled profit monitoring for channel #${id}",
+	"channel_profit.disable":     "Disabled profit monitoring for channel #${id}",
+	"channel_profit.sync":        "Started profit synchronization (task ${taskId})",
 
 	"redemption.create": "Created ${count} redemption codes named ${name} (${quota} each)",
 
