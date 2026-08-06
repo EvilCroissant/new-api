@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
@@ -131,9 +130,6 @@ func SetChannelProfitMonitoring(channelId int, enabled bool) (*model.ChannelProf
 	channel, err := model.GetChannelById(channelId, true)
 	if err != nil {
 		return nil, err
-	}
-	if !channelProfitSupportsType(channel.Type) {
-		return nil, errors.New("profit monitoring only supports New API or Sub2API channels")
 	}
 	if !enabled {
 		return model.SetChannelProfitConfig(channelId, false)
@@ -538,7 +534,7 @@ func GetChannelProfitSummary(usageDate string, includeDisabled bool) (*ChannelPr
 	allCostsAvailable := true
 	enabledRows := 0
 	for _, channel := range channels {
-		if !channelProfitSupportsType(channel.Type) {
+		if !channelProfitCanProbe(channel) {
 			continue
 		}
 		enabled := configByChannel[channel.Id]
@@ -904,10 +900,11 @@ func fetchChannelProfitJSON(ctx context.Context, client *http.Client, targetURL 
 }
 
 func channelProfitBaseURL(channel *model.Channel) (string, error) {
-	if channel.BaseURL == nil || strings.TrimSpace(*channel.BaseURL) == "" {
+	baseURL := strings.TrimSpace(channel.GetBaseURL())
+	if baseURL == "" {
 		return "", errors.New("channel base URL is required")
 	}
-	baseURL := strings.TrimRight(strings.TrimSpace(*channel.BaseURL), "/")
+	baseURL = strings.TrimRight(baseURL, "/")
 	if strings.HasSuffix(baseURL, "/v1") {
 		baseURL = strings.TrimSuffix(baseURL, "/v1")
 	}
@@ -918,8 +915,15 @@ func channelProfitBaseURL(channel *model.Channel) (string, error) {
 	return baseURL, nil
 }
 
-func channelProfitSupportsType(channelType int) bool {
-	return channelType == constant.ChannelTypeNewAPI || channelType == constant.ChannelTypeSub2API
+func channelProfitCanProbe(channel *model.Channel) bool {
+	// 上游后端由探测接口识别，不能以本地转发渠道类型作为筛选条件。
+	if channel == nil {
+		return false
+	}
+	if _, err := channelProfitBaseURL(channel); err != nil {
+		return false
+	}
+	return len(uniqueChannelProfitKeys(channel)) > 0
 }
 
 func channelProfitSnapshotProvider(snapshot *model.ChannelProfitSnapshot) string {
