@@ -24,11 +24,11 @@ import (
 
 const (
 	channelProfitSchedulerInterval        = time.Minute
-	channelProfitDefaultSyncInterval      = 15 * time.Minute
+	channelProfitDefaultSyncInterval      = 60 * time.Minute
 	channelProfitDefaultIntervalMinutes   = int(channelProfitDefaultSyncInterval / time.Minute)
 	channelProfitMaxSyncIntervalMinutes   = 7 * 24 * 60
 	channelProfitMaxDisplayNameCharacters = 100
-	channelProfitHTTPTimeout              = 12 * time.Second
+	channelProfitHTTPTimeout              = 30 * time.Second
 	channelProfitMaxBodyBytes             = 2 << 20
 	channelProfitMaxWorkers               = 4
 	channelProfitUsageDays                = 1

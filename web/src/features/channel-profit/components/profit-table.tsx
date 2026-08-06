@@ -206,22 +206,26 @@ export function ProfitTable(props: ProfitTableProps) {
   return (
     <TooltipProvider>
       <div className='overflow-x-auto rounded-lg border'>
-        <Table className='min-w-[720px] table-fixed'>
+        <Table className='min-w-[960px] table-fixed'>
           <TableHeader>
             <TableRow className='bg-muted/40 hover:bg-muted/40'>
-              <TableHead className='h-9 w-[18%] px-4 text-right text-xs'>
+              <TableHead
+                className='h-9 w-[32%] px-4 text-xs'
+                aria-label={t('Channel')}
+              />
+              <TableHead className='h-9 w-[12%] text-right text-xs'>
                 {t('Revenue')}
               </TableHead>
-              <TableHead className='h-9 w-[18%] text-right text-xs'>
+              <TableHead className='h-9 w-[12%] text-right text-xs'>
                 {t('Cost')}
               </TableHead>
-              <TableHead className='h-9 w-[24%] text-right text-xs'>
+              <TableHead className='h-9 w-[16%] text-right text-xs'>
                 {t('Profit')}
               </TableHead>
-              <TableHead className='h-9 w-[24%] text-right text-xs'>
+              <TableHead className='h-9 w-[16%] text-right text-xs'>
                 {t('Status')}
               </TableHead>
-              <TableHead className='h-9 w-[16%] pr-4 text-right text-xs'>
+              <TableHead className='h-9 w-[12%] pr-4 text-right text-xs'>
                 {t('Actions')}
               </TableHead>
             </TableRow>
@@ -233,10 +237,10 @@ export function ProfitTable(props: ProfitTableProps) {
                 <Fragment key={row.group_id}>
                   <TableRow
                     data-profit-group-header={row.group_id}
-                    className='bg-muted/20 hover:bg-muted/30'
+                    className='hover:bg-muted/20'
                     aria-expanded={expanded}
                   >
-                    <TableCell colSpan={5} className='px-4 py-3'>
+                    <TableCell className='px-4 py-3'>
                       <div className='flex min-w-0 items-start gap-2'>
                         <Button
                           type='button'
@@ -348,9 +352,7 @@ export function ProfitTable(props: ProfitTableProps) {
                         </div>
                       </div>
                     </TableCell>
-                  </TableRow>
-                  <TableRow className='hover:bg-muted/20'>
-                    <TableCell className='px-4 py-3 text-right font-medium tabular-nums'>
+                    <TableCell className='py-3 text-right font-medium tabular-nums'>
                       {formatBillingCurrencyFromUSD(row.revenue_usd)}
                     </TableCell>
                     <TableCell className='py-3 text-right tabular-nums'>
@@ -426,7 +428,7 @@ export function ProfitTable(props: ProfitTableProps) {
                   {expanded && (
                     <TableRow className='bg-muted/20 hover:bg-muted/20'>
                       <TableCell
-                        colSpan={5}
+                        colSpan={6}
                         className='bg-muted/10 px-10 py-3 whitespace-normal'
                       >
                         <ProfitKeyDetails row={row} />
