@@ -147,15 +147,22 @@ func GetRandomSatisfiedChannelAtNextHigherPriority(group string, model string, c
 	if !found {
 		return nil, nil
 	}
-	return randomSatisfiedChannelAtPriority(channels, targetPriority)
+	return randomSatisfiedChannelAtPriority(channels, targetPriority, nil)
 }
 
 // GetRandomSatisfiedChannelSkippingPriority keeps the original priority-based
 // retry order while omitting the priority already consumed by an affinity hit.
 func GetRandomSatisfiedChannelSkippingPriority(group string, model string, retry int, requestPath string, skippedPriority *int64) (*Channel, error) {
+	return GetRandomSatisfiedChannelSkippingPriorityAndChannels(group, model, retry, requestPath, skippedPriority, nil)
+}
+
+// GetRandomSatisfiedChannelSkippingPriorityAndChannels also avoids channels
+// that already failed in the current request when alternatives remain at the
+// selected priority.
+func GetRandomSatisfiedChannelSkippingPriorityAndChannels(group string, model string, retry int, requestPath string, skippedPriority *int64, failedChannelIDs map[int]struct{}) (*Channel, error) {
 	// if memory cache is disabled, get channel directly from database
 	if !common.MemoryCacheEnabled {
-		return GetChannelSkippingPriority(group, model, retry, requestPath, skippedPriority)
+		return getChannelSkippingPriority(group, model, retry, requestPath, skippedPriority, failedChannelIDs)
 	}
 
 	channelSyncLock.RLock()
@@ -212,16 +219,14 @@ func GetRandomSatisfiedChannelSkippingPriority(group string, model string, retry
 	}
 	targetPriority := int64(sortedUniquePriorities[retry])
 
-	return randomSatisfiedChannelAtPriority(channels, targetPriority)
+	return randomSatisfiedChannelAtPriority(channels, targetPriority, failedChannelIDs)
 }
 
-func randomSatisfiedChannelAtPriority(channels []int, targetPriority int64) (*Channel, error) {
-	var sumWeight = 0
+func randomSatisfiedChannelAtPriority(channels []int, targetPriority int64, failedChannelIDs map[int]struct{}) (*Channel, error) {
 	var targetChannels []*Channel
 	for _, channelID := range channels {
 		if channel, ok := channelsIDM[channelID]; ok {
 			if channel.GetPriority() == targetPriority {
-				sumWeight += channel.GetWeight()
 				targetChannels = append(targetChannels, channel)
 			}
 		} else {
@@ -231,6 +236,22 @@ func randomSatisfiedChannelAtPriority(channels []int, targetPriority int64) (*Ch
 
 	if len(targetChannels) == 0 {
 		return nil, fmt.Errorf("no channel found at priority: %d", targetPriority)
+	}
+	if len(failedChannelIDs) > 0 {
+		remainingChannels := make([]*Channel, 0, len(targetChannels))
+		for _, channel := range targetChannels {
+			if _, failed := failedChannelIDs[channel.Id]; !failed {
+				remainingChannels = append(remainingChannels, channel)
+			}
+		}
+		if len(remainingChannels) > 0 {
+			targetChannels = remainingChannels
+		}
+	}
+
+	var sumWeight = 0
+	for _, channel := range targetChannels {
+		sumWeight += channel.GetWeight()
 	}
 
 	// smoothing factor and adjustment

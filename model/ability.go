@@ -129,7 +129,7 @@ func getChannelQuerySkippingPriority(group string, model string, retry int, skip
 }
 
 func GetChannel(group string, model string, retry int, requestPath string) (*Channel, error) {
-	return getChannelSkippingPriority(group, model, retry, requestPath, nil)
+	return getChannelSkippingPriority(group, model, retry, requestPath, nil, nil)
 }
 
 // GetChannelAtNextHigherPriority is the database-backed equivalent of
@@ -175,10 +175,10 @@ func GetChannelAtNextHigherPriority(group string, model string, currentPriority 
 // GetChannelSkippingPriority is the database-backed equivalent of
 // GetRandomSatisfiedChannelSkippingPriority.
 func GetChannelSkippingPriority(group string, model string, retry int, requestPath string, skippedPriority *int64) (*Channel, error) {
-	return getChannelSkippingPriority(group, model, retry, requestPath, skippedPriority)
+	return getChannelSkippingPriority(group, model, retry, requestPath, skippedPriority, nil)
 }
 
-func getChannelSkippingPriority(group string, model string, retry int, requestPath string, skippedPriority *int64) (*Channel, error) {
+func getChannelSkippingPriority(group string, model string, retry int, requestPath string, skippedPriority *int64, failedChannelIDs map[int]struct{}) (*Channel, error) {
 	var abilities []Ability
 
 	var err error = nil
@@ -195,6 +195,17 @@ func getChannelSkippingPriority(group string, model string, retry int, requestPa
 		return nil, err
 	}
 	abilities = filterAbilitiesByRequestPathAndModel(abilities, requestPath, model)
+	if len(failedChannelIDs) > 0 {
+		remainingAbilities := make([]Ability, 0, len(abilities))
+		for _, ability := range abilities {
+			if _, failed := failedChannelIDs[ability.ChannelId]; !failed {
+				remainingAbilities = append(remainingAbilities, ability)
+			}
+		}
+		if len(remainingAbilities) > 0 {
+			abilities = remainingAbilities
+		}
+	}
 	channel := Channel{}
 	if len(abilities) > 0 {
 		// Randomly choose one

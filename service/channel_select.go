@@ -11,12 +11,13 @@ import (
 )
 
 type RetryParam struct {
-	Ctx          *gin.Context
-	TokenGroup   string
-	ModelName    string
-	RequestPath  string
-	Retry        *int
-	resetNextTry bool
+	Ctx              *gin.Context
+	TokenGroup       string
+	ModelName        string
+	RequestPath      string
+	Retry            *int
+	failedChannelIDs map[int]struct{}
+	resetNextTry     bool
 }
 
 func (p *RetryParam) GetRetry() int {
@@ -58,6 +59,13 @@ func (p *RetryParam) IncreaseRetry() {
 
 func (p *RetryParam) ResetRetryNextTry() {
 	p.resetNextTry = true
+}
+
+func (p *RetryParam) MarkChannelFailed(channelID int) {
+	if p.failedChannelIDs == nil {
+		p.failedChannelIDs = make(map[int]struct{})
+	}
+	p.failedChannelIDs[channelID] = struct{}{}
 }
 
 // CacheGetRandomSatisfiedChannel tries to get a random channel that satisfies the requirements.
@@ -132,7 +140,7 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			}
 			logger.LogDebug(param.Ctx, "Auto selecting group: %s, priorityRetry: %d", autoGroup, priorityRetry)
 
-			channel, _ = model.GetRandomSatisfiedChannelSkippingPriority(autoGroup, param.ModelName, priorityRetry, param.RequestPath, skippedPriority)
+			channel, _ = model.GetRandomSatisfiedChannelSkippingPriorityAndChannels(autoGroup, param.ModelName, priorityRetry, param.RequestPath, skippedPriority, param.failedChannelIDs)
 			if channel == nil {
 				// Current group has no available channel for this model, try next group
 				// 当前分组没有该模型的可用渠道，尝试下一个分组
@@ -171,7 +179,7 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 		}
 	} else {
 		priorityRetry, skippedPriority := param.getPriorityRetry(param.TokenGroup)
-		channel, err = model.GetRandomSatisfiedChannelSkippingPriority(param.TokenGroup, param.ModelName, priorityRetry, param.RequestPath, skippedPriority)
+		channel, err = model.GetRandomSatisfiedChannelSkippingPriorityAndChannels(param.TokenGroup, param.ModelName, priorityRetry, param.RequestPath, skippedPriority, param.failedChannelIDs)
 		if err != nil {
 			return nil, param.TokenGroup, err
 		}
