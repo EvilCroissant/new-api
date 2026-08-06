@@ -238,6 +238,7 @@ func SetApiRouter(router *gin.Engine) {
 			channelProfitRoute.GET("/", controller.GetChannelProfit)
 			channelProfitRoute.PUT("/:id", middleware.RootAuth(), controller.UpdateChannelProfitConfig)
 			channelProfitRoute.POST("/sync", middleware.RootAuth(), controller.SyncChannelProfit)
+			channelProfitRoute.POST("/:id/sync", middleware.RootAuth(), controller.SyncChannelProfitGroup)
 		}
 		registerAuthzRoutes(apiRouter)
 		tokenRoute := apiRouter.Group("/token")

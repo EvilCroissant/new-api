@@ -34,6 +34,9 @@ export type ChannelProfitGroupRatio = {
 export type ChannelProfitKey = {
   key_id: string
   key_hint: string
+  key_name: string
+  channel_ids: number[]
+  channel_names: string[]
   provider: ChannelProfitProvider
   upstream_group: string
   upstream_group_ratio: number
@@ -48,10 +51,16 @@ export type ChannelProfitKey = {
 }
 
 export type ChannelProfitRow = {
+  group_id: string
   channel_id: number
+  channel_ids: number[]
   channel_name: string
+  base_url: string
   provider: ChannelProfitProvider
   enabled: boolean
+  sync_interval_minutes: number
+  last_sync_attempt_at: number
+  access_token_configured: boolean
   revenue_usd: number
   cost_usd: number
   cost_available: boolean
@@ -65,6 +74,13 @@ export type ChannelProfitRow = {
   last_error: string
   downstream_rates: ChannelProfitGroupRatio[]
   keys: ChannelProfitKey[]
+}
+
+export type ChannelProfitConfigInput = {
+  enabled?: boolean
+  display_name?: string
+  sync_interval_minutes?: number
+  access_token?: string
 }
 
 export type ChannelProfitSummary = {

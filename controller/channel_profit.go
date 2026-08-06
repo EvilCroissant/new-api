@@ -12,7 +12,10 @@ import (
 )
 
 type channelProfitConfigRequest struct {
-	Enabled *bool `json:"enabled" binding:"required"`
+	Enabled             *bool   `json:"enabled"`
+	DisplayName         *string `json:"display_name"`
+	SyncIntervalMinutes *int    `json:"sync_interval_minutes"`
+	AccessToken         *string `json:"access_token"`
 }
 
 func GetChannelProfit(c *gin.Context) {
@@ -42,17 +45,57 @@ func UpdateChannelProfitConfig(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	config, err := service.SetChannelProfitMonitoring(channelId, *request.Enabled)
+	if request.Enabled == nil && request.DisplayName == nil && request.SyncIntervalMinutes == nil && request.AccessToken == nil {
+		common.ApiError(c, errors.New("at least one configuration field is required"))
+		return
+	}
+	config, err := service.UpdateChannelProfitConfig(channelId, service.ChannelProfitConfigUpdate{
+		Enabled:             request.Enabled,
+		DisplayName:         request.DisplayName,
+		SyncIntervalMinutes: request.SyncIntervalMinutes,
+		AccessToken:         request.AccessToken,
+	})
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	action := "channel_profit.enable"
-	if !*request.Enabled {
-		action = "channel_profit.disable"
+	action := "channel_profit.update"
+	if request.Enabled != nil {
+		if *request.Enabled {
+			action = "channel_profit.enable"
+		} else {
+			action = "channel_profit.disable"
+		}
 	}
-	recordManageAudit(c, action, map[string]interface{}{"id": channelId})
+	recordManageAudit(c, action, map[string]interface{}{
+		"id":                   channelId,
+		"display_name_changed": request.DisplayName != nil,
+		"interval_changed":     request.SyncIntervalMinutes != nil,
+		"access_token_changed": request.AccessToken != nil,
+	})
 	common.ApiSuccess(c, config)
+}
+
+func SyncChannelProfitGroup(c *gin.Context) {
+	channelId, err := strconv.Atoi(c.Param("id"))
+	if err != nil || channelId <= 0 {
+		common.ApiError(c, errors.New("invalid channel ID"))
+		return
+	}
+	task, created, err := service.StartChannelProfitGroupSync(channelId)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	recordManageAudit(c, "channel_profit.sync_group", map[string]interface{}{
+		"id":      channelId,
+		"taskId":  task.TaskID,
+		"created": created,
+	})
+	common.ApiSuccess(c, gin.H{
+		"created": created,
+		"task":    task.ToResponse(),
+	})
 }
 
 func SyncChannelProfit(c *gin.Context) {

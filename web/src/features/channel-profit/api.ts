@@ -21,6 +21,7 @@ import { api } from '@/lib/api'
 
 import type {
   ChannelProfitConfigResponse,
+  ChannelProfitConfigInput,
   ChannelProfitResponse,
   ChannelProfitSyncResponse,
 } from './types'
@@ -36,9 +37,25 @@ export async function updateChannelProfitMonitoring(
   channelId: number,
   enabled: boolean
 ) {
+  return updateChannelProfitConfig(channelId, { enabled })
+}
+
+export async function updateChannelProfitConfig(
+  channelId: number,
+  input: ChannelProfitConfigInput
+) {
   const res = await api.put<ChannelProfitConfigResponse>(
     `/api/channel-profit/${channelId}`,
-    { enabled },
+    input,
+    { skipErrorHandler: true }
+  )
+  return res.data
+}
+
+export async function syncChannelProfitGroup(channelId: number) {
+  const res = await api.post<ChannelProfitSyncResponse>(
+    `/api/channel-profit/${channelId}/sync`,
+    undefined,
     { skipErrorHandler: true }
   )
   return res.data

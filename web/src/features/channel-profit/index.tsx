@@ -17,9 +17,10 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 
+import { RefreshIcon } from '@hugeicons/core-free-icons'
+import { HugeiconsIcon } from '@hugeicons/react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import dayjs from 'dayjs'
-import { RefreshCw } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -38,10 +39,13 @@ import { useAuthStore } from '@/stores/auth-store'
 import {
   getChannelProfit,
   syncChannelProfit,
+  syncChannelProfitGroup,
+  updateChannelProfitConfig,
   updateChannelProfitMonitoring,
 } from './api'
 import { ProfitSummaryCards } from './components/profit-summary-cards'
 import { ProfitTable } from './components/profit-table'
+import type { ChannelProfitConfigInput } from './types'
 
 const PROFIT_REFRESH_INTERVAL_MS = 30 * 1000
 
@@ -90,8 +94,10 @@ export function ChannelProfit() {
     },
   })
   const syncMutation = useMutation({
-    mutationFn: async () => {
-      const response = await syncChannelProfit()
+    mutationFn: async (channelId?: number) => {
+      const response = channelId
+        ? await syncChannelProfitGroup(channelId)
+        : await syncChannelProfit()
       if (!response.success) {
         throw new Error(response.message || t('Sync failed'))
       }
@@ -103,6 +109,28 @@ export function ChannelProfit() {
     },
     onError: (error) => {
       toast.error(error instanceof Error ? error.message : t('Sync failed'))
+    },
+  })
+  const configMutation = useMutation({
+    mutationFn: async (variables: {
+      channelId: number
+      input: ChannelProfitConfigInput
+    }) => {
+      const response = await updateChannelProfitConfig(
+        variables.channelId,
+        variables.input
+      )
+      if (!response.success) {
+        throw new Error(response.message || t('Update failed'))
+      }
+      return variables
+    },
+    onSuccess: async () => {
+      toast.success(t('Profit settings updated'))
+      await queryClient.invalidateQueries({ queryKey: ['channel-profit'] })
+    },
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : t('Update failed'))
     },
   })
 
@@ -128,15 +156,14 @@ export function ChannelProfit() {
             type='button'
             variant='outline'
             size='sm'
-            onClick={() => syncMutation.mutate()}
+            onClick={() => syncMutation.mutate(undefined)}
             disabled={syncMutation.isPending}
           >
-            <RefreshCw
+            <HugeiconsIcon
+              icon={RefreshIcon}
+              strokeWidth={2}
               data-icon='inline-start'
-              className={cn(
-                'size-3.5',
-                syncMutation.isPending && 'animate-spin'
-              )}
+              className={cn(syncMutation.isPending && 'animate-spin')}
               aria-hidden='true'
             />
             {t('Sync now')}
@@ -186,9 +213,21 @@ export function ChannelProfit() {
               rows={summary.rows}
               isRoot={isRoot}
               togglingChannelId={togglingChannelId}
+              syncingChannelId={
+                syncMutation.isPending ? syncMutation.variables : undefined
+              }
+              savingChannelId={
+                configMutation.isPending
+                  ? configMutation.variables?.channelId
+                  : undefined
+              }
               onToggle={(channelId, enabled) =>
                 monitoringMutation.mutate({ channelId, enabled })
               }
+              onSync={(channelId) => syncMutation.mutate(channelId)}
+              onSaveSettings={async (channelId, input) => {
+                await configMutation.mutateAsync({ channelId, input })
+              }}
             />
           </div>
         )}

@@ -8,10 +8,12 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -21,11 +23,16 @@ import (
 )
 
 const (
-	channelProfitSyncInterval = 15 * time.Minute
-	channelProfitHTTPTimeout  = 12 * time.Second
-	channelProfitMaxBodyBytes = 2 << 20
-	channelProfitMaxWorkers   = 4
-	channelProfitUsageDays    = 1
+	channelProfitSchedulerInterval        = time.Minute
+	channelProfitDefaultSyncInterval      = 15 * time.Minute
+	channelProfitDefaultIntervalMinutes   = int(channelProfitDefaultSyncInterval / time.Minute)
+	channelProfitMaxSyncIntervalMinutes   = 7 * 24 * 60
+	channelProfitMaxDisplayNameCharacters = 100
+	channelProfitHTTPTimeout              = 12 * time.Second
+	channelProfitMaxBodyBytes             = 2 << 20
+	channelProfitMaxWorkers               = 4
+	channelProfitUsageDays                = 1
+	channelProfitNewAPITokenPageSize      = 100
 
 	channelProfitProviderNewAPI  = "new_api"
 	channelProfitProviderSub2API = "sub2api"
@@ -33,19 +40,22 @@ const (
 )
 
 type ChannelProfitKeySummary struct {
-	KeyId                 string  `json:"key_id"`
-	KeyHint               string  `json:"key_hint"`
-	Provider              string  `json:"provider"`
-	UpstreamGroup         string  `json:"upstream_group"`
-	UpstreamGroupRatio    float64 `json:"upstream_group_ratio"`
-	RatioAvailable        bool    `json:"ratio_available"`
-	CostUSD               float64 `json:"cost_usd"`
-	CostAvailable         bool    `json:"cost_available"`
-	Partial               bool    `json:"partial"`
-	LastSyncedAt          int64   `json:"last_synced_at"`
-	LastError             string  `json:"last_error"`
-	UpstreamQuotaPerUnit  float64 `json:"upstream_quota_per_unit"`
-	UpstreamConsumedQuota int64   `json:"upstream_consumed_quota"`
+	KeyId                 string   `json:"key_id"`
+	KeyHint               string   `json:"key_hint"`
+	KeyName               string   `json:"key_name"`
+	ChannelIds            []int    `json:"channel_ids"`
+	ChannelNames          []string `json:"channel_names"`
+	Provider              string   `json:"provider"`
+	UpstreamGroup         string   `json:"upstream_group"`
+	UpstreamGroupRatio    float64  `json:"upstream_group_ratio"`
+	RatioAvailable        bool     `json:"ratio_available"`
+	CostUSD               float64  `json:"cost_usd"`
+	CostAvailable         bool     `json:"cost_available"`
+	Partial               bool     `json:"partial"`
+	LastSyncedAt          int64    `json:"last_synced_at"`
+	LastError             string   `json:"last_error"`
+	UpstreamQuotaPerUnit  float64  `json:"upstream_quota_per_unit"`
+	UpstreamConsumedQuota int64    `json:"upstream_consumed_quota"`
 }
 
 type ChannelProfitGroupRatio struct {
@@ -54,23 +64,29 @@ type ChannelProfitGroupRatio struct {
 }
 
 type ChannelProfitRow struct {
-	ChannelId       int                       `json:"channel_id"`
-	ChannelName     string                    `json:"channel_name"`
-	Provider        string                    `json:"provider"`
-	Enabled         bool                      `json:"enabled"`
-	RevenueUSD      float64                   `json:"revenue_usd"`
-	CostUSD         float64                   `json:"cost_usd"`
-	CostAvailable   bool                      `json:"cost_available"`
-	ProfitUSD       float64                   `json:"profit_usd"`
-	ProfitAvailable bool                      `json:"profit_available"`
-	Margin          float64                   `json:"margin"`
-	MarginAvailable bool                      `json:"margin_available"`
-	Partial         bool                      `json:"partial"`
-	Status          string                    `json:"status"`
-	LastSyncedAt    int64                     `json:"last_synced_at"`
-	LastError       string                    `json:"last_error"`
-	DownstreamRates []ChannelProfitGroupRatio `json:"downstream_rates"`
-	Keys            []ChannelProfitKeySummary `json:"keys"`
+	GroupId               string                    `json:"group_id"`
+	ChannelId             int                       `json:"channel_id"`
+	ChannelIds            []int                     `json:"channel_ids"`
+	ChannelName           string                    `json:"channel_name"`
+	BaseURL               string                    `json:"base_url"`
+	Provider              string                    `json:"provider"`
+	Enabled               bool                      `json:"enabled"`
+	SyncIntervalMinutes   int                       `json:"sync_interval_minutes"`
+	LastSyncAttemptAt     int64                     `json:"last_sync_attempt_at"`
+	AccessTokenConfigured bool                      `json:"access_token_configured"`
+	RevenueUSD            float64                   `json:"revenue_usd"`
+	CostUSD               float64                   `json:"cost_usd"`
+	CostAvailable         bool                      `json:"cost_available"`
+	ProfitUSD             float64                   `json:"profit_usd"`
+	ProfitAvailable       bool                      `json:"profit_available"`
+	Margin                float64                   `json:"margin"`
+	MarginAvailable       bool                      `json:"margin_available"`
+	Partial               bool                      `json:"partial"`
+	Status                string                    `json:"status"`
+	LastSyncedAt          int64                     `json:"last_synced_at"`
+	LastError             string                    `json:"last_error"`
+	DownstreamRates       []ChannelProfitGroupRatio `json:"downstream_rates"`
+	Keys                  []ChannelProfitKeySummary `json:"keys"`
 }
 
 type ChannelProfitSummary struct {
@@ -94,6 +110,43 @@ type ChannelProfitSyncResult struct {
 	Failed   int `json:"failed"`
 }
 
+type ChannelProfitConfigUpdate struct {
+	Enabled             *bool
+	DisplayName         *string
+	SyncIntervalMinutes *int
+	AccessToken         *string
+}
+
+type channelProfitSyncPayload struct {
+	ChannelId int  `json:"channel_id,omitempty"`
+	DueOnly   bool `json:"due_only,omitempty"`
+}
+
+type ChannelProfitSyncOptions struct {
+	ChannelId int
+	DueOnly   bool
+}
+
+type channelProfitGroupKey struct {
+	Value        string
+	Fingerprint  string
+	Owner        *model.Channel
+	ChannelIds   []int
+	ChannelNames []string
+}
+
+type channelProfitGroup struct {
+	Id                  string
+	BaseURL             string
+	Channels            []*model.Channel
+	Keys                []*channelProfitGroupKey
+	Enabled             bool
+	DisplayName         string
+	SyncIntervalMinutes int
+	LastSyncAttemptAt   int64
+	AccessToken         string
+}
+
 type channelProfitSyncHandler struct{}
 
 func (channelProfitSyncHandler) Type() string { return model.SystemTaskTypeChannelProfit }
@@ -103,12 +156,22 @@ func (channelProfitSyncHandler) Enabled() bool {
 	return err == nil && count > 0
 }
 
-func (channelProfitSyncHandler) Interval() time.Duration { return channelProfitSyncInterval }
+func (channelProfitSyncHandler) Interval() time.Duration { return channelProfitSchedulerInterval }
 
-func (channelProfitSyncHandler) NewPayload() any { return nil }
+func (channelProfitSyncHandler) NewPayload() any {
+	return channelProfitSyncPayload{DueOnly: true}
+}
 
 func (channelProfitSyncHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
-	result, err := SyncChannelProfits(ctx)
+	payload := channelProfitSyncPayload{}
+	if err := task.DecodePayload(&payload); err != nil {
+		failSystemTask(task, runnerID, err)
+		return
+	}
+	result, err := SyncChannelProfits(ctx, ChannelProfitSyncOptions{
+		ChannelId: payload.ChannelId,
+		DueOnly:   payload.DueOnly,
+	})
 	if err != nil {
 		failSystemTask(task, runnerID, err)
 		return
@@ -122,88 +185,116 @@ func init() {
 	RegisterSystemTaskHandler(channelProfitSyncHandler{})
 }
 
-func StartChannelProfitSync() (*model.SystemTask, bool, error) {
-	return EnqueueSystemTask(model.SystemTaskTypeChannelProfit, nil)
+func StartChannelProfitSync(channelIds ...int) (*model.SystemTask, bool, error) {
+	payload := channelProfitSyncPayload{}
+	if len(channelIds) > 0 {
+		payload.ChannelId = channelIds[0]
+	}
+	return EnqueueSystemTask(model.SystemTaskTypeChannelProfit, payload)
+}
+
+func StartChannelProfitGroupSync(channelId int) (*model.SystemTask, bool, error) {
+	group, err := getChannelProfitGroup(channelId)
+	if err != nil {
+		return nil, false, err
+	}
+	if !group.Enabled {
+		return nil, false, errors.New("profit monitoring is disabled for this channel group")
+	}
+	return StartChannelProfitSync(group.Channels[0].Id)
 }
 
 func SetChannelProfitMonitoring(channelId int, enabled bool) (*model.ChannelProfitConfig, error) {
-	channel, err := model.GetChannelById(channelId, true)
-	if err != nil {
-		return nil, err
-	}
-	if !enabled {
-		return model.SetChannelProfitConfig(channelId, false)
-	}
-	if _, err := channelProfitBaseURL(channel); err != nil {
-		return nil, err
-	}
-	keys := uniqueChannelProfitKeys(channel)
-	if len(keys) == 0 {
-		return nil, errors.New("channel has no upstream key")
-	}
-
-	configs, err := model.ListEnabledChannelProfitConfigs()
-	if err != nil {
-		return nil, err
-	}
-	fingerprints := make(map[string]struct{}, len(keys))
-	for _, key := range keys {
-		fingerprints[channelProfitKeyFingerprint(key)] = struct{}{}
-	}
-	for _, config := range configs {
-		if config.ChannelId == channelId {
-			continue
-		}
-		other, err := model.GetChannelById(config.ChannelId, true)
-		if err != nil {
-			return nil, err
-		}
-		for _, key := range uniqueChannelProfitKeys(other) {
-			if _, shared := fingerprints[channelProfitKeyFingerprint(key)]; shared {
-				return nil, fmt.Errorf("upstream key is already monitored by channel #%d", other.Id)
-			}
-		}
-	}
-
-	config, err := model.SetChannelProfitConfig(channelId, true)
-	if err != nil {
-		return nil, err
-	}
-	_, _, _ = StartChannelProfitSync()
-	return config, nil
+	return UpdateChannelProfitConfig(channelId, ChannelProfitConfigUpdate{Enabled: &enabled})
 }
 
-func SyncChannelProfits(ctx context.Context) (ChannelProfitSyncResult, error) {
-	configs, err := model.ListEnabledChannelProfitConfigs()
+func UpdateChannelProfitConfig(channelId int, update ChannelProfitConfigUpdate) (*model.ChannelProfitConfig, error) {
+	group, err := getChannelProfitGroup(channelId)
+	if err != nil {
+		return nil, err
+	}
+	if update.Enabled != nil && *update.Enabled && len(group.Keys) == 0 {
+		return nil, errors.New("channel group has no upstream key")
+	}
+	if update.DisplayName != nil {
+		name := strings.TrimSpace(*update.DisplayName)
+		if utf8.RuneCountInString(name) > channelProfitMaxDisplayNameCharacters {
+			return nil, fmt.Errorf("display name must not exceed %d characters", channelProfitMaxDisplayNameCharacters)
+		}
+		update.DisplayName = &name
+	}
+	if update.SyncIntervalMinutes != nil {
+		interval := *update.SyncIntervalMinutes
+		if interval < 1 || interval > channelProfitMaxSyncIntervalMinutes {
+			return nil, fmt.Errorf("sync interval must be between 1 and %d minutes", channelProfitMaxSyncIntervalMinutes)
+		}
+	}
+	if update.AccessToken != nil {
+		token := strings.TrimSpace(*update.AccessToken)
+		update.AccessToken = &token
+	}
+
+	channelIds := make([]int, 0, len(group.Channels))
+	for _, channel := range group.Channels {
+		channelIds = append(channelIds, channel.Id)
+	}
+	configs, err := model.UpdateChannelProfitConfigs(channelIds, model.ChannelProfitConfigUpdate{
+		Enabled:             update.Enabled,
+		DisplayName:         update.DisplayName,
+		SyncIntervalMinutes: update.SyncIntervalMinutes,
+		AccessToken:         update.AccessToken,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if update.Enabled != nil && *update.Enabled || update.AccessToken != nil {
+		_, _, _ = StartChannelProfitSync(group.Channels[0].Id)
+	}
+	return configs[0], nil
+}
+
+func SyncChannelProfits(ctx context.Context, syncOptions ...ChannelProfitSyncOptions) (ChannelProfitSyncResult, error) {
+	options := ChannelProfitSyncOptions{}
+	if len(syncOptions) > 0 {
+		options = syncOptions[0]
+	}
+	groups, err := listChannelProfitGroups()
 	if err != nil {
 		return ChannelProfitSyncResult{}, err
 	}
-	result := ChannelProfitSyncResult{Channels: len(configs)}
-	if len(configs) == 0 {
-		return result, nil
+	now := common.GetTimestamp()
+	selected := make([]*channelProfitGroup, 0, len(groups))
+	for _, group := range groups {
+		if !group.Enabled {
+			continue
+		}
+		if options.ChannelId > 0 && !channelProfitGroupContainsChannel(group, options.ChannelId) {
+			continue
+		}
+		if options.DueOnly && group.LastSyncAttemptAt > 0 &&
+			now-group.LastSyncAttemptAt < int64(group.SyncIntervalMinutes*60) {
+			continue
+		}
+		selected = append(selected, group)
 	}
-
-	channels := make([]*model.Channel, 0, len(configs))
-	owners := make(map[string][]int)
-	for _, config := range configs {
-		channel, err := model.GetChannelById(config.ChannelId, true)
-		if err != nil {
-			return result, err
+	result := ChannelProfitSyncResult{Channels: len(selected)}
+	for _, group := range selected {
+		result.Keys += len(group.Keys)
+	}
+	if len(selected) == 0 {
+		if options.ChannelId > 0 {
+			return result, errors.New("monitored channel group not found")
 		}
-		channels = append(channels, channel)
-		for _, key := range uniqueChannelProfitKeys(channel) {
-			fingerprint := channelProfitKeyFingerprint(key)
-			owners[fingerprint] = append(owners[fingerprint], channel.Id)
-			result.Keys++
-		}
+		return result, nil
 	}
 
 	usageDate := time.Now().In(time.Local).Format("2006-01-02")
 	semaphore := make(chan struct{}, channelProfitMaxWorkers)
 	var waitGroup sync.WaitGroup
 	var resultMu sync.Mutex
-	for _, channel := range channels {
-		channel := channel
+	var firstErr error
+	for _, group := range selected {
+		group := group
 		waitGroup.Add(1)
 		go func() {
 			defer waitGroup.Done()
@@ -214,10 +305,21 @@ func SyncChannelProfits(ctx context.Context) (ChannelProfitSyncResult, error) {
 				return
 			}
 
-			synced, failed := syncChannelProfit(ctx, channel, usageDate, owners)
+			synced, failed := syncChannelProfitGroup(ctx, group, usageDate)
+			channelIds := make([]int, 0, len(group.Channels))
+			for _, channel := range group.Channels {
+				channelIds = append(channelIds, channel.Id)
+			}
+			attemptedAt := common.GetTimestamp()
+			_, updateErr := model.UpdateChannelProfitConfigs(channelIds, model.ChannelProfitConfigUpdate{
+				LastSyncAttemptAt: &attemptedAt,
+			})
 			resultMu.Lock()
 			result.Synced += synced
 			result.Failed += failed
+			if updateErr != nil && firstErr == nil {
+				firstErr = updateErr
+			}
 			resultMu.Unlock()
 		}()
 	}
@@ -225,100 +327,120 @@ func SyncChannelProfits(ctx context.Context) (ChannelProfitSyncResult, error) {
 	if err := ctx.Err(); err != nil {
 		return result, err
 	}
-	return result, nil
+	return result, firstErr
 }
 
-func syncChannelProfit(ctx context.Context, channel *model.Channel, usageDate string, owners map[string][]int) (int, int) {
-	keys := uniqueChannelProfitKeys(channel)
-	if len(keys) == 0 {
+func syncChannelProfitGroup(ctx context.Context, group *channelProfitGroup, usageDate string) (int, int) {
+	if len(group.Keys) == 0 {
 		return 0, 1
 	}
-	baseURL, err := channelProfitBaseURL(channel)
-	if err != nil {
-		for _, key := range keys {
-			saveChannelProfitFailure(channel.Id, usageDate, key, err)
-		}
-		return 0, len(keys)
-	}
-
+	channel := group.Channels[0]
 	settings := channel.GetSetting()
 	client, err := GetHttpClientWithProxySettings(settings.Proxy, settings)
 	if err != nil {
-		for _, key := range keys {
-			saveChannelProfitFailure(channel.Id, usageDate, key, err)
+		for _, key := range group.Keys {
+			saveChannelProfitFailure(key.Owner.Id, usageDate, key.Value, err)
 		}
-		return 0, len(keys)
+		return 0, len(group.Keys)
 	}
-	backend, err := detectChannelProfitBackend(ctx, client, baseURL, keys, usageDate)
+	keyValues := make([]string, 0, len(group.Keys))
+	for _, key := range group.Keys {
+		keyValues = append(keyValues, key.Value)
+	}
+	backend, err := detectChannelProfitBackend(ctx, client, group.BaseURL, keyValues, usageDate)
 	if err != nil {
-		for _, key := range keys {
-			saveChannelProfitFailure(channel.Id, usageDate, key, err)
+		for _, key := range group.Keys {
+			saveChannelProfitFailure(key.Owner.Id, usageDate, key.Value, err)
 		}
-		return 0, len(keys)
+		return 0, len(group.Keys)
+	}
+
+	newAPIMetadata := map[string]channelProfitNewAPIKeyMetadata{}
+	newAPIGroupRatios := map[string]float64{}
+	if backend.Provider == channelProfitProviderNewAPI && group.AccessToken != "" {
+		newAPIMetadata, newAPIGroupRatios, err = fetchChannelProfitNewAPIMetadata(
+			ctx,
+			client,
+			group.BaseURL,
+			group.AccessToken,
+			group.Keys,
+		)
+		if err != nil {
+			for _, key := range group.Keys {
+				saveChannelProfitFailure(key.Owner.Id, usageDate, key.Value, err)
+			}
+			return 0, len(group.Keys)
+		}
 	}
 
 	synced := 0
 	failed := 0
-	for _, key := range keys {
-		fingerprint := channelProfitKeyFingerprint(key)
-		if len(owners[fingerprint]) > 1 {
-			err := fmt.Errorf("upstream key is shared by monitored channels %v", owners[fingerprint])
-			saveChannelProfitFailure(channel.Id, usageDate, key, err)
-			failed++
-			continue
-		}
-
+	interval := time.Duration(group.SyncIntervalMinutes) * time.Minute
+	for _, key := range group.Keys {
 		var updateErr error
 		switch backend.Provider {
 		case channelProfitProviderNewAPI:
-			usage, err := fetchChannelProfitUsage(ctx, client, baseURL, key)
-			if err != nil {
-				saveChannelProfitFailure(channel.Id, usageDate, key, err)
-				failed++
-				continue
+			if group.AccessToken != "" {
+				metadata, ok := newAPIMetadata[key.Fingerprint]
+				if !ok {
+					updateErr = errors.New("upstream access token did not return this API key")
+					break
+				}
+				costUSD, statErr := fetchChannelProfitNewAPIExactCost(
+					ctx,
+					client,
+					group.BaseURL,
+					group.AccessToken,
+					metadata.Name,
+					usageDate,
+					backend.QuotaPerUnit,
+				)
+				if statErr != nil {
+					updateErr = statErr
+					break
+				}
+				ratio, ratioAvailable := newAPIGroupRatios[metadata.Group]
+				updateErr = updateChannelProfitSnapshotForProvider(
+					key.Owner.Id, usageDate, key.Value, channelProfitProviderNewAPI,
+					0, backend.QuotaPerUnit, costUSD, true,
+					metadata.Name, metadata.Group, ratio, ratioAvailable, nil, interval,
+				)
+				break
 			}
-			group, ratio, ratioAvailable, ratioErr := fetchChannelProfitGroup(ctx, client, baseURL, key)
-			updateErr = updateChannelProfitSnapshot(
-				channel.Id,
-				usageDate,
-				key,
-				usage,
-				backend.QuotaPerUnit,
-				group,
-				ratio,
-				ratioAvailable,
-				ratioErr,
+			usage, usageErr := fetchChannelProfitUsage(ctx, client, group.BaseURL, key.Value)
+			if usageErr != nil {
+				updateErr = usageErr
+				break
+			}
+			keyName, upstreamGroup, ratio, ratioAvailable, ratioErr := fetchChannelProfitGroup(ctx, client, group.BaseURL, key.Value)
+			updateErr = updateChannelProfitSnapshotForProvider(
+				key.Owner.Id, usageDate, key.Value, channelProfitProviderNewAPI,
+				usage, backend.QuotaPerUnit, 0, false,
+				keyName, upstreamGroup, ratio, ratioAvailable, ratioErr, interval,
 			)
 		case channelProfitProviderSub2API:
-			costUSD, ok := backend.Sub2APICostByKey[fingerprint]
+			usage, ok := backend.Sub2APIUsageByKey[key.Fingerprint]
 			if !ok {
-				costUSD, err = fetchChannelProfitSub2APIUsage(ctx, client, baseURL, key, usageDate)
+				usage, err = fetchChannelProfitSub2APIUsage(ctx, client, group.BaseURL, key.Value, usageDate)
 				if err != nil {
-					saveChannelProfitFailure(channel.Id, usageDate, key, err)
-					failed++
-					continue
+					updateErr = err
+					break
 				}
 			}
-			group, ratio, ratioAvailable, ratioErr := fetchChannelProfitSub2APIGroup(ctx, client, baseURL, key)
+			upstreamGroup, ratio, ratioAvailable, ratioErr := fetchChannelProfitSub2APIGroup(ctx, client, group.BaseURL, key.Value)
+			if upstreamGroup == "" {
+				upstreamGroup = usage.PlanName
+			}
 			updateErr = updateChannelProfitSnapshotForProvider(
-				channel.Id,
-				usageDate,
-				key,
-				channelProfitProviderSub2API,
-				0,
-				0,
-				costUSD,
-				true,
-				group,
-				ratio,
-				ratioAvailable,
-				ratioErr,
+				key.Owner.Id, usageDate, key.Value, channelProfitProviderSub2API,
+				0, 0, usage.CostUSD, true,
+				usage.PlanName, upstreamGroup, ratio, ratioAvailable, ratioErr, interval,
 			)
 		default:
 			updateErr = errors.New("unsupported profit monitoring backend")
 		}
 		if updateErr != nil {
-			saveChannelProfitFailure(channel.Id, usageDate, key, updateErr)
+			saveChannelProfitFailure(key.Owner.Id, usageDate, key.Value, updateErr)
 			failed++
 			continue
 		}
@@ -347,10 +469,12 @@ func updateChannelProfitSnapshot(
 		quotaPerUnit,
 		0,
 		false,
+		"",
 		group,
 		ratio,
 		ratioAvailable,
 		ratioErr,
+		channelProfitDefaultSyncInterval,
 	)
 }
 
@@ -363,10 +487,12 @@ func updateChannelProfitSnapshotForProvider(
 	quotaPerUnit float64,
 	directCostUSD float64,
 	directCostAvailable bool,
+	keyName string,
 	group string,
 	ratio float64,
 	ratioAvailable bool,
 	ratioErr error,
+	syncInterval time.Duration,
 ) error {
 	if provider != channelProfitProviderNewAPI && provider != channelProfitProviderSub2API {
 		return errors.New("unsupported profit monitoring backend")
@@ -381,7 +507,7 @@ func updateChannelProfitSnapshotForProvider(
 	if err == nil {
 		existingProvider := channelProfitSnapshotProvider(snapshot)
 		providerChanged := existingProvider != "" && existingProvider != provider
-		if provider == channelProfitProviderNewAPI && !providerChanged && currentQuota < snapshot.CurrentQuota {
+		if provider == channelProfitProviderNewAPI && !directCostAvailable && !providerChanged && currentQuota < snapshot.CurrentQuota {
 			snapshot.LastSyncedAt = now
 			snapshot.LastError = "upstream cumulative usage counter decreased"
 			return model.SaveChannelProfitSnapshot(snapshot)
@@ -391,11 +517,15 @@ func updateChannelProfitSnapshotForProvider(
 			ratio = snapshot.UpstreamGroupRatio
 			ratioAvailable = true
 		}
+		if keyName == "" && !providerChanged {
+			keyName = snapshot.UpstreamKeyName
+		}
 		snapshot.Provider = provider
 		snapshot.CurrentQuota = currentQuota
 		snapshot.UpstreamQuotaPerUnit = quotaPerUnit
 		snapshot.DirectCostUSD = directCostUSD
 		snapshot.DirectCostAvailable = directCostAvailable
+		snapshot.UpstreamKeyName = keyName
 		snapshot.UpstreamGroup = group
 		snapshot.UpstreamGroupRatio = ratio
 		snapshot.RatioAvailable = ratioAvailable
@@ -403,10 +533,12 @@ func updateChannelProfitSnapshotForProvider(
 			snapshot.BaselineQuota = currentQuota
 			snapshot.Partial = provider == channelProfitProviderNewAPI
 		}
-		if provider == channelProfitProviderSub2API {
+		if provider == channelProfitProviderSub2API || directCostAvailable {
 			snapshot.BaselineQuota = 0
 			snapshot.CurrentQuota = 0
-			snapshot.UpstreamQuotaPerUnit = 0
+			if provider == channelProfitProviderSub2API {
+				snapshot.UpstreamQuotaPerUnit = 0
+			}
 			snapshot.Partial = false
 		}
 		snapshot.LastSyncedAt = now
@@ -428,13 +560,19 @@ func updateChannelProfitSnapshotForProvider(
 			ratio = previous.UpstreamGroupRatio
 			ratioAvailable = true
 		}
-		if provider == channelProfitProviderNewAPI && previousProvider == provider {
+		if keyName == "" && previousProvider == provider {
+			keyName = previous.UpstreamKeyName
+		}
+		if provider == channelProfitProviderNewAPI && !directCostAvailable && previousProvider == provider {
 			currentDate, parseErr := time.ParseInLocation("2006-01-02", usageDate, time.Local)
 			if parseErr != nil {
 				return parseErr
 			}
+			if syncInterval <= 0 {
+				syncInterval = channelProfitDefaultSyncInterval
+			}
 			previousIsRecent := previous.UsageDate == currentDate.AddDate(0, 0, -1).Format("2006-01-02") &&
-				previous.LastSyncedAt >= currentDate.Add(-2*channelProfitSyncInterval).Unix()
+				previous.LastSyncedAt >= currentDate.Add(-2*syncInterval).Unix()
 			if currentQuota >= previous.CurrentQuota && previousIsRecent {
 				baseline = previous.CurrentQuota
 				partial = false
@@ -445,10 +583,12 @@ func updateChannelProfitSnapshotForProvider(
 	} else if !errors.Is(previousErr, gorm.ErrRecordNotFound) {
 		return previousErr
 	}
-	if provider == channelProfitProviderSub2API {
+	if provider == channelProfitProviderSub2API || directCostAvailable {
 		baseline = 0
 		currentQuota = 0
-		quotaPerUnit = 0
+		if provider == channelProfitProviderSub2API {
+			quotaPerUnit = 0
+		}
 		partial = false
 	}
 
@@ -463,6 +603,7 @@ func updateChannelProfitSnapshotForProvider(
 		UpstreamQuotaPerUnit: quotaPerUnit,
 		DirectCostUSD:        directCostUSD,
 		DirectCostAvailable:  directCostAvailable,
+		UpstreamKeyName:      keyName,
 		UpstreamGroup:        group,
 		UpstreamGroupRatio:   ratio,
 		RatioAvailable:       ratioAvailable,
@@ -501,16 +642,7 @@ func GetChannelProfitSummary(usageDate string, includeDisabled bool) (*ChannelPr
 		return nil, errors.New("usage date cannot be in the future")
 	}
 
-	configs, err := model.ListChannelProfitConfigs()
-	if err != nil {
-		return nil, err
-	}
-	configByChannel := make(map[int]bool, len(configs))
-	for _, config := range configs {
-		configByChannel[config.ChannelId] = config.Enabled
-	}
-
-	channels, err := model.GetAllChannels(0, 0, true, true)
+	groups, err := listChannelProfitGroups()
 	if err != nil {
 		return nil, err
 	}
@@ -533,17 +665,19 @@ func GetChannelProfitSummary(usageDate string, includeDisabled bool) (*ChannelPr
 	}
 	allCostsAvailable := true
 	enabledRows := 0
-	for _, channel := range channels {
-		if !channelProfitCanProbe(channel) {
+	for _, group := range groups {
+		if !group.Enabled && !includeDisabled {
 			continue
 		}
-		enabled := configByChannel[channel.Id]
-		if !enabled && !includeDisabled {
-			continue
+		revenueQuota := int64(0)
+		groupSnapshots := make([]*model.ChannelProfitSnapshot, 0)
+		for _, channel := range group.Channels {
+			revenueQuota += quotaByChannel[channel.Id]
+			groupSnapshots = append(groupSnapshots, snapshotsByChannel[channel.Id]...)
 		}
-		row := buildChannelProfitRow(channel, enabled, quotaByChannel[channel.Id], snapshotsByChannel[channel.Id])
+		row := buildChannelProfitGroupRow(group, revenueQuota, groupSnapshots)
 		summary.Rows = append(summary.Rows, row)
-		if !enabled {
+		if !group.Enabled {
 			continue
 		}
 		enabledRows++
@@ -572,30 +706,76 @@ func GetChannelProfitSummary(usageDate string, includeDisabled bool) (*ChannelPr
 	return summary, nil
 }
 
-func buildChannelProfitRow(channel *model.Channel, enabled bool, revenueQuota int64, snapshots []*model.ChannelProfitSnapshot) ChannelProfitRow {
+func buildChannelProfitGroupRow(group *channelProfitGroup, revenueQuota int64, snapshots []*model.ChannelProfitSnapshot) ChannelProfitRow {
+	channelIds := make([]int, 0, len(group.Channels))
+	for _, channel := range group.Channels {
+		channelIds = append(channelIds, channel.Id)
+	}
 	row := ChannelProfitRow{
-		ChannelId:       channel.Id,
-		ChannelName:     channel.Name,
-		Enabled:         enabled,
-		RevenueUSD:      float64(revenueQuota) / common.QuotaPerUnit,
-		Status:          "disabled",
-		DownstreamRates: make([]ChannelProfitGroupRatio, 0),
-		Keys:            make([]ChannelProfitKeySummary, 0, len(snapshots)),
+		GroupId:               group.Id,
+		ChannelId:             group.Channels[0].Id,
+		ChannelIds:            channelIds,
+		ChannelName:           group.DisplayName,
+		BaseURL:               group.BaseURL,
+		Enabled:               group.Enabled,
+		SyncIntervalMinutes:   group.SyncIntervalMinutes,
+		LastSyncAttemptAt:     group.LastSyncAttemptAt,
+		AccessTokenConfigured: group.AccessToken != "",
+		RevenueUSD:            float64(revenueQuota) / common.QuotaPerUnit,
+		Status:                "disabled",
+		DownstreamRates:       make([]ChannelProfitGroupRatio, 0),
+		Keys:                  make([]ChannelProfitKeySummary, 0, len(group.Keys)),
 	}
 	groupRates := ratio_setting.GetGroupRatioCopy()
-	for _, group := range channel.GetGroups() {
-		if ratio, ok := groupRates[group]; ok {
-			row.DownstreamRates = append(row.DownstreamRates, ChannelProfitGroupRatio{Group: group, Ratio: ratio})
+	rateByGroup := make(map[string]float64)
+	for _, channel := range group.Channels {
+		for _, channelGroup := range channel.GetGroups() {
+			if ratio, ok := groupRates[channelGroup]; ok {
+				rateByGroup[channelGroup] = ratio
+			}
 		}
 	}
-	if !enabled {
-		return row
+	groupNames := make([]string, 0, len(rateByGroup))
+	for channelGroup := range rateByGroup {
+		groupNames = append(groupNames, channelGroup)
+	}
+	sort.Strings(groupNames)
+	for _, channelGroup := range groupNames {
+		row.DownstreamRates = append(row.DownstreamRates, ChannelProfitGroupRatio{
+			Group: channelGroup,
+			Ratio: rateByGroup[channelGroup],
+		})
 	}
 
-	expectedKeys := len(uniqueChannelProfitKeys(channel))
-	row.CostAvailable = expectedKeys > 0 && len(snapshots) == expectedKeys
-	row.Status = "synced"
+	snapshotByKey := make(map[string]*model.ChannelProfitSnapshot, len(snapshots))
 	for _, snapshot := range snapshots {
+		current := snapshotByKey[snapshot.KeyFingerprint]
+		if current == nil || snapshot.LastSyncedAt > current.LastSyncedAt ||
+			(snapshot.LastSyncedAt == current.LastSyncedAt && snapshot.Id > current.Id) {
+			snapshotByKey[snapshot.KeyFingerprint] = snapshot
+		}
+	}
+
+	row.CostAvailable = group.Enabled && len(group.Keys) > 0
+	row.Status = "synced"
+	for _, groupKey := range group.Keys {
+		snapshot := snapshotByKey[groupKey.Fingerprint]
+		keyId := groupKey.Fingerprint
+		if len(keyId) > 12 {
+			keyId = keyId[:12]
+		}
+		key := ChannelProfitKeySummary{
+			KeyId:        keyId,
+			KeyHint:      model.MaskTokenKey(groupKey.Value),
+			ChannelIds:   append([]int(nil), groupKey.ChannelIds...),
+			ChannelNames: append([]string(nil), groupKey.ChannelNames...),
+		}
+		if snapshot == nil {
+			row.CostAvailable = false
+			row.Keys = append(row.Keys, key)
+			continue
+		}
+
 		provider := channelProfitSnapshotProvider(snapshot)
 		if row.Provider == "" {
 			row.Provider = provider
@@ -617,25 +797,22 @@ func buildChannelProfitRow(channel *model.Channel, enabled bool, revenueQuota in
 		if !costAvailable {
 			row.CostAvailable = false
 		}
-		keyId := snapshot.KeyFingerprint
-		if len(keyId) > 12 {
-			keyId = keyId[:12]
+		key.KeyHint = snapshot.KeyHint
+		key.KeyName = snapshot.UpstreamKeyName
+		if key.KeyName == "" && len(groupKey.ChannelNames) > 0 {
+			key.KeyName = groupKey.ChannelNames[0]
 		}
-		key := ChannelProfitKeySummary{
-			KeyId:                 keyId,
-			KeyHint:               snapshot.KeyHint,
-			Provider:              provider,
-			UpstreamGroup:         snapshot.UpstreamGroup,
-			UpstreamGroupRatio:    snapshot.UpstreamGroupRatio,
-			RatioAvailable:        snapshot.RatioAvailable,
-			CostUSD:               cost,
-			CostAvailable:         costAvailable,
-			Partial:               snapshot.Partial,
-			LastSyncedAt:          snapshot.LastSyncedAt,
-			LastError:             snapshot.LastError,
-			UpstreamQuotaPerUnit:  snapshot.UpstreamQuotaPerUnit,
-			UpstreamConsumedQuota: consumed,
-		}
+		key.Provider = provider
+		key.UpstreamGroup = snapshot.UpstreamGroup
+		key.UpstreamGroupRatio = snapshot.UpstreamGroupRatio
+		key.RatioAvailable = snapshot.RatioAvailable
+		key.CostUSD = cost
+		key.CostAvailable = costAvailable
+		key.Partial = snapshot.Partial
+		key.LastSyncedAt = snapshot.LastSyncedAt
+		key.LastError = snapshot.LastError
+		key.UpstreamQuotaPerUnit = snapshot.UpstreamQuotaPerUnit
+		key.UpstreamConsumedQuota = consumed
 		row.Keys = append(row.Keys, key)
 		row.CostUSD += cost
 		if snapshot.Partial {
@@ -651,7 +828,14 @@ func buildChannelProfitRow(channel *model.Channel, enabled bool, revenueQuota in
 			}
 		}
 	}
-	if len(snapshots) == 0 {
+	if !group.Enabled {
+		row.Status = "disabled"
+		row.CostAvailable = false
+		row.ProfitAvailable = false
+		row.MarginAvailable = false
+		return row
+	}
+	if len(snapshotByKey) == 0 {
 		row.Status = "pending"
 		row.Partial = true
 	}
@@ -667,6 +851,117 @@ func buildChannelProfitRow(channel *model.Channel, enabled bool, revenueQuota in
 		}
 	}
 	return row
+}
+
+func listChannelProfitGroups() ([]*channelProfitGroup, error) {
+	configs, err := model.ListChannelProfitConfigs()
+	if err != nil {
+		return nil, err
+	}
+	configByChannel := make(map[int]*model.ChannelProfitConfig, len(configs))
+	for _, config := range configs {
+		configByChannel[config.ChannelId] = config
+	}
+
+	channels, err := model.GetAllChannels(0, 0, true, true)
+	if err != nil {
+		return nil, err
+	}
+	groupByBaseURL := make(map[string]*channelProfitGroup)
+	for _, channel := range channels {
+		baseURL, baseURLErr := channelProfitBaseURL(channel)
+		if baseURLErr != nil || len(uniqueChannelProfitKeys(channel)) == 0 {
+			continue
+		}
+		group := groupByBaseURL[baseURL]
+		if group == nil {
+			group = &channelProfitGroup{
+				BaseURL:             baseURL,
+				SyncIntervalMinutes: channelProfitDefaultIntervalMinutes,
+			}
+			groupByBaseURL[baseURL] = group
+		}
+		group.Channels = append(group.Channels, channel)
+	}
+
+	groups := make([]*channelProfitGroup, 0, len(groupByBaseURL))
+	for _, group := range groupByBaseURL {
+		sort.Slice(group.Channels, func(i, j int) bool {
+			return group.Channels[i].Id < group.Channels[j].Id
+		})
+		group.Id = common.GenerateHMAC(group.BaseURL)
+		if len(group.Id) > 16 {
+			group.Id = group.Id[:16]
+		}
+		group.DisplayName = group.Channels[0].Name
+		intervalConfigured := false
+		for _, channel := range group.Channels {
+			config := configByChannel[channel.Id]
+			if config == nil {
+				continue
+			}
+			group.Enabled = group.Enabled || config.Enabled
+			if group.DisplayName == group.Channels[0].Name && strings.TrimSpace(config.DisplayName) != "" {
+				group.DisplayName = strings.TrimSpace(config.DisplayName)
+			}
+			if !intervalConfigured && config.SyncIntervalMinutes > 0 {
+				group.SyncIntervalMinutes = config.SyncIntervalMinutes
+				intervalConfigured = true
+			}
+			if config.LastSyncAttemptAt > group.LastSyncAttemptAt {
+				group.LastSyncAttemptAt = config.LastSyncAttemptAt
+			}
+			if group.AccessToken == "" && strings.TrimSpace(config.AccessToken) != "" {
+				group.AccessToken = strings.TrimSpace(config.AccessToken)
+			}
+		}
+
+		keyByFingerprint := make(map[string]*channelProfitGroupKey)
+		for _, channel := range group.Channels {
+			for _, value := range uniqueChannelProfitKeys(channel) {
+				fingerprint := channelProfitKeyFingerprint(value)
+				key := keyByFingerprint[fingerprint]
+				if key == nil {
+					key = &channelProfitGroupKey{
+						Value:       value,
+						Fingerprint: fingerprint,
+						Owner:       channel,
+					}
+					keyByFingerprint[fingerprint] = key
+					group.Keys = append(group.Keys, key)
+				}
+				key.ChannelIds = append(key.ChannelIds, channel.Id)
+				key.ChannelNames = append(key.ChannelNames, channel.Name)
+			}
+		}
+		groups = append(groups, group)
+	}
+	sort.Slice(groups, func(i, j int) bool {
+		return groups[i].Channels[0].Id < groups[j].Channels[0].Id
+	})
+	return groups, nil
+}
+
+func getChannelProfitGroup(channelId int) (*channelProfitGroup, error) {
+	groups, err := listChannelProfitGroups()
+	if err != nil {
+		return nil, err
+	}
+	for _, group := range groups {
+		if channelProfitGroupContainsChannel(group, channelId) {
+			return group, nil
+		}
+	}
+	return nil, errors.New("channel group not found")
+}
+
+func channelProfitGroupContainsChannel(group *channelProfitGroup, channelId int) bool {
+	for _, channel := range group.Channels {
+		if channel.Id == channelId {
+			return true
+		}
+	}
+	return false
 }
 
 type channelProfitStatusResponse struct {
@@ -689,12 +984,14 @@ type channelProfitLogResponse struct {
 	Success bool   `json:"success"`
 	Message string `json:"message"`
 	Data    []struct {
-		Group string `json:"group"`
-		Other string `json:"other"`
+		TokenName string `json:"token_name"`
+		Group     string `json:"group"`
+		Other     string `json:"other"`
 	} `json:"data"`
 }
 
 type channelProfitSub2APIUsageResponse struct {
+	PlanName   string `json:"planName"`
 	DailyUsage *[]struct {
 		Date       string  `json:"date"`
 		ActualCost float64 `json:"actual_cost"`
@@ -706,15 +1003,56 @@ type channelProfitSub2APIUsageResponse struct {
 	} `json:"usage"`
 }
 
+type channelProfitSub2APIUsage struct {
+	CostUSD  float64
+	PlanName string
+}
+
 type channelProfitSub2APIBillingResponse struct {
 	Object              string   `json:"object"`
 	GroupRateMultiplier *float64 `json:"group_rate_multiplier"`
 }
 
 type channelProfitBackend struct {
-	Provider         string
-	QuotaPerUnit     float64
-	Sub2APICostByKey map[string]float64
+	Provider          string
+	QuotaPerUnit      float64
+	Sub2APIUsageByKey map[string]channelProfitSub2APIUsage
+}
+
+type channelProfitNewAPIKeyMetadata struct {
+	Name  string
+	Group string
+}
+
+type channelProfitNewAPITokenListResponse struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+	Data    struct {
+		Page     int `json:"page"`
+		PageSize int `json:"page_size"`
+		Total    int `json:"total"`
+		Items    []struct {
+			Key   string `json:"key"`
+			Name  string `json:"name"`
+			Group string `json:"group"`
+		} `json:"items"`
+	} `json:"data"`
+}
+
+type channelProfitNewAPIGroupResponse struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+	Data    map[string]struct {
+		Ratio any `json:"ratio"`
+	} `json:"data"`
+}
+
+type channelProfitNewAPIStatResponse struct {
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+	Data    struct {
+		Quota int64 `json:"quota"`
+	} `json:"data"`
 }
 
 type channelProfitHTTPError struct {
@@ -740,18 +1078,18 @@ func detectChannelProfitBackend(
 		}, nil
 	}
 
-	costByKey := make(map[string]float64)
+	usageByKey := make(map[string]channelProfitSub2APIUsage)
 	var sub2APIErr error
 	for _, key := range keys {
-		costUSD, err := fetchChannelProfitSub2APIUsage(ctx, client, baseURL, key, usageDate)
+		usage, err := fetchChannelProfitSub2APIUsage(ctx, client, baseURL, key, usageDate)
 		if err != nil {
 			sub2APIErr = err
 			continue
 		}
-		costByKey[channelProfitKeyFingerprint(key)] = costUSD
+		usageByKey[channelProfitKeyFingerprint(key)] = usage
 		return channelProfitBackend{
-			Provider:         channelProfitProviderSub2API,
-			Sub2APICostByKey: costByKey,
+			Provider:          channelProfitProviderSub2API,
+			Sub2APIUsageByKey: usageByKey,
 		}, nil
 	}
 	if sub2APIErr == nil {
@@ -789,28 +1127,170 @@ func fetchChannelProfitUsage(ctx context.Context, client *http.Client, baseURL s
 	return response.Data.TotalUsed, nil
 }
 
-func fetchChannelProfitGroup(ctx context.Context, client *http.Client, baseURL string, key string) (string, float64, bool, error) {
+func fetchChannelProfitGroup(ctx context.Context, client *http.Client, baseURL string, key string) (string, string, float64, bool, error) {
 	response := channelProfitLogResponse{}
 	if err := fetchChannelProfitJSON(ctx, client, baseURL+"/api/log/token", key, &response); err != nil {
-		return "", 0, false, err
+		return "", "", 0, false, err
 	}
 	if !response.Success {
-		return "", 0, false, errors.New(response.Message)
+		return "", "", 0, false, errors.New(response.Message)
 	}
 	if len(response.Data) == 0 {
-		return "", 0, false, errors.New("upstream token has no usage log for ratio discovery")
+		return "", "", 0, false, errors.New("upstream token has no usage log for ratio discovery")
 	}
 
+	keyName := response.Data[0].TokenName
 	group := response.Data[0].Group
 	other := make(map[string]any)
 	if err := common.UnmarshalJsonStr(response.Data[0].Other, &other); err != nil {
-		return group, 0, false, fmt.Errorf("decode upstream log ratio: %w", err)
+		return keyName, group, 0, false, fmt.Errorf("decode upstream log ratio: %w", err)
 	}
 	ratio, ok := other["group_ratio"].(float64)
 	if !ok || ratio < 0 {
-		return group, 0, false, errors.New("upstream log did not include group_ratio")
+		return keyName, group, 0, false, errors.New("upstream log did not include group_ratio")
 	}
-	return group, ratio, true, nil
+	return keyName, group, ratio, true, nil
+}
+
+func fetchChannelProfitNewAPIMetadata(
+	ctx context.Context,
+	client *http.Client,
+	baseURL string,
+	accessToken string,
+	keys []*channelProfitGroupKey,
+) (map[string]channelProfitNewAPIKeyMetadata, map[string]float64, error) {
+	keysByMask := make(map[string][]*channelProfitGroupKey, len(keys)*2)
+	for _, key := range keys {
+		masks := []string{
+			model.MaskTokenKey(key.Value),
+			model.MaskTokenKey(strings.TrimPrefix(key.Value, "sk-")),
+		}
+		for _, mask := range masks {
+			if mask == "" {
+				continue
+			}
+			alreadyAdded := false
+			for _, existing := range keysByMask[mask] {
+				if existing.Fingerprint == key.Fingerprint {
+					alreadyAdded = true
+					break
+				}
+			}
+			if !alreadyAdded {
+				keysByMask[mask] = append(keysByMask[mask], key)
+			}
+		}
+	}
+
+	metadataByKey := make(map[string]channelProfitNewAPIKeyMetadata, len(keys))
+	for page := 1; ; page++ {
+		query := url.Values{}
+		query.Set("p", strconv.Itoa(page))
+		query.Set("size", strconv.Itoa(channelProfitNewAPITokenPageSize))
+		response := channelProfitNewAPITokenListResponse{}
+		if err := fetchChannelProfitJSON(ctx, client, baseURL+"/api/token/?"+query.Encode(), accessToken, &response); err != nil {
+			return nil, nil, fmt.Errorf("fetch upstream API keys: %w", err)
+		}
+		if !response.Success {
+			return nil, nil, fmt.Errorf("fetch upstream API keys: %s", response.Message)
+		}
+		for _, item := range response.Data.Items {
+			matched := keysByMask[item.Key]
+			if len(matched) > 1 {
+				return nil, nil, fmt.Errorf("multiple local API keys share upstream mask %s", item.Key)
+			}
+			if len(matched) == 0 {
+				continue
+			}
+			key := matched[0]
+			metadata := channelProfitNewAPIKeyMetadata{
+				Name:  strings.TrimSpace(item.Name),
+				Group: strings.TrimSpace(item.Group),
+			}
+			if metadata.Name == "" {
+				return nil, nil, fmt.Errorf("upstream API key %s has no name", item.Key)
+			}
+			if existing, ok := metadataByKey[key.Fingerprint]; ok && existing != metadata {
+				return nil, nil, fmt.Errorf("upstream API key mask %s matched multiple token records", item.Key)
+			}
+			metadataByKey[key.Fingerprint] = metadata
+		}
+		pageSize := response.Data.PageSize
+		if pageSize <= 0 {
+			pageSize = channelProfitNewAPITokenPageSize
+		}
+		if page*pageSize >= response.Data.Total || len(response.Data.Items) == 0 {
+			break
+		}
+	}
+	if len(metadataByKey) != len(keys) {
+		return nil, nil, fmt.Errorf("upstream access token matched %d of %d local API keys", len(metadataByKey), len(keys))
+	}
+	nameOwner := make(map[string]string, len(metadataByKey))
+	for fingerprint, metadata := range metadataByKey {
+		if owner, exists := nameOwner[metadata.Name]; exists && owner != fingerprint {
+			return nil, nil, fmt.Errorf("upstream API key name %q is duplicated and cannot be billed independently", metadata.Name)
+		}
+		nameOwner[metadata.Name] = fingerprint
+	}
+
+	groupResponse := channelProfitNewAPIGroupResponse{}
+	if err := fetchChannelProfitJSON(ctx, client, baseURL+"/api/user/self/groups", accessToken, &groupResponse); err != nil {
+		return nil, nil, fmt.Errorf("fetch upstream group ratios: %w", err)
+	}
+	if !groupResponse.Success {
+		return nil, nil, fmt.Errorf("fetch upstream group ratios: %s", groupResponse.Message)
+	}
+	groupRatios := make(map[string]float64, len(groupResponse.Data))
+	for name, item := range groupResponse.Data {
+		var ratio float64
+		switch value := item.Ratio.(type) {
+		case float64:
+			ratio = value
+		case string:
+			parsed, parseErr := strconv.ParseFloat(value, 64)
+			if parseErr != nil {
+				continue
+			}
+			ratio = parsed
+		default:
+			continue
+		}
+		if ratio >= 0 && !math.IsNaN(ratio) && !math.IsInf(ratio, 0) {
+			groupRatios[name] = ratio
+		}
+	}
+	return metadataByKey, groupRatios, nil
+}
+
+func fetchChannelProfitNewAPIExactCost(
+	ctx context.Context,
+	client *http.Client,
+	baseURL string,
+	accessToken string,
+	tokenName string,
+	usageDate string,
+	quotaPerUnit float64,
+) (float64, error) {
+	date, err := time.ParseInLocation("2006-01-02", usageDate, time.Local)
+	if err != nil {
+		return 0, err
+	}
+	query := url.Values{}
+	query.Set("start_timestamp", strconv.FormatInt(date.Unix(), 10))
+	query.Set("end_timestamp", strconv.FormatInt(date.AddDate(0, 0, 1).Unix()-1, 10))
+	query.Set("token_name", tokenName)
+	response := channelProfitNewAPIStatResponse{}
+	if err := fetchChannelProfitJSON(ctx, client, baseURL+"/api/log/self/stat?"+query.Encode(), accessToken, &response); err != nil {
+		return 0, err
+	}
+	if !response.Success {
+		return 0, errors.New(response.Message)
+	}
+	if response.Data.Quota < 0 || quotaPerUnit <= 0 {
+		return 0, errors.New("upstream returned invalid daily quota data")
+	}
+	return float64(response.Data.Quota) / quotaPerUnit, nil
 }
 
 func fetchChannelProfitSub2APIUsage(
@@ -819,7 +1299,7 @@ func fetchChannelProfitSub2APIUsage(
 	baseURL string,
 	key string,
 	usageDate string,
-) (float64, error) {
+) (channelProfitSub2APIUsage, error) {
 	query := url.Values{}
 	query.Set("days", strconv.Itoa(channelProfitUsageDays))
 	if timezone := time.Local.String(); timezone != "" && timezone != "Local" {
@@ -828,7 +1308,7 @@ func fetchChannelProfitSub2APIUsage(
 	targetURL := baseURL + "/v1/usage?" + query.Encode()
 	response := channelProfitSub2APIUsageResponse{}
 	if err := fetchChannelProfitJSON(ctx, client, targetURL, key, &response); err != nil {
-		return 0, err
+		return channelProfitSub2APIUsage{}, err
 	}
 	if response.DailyUsage != nil {
 		for _, usage := range *response.DailyUsage {
@@ -836,21 +1316,21 @@ func fetchChannelProfitSub2APIUsage(
 				continue
 			}
 			if usage.ActualCost < 0 || math.IsNaN(usage.ActualCost) || math.IsInf(usage.ActualCost, 0) {
-				return 0, errors.New("Sub2API returned an invalid daily actual_cost")
+				return channelProfitSub2APIUsage{}, errors.New("Sub2API returned an invalid daily actual_cost")
 			}
-			return usage.ActualCost, nil
+			return channelProfitSub2APIUsage{CostUSD: usage.ActualCost, PlanName: response.PlanName}, nil
 		}
-		return 0, nil
+		return channelProfitSub2APIUsage{PlanName: response.PlanName}, nil
 	}
 	if usageDate == time.Now().In(time.Local).Format("2006-01-02") &&
 		response.Usage != nil && response.Usage.Today != nil && response.Usage.Today.ActualCost != nil {
 		cost := *response.Usage.Today.ActualCost
 		if cost < 0 || math.IsNaN(cost) || math.IsInf(cost, 0) {
-			return 0, errors.New("Sub2API returned an invalid today actual_cost")
+			return channelProfitSub2APIUsage{}, errors.New("Sub2API returned an invalid today actual_cost")
 		}
-		return cost, nil
+		return channelProfitSub2APIUsage{CostUSD: cost, PlanName: response.PlanName}, nil
 	}
-	return 0, errors.New("upstream usage response did not include Sub2API daily usage")
+	return channelProfitSub2APIUsage{}, errors.New("upstream usage response did not include Sub2API daily usage")
 }
 
 func fetchChannelProfitSub2APIGroup(ctx context.Context, client *http.Client, baseURL string, key string) (string, float64, bool, error) {
