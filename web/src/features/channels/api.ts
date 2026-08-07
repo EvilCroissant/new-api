@@ -132,7 +132,7 @@ export async function updateChannel(
   data: Partial<Channel>
 ): Promise<{ success: boolean; message?: string; data?: Channel }> {
   const res = await api.put(
-    '/api/channel/',
+    '/api/channel',
     { id, ...data },
     channelActionConfig()
   )

@@ -827,6 +827,7 @@ func buildChannelProfitGroupRow(group *channelProfitGroup, quotaByChannel map[in
 		}
 		if snapshot == nil {
 			row.CostAvailable = false
+			row.Partial = true
 			row.Keys = append(row.Keys, key)
 			continue
 		}
@@ -851,6 +852,7 @@ func buildChannelProfitGroupRow(group *channelProfitGroup, quotaByChannel map[in
 		}
 		if !costAvailable {
 			row.CostAvailable = false
+			row.Partial = true
 		}
 		key.KeyHint = snapshot.KeyHint
 		key.KeyName = snapshot.UpstreamKeyName
@@ -897,8 +899,7 @@ func buildChannelProfitGroupRow(group *channelProfitGroup, quotaByChannel map[in
 	if len(snapshotByKey) == 0 {
 		row.Status = "pending"
 		row.Partial = true
-	}
-	if row.Status == "synced" && row.Partial {
+	} else if row.Status != "error" && row.Partial {
 		row.Status = "partial"
 	}
 	row.ProfitAvailable = row.CostAvailable

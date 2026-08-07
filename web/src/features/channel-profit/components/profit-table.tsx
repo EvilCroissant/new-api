@@ -107,6 +107,16 @@ function ProfitSubRows({ row }: { row: ChannelProfitRow }) {
             aria-label={t('Synchronized')}
           />
         )
+        if (!key.cost_available) {
+          statusContent = (
+            <Badge
+              variant='warning'
+              className='h-4 px-1.5 py-0 text-[10px] font-normal'
+            >
+              {t('Partial data')}
+            </Badge>
+          )
+        }
         if (key.partial) {
           statusContent = (
             <Badge
