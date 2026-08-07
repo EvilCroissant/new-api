@@ -42,8 +42,12 @@ export type ChannelProfitKey = {
   upstream_group: string
   upstream_group_ratio: number
   ratio_available: boolean
+  revenue_usd: number
+  revenue_available: boolean
   cost_usd: number
   cost_available: boolean
+  profit_usd: number
+  profit_available: boolean
   partial: boolean
   last_synced_at: number
   last_error: string

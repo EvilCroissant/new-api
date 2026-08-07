@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 
-import { useState } from 'react'
+import { type FormEvent, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
@@ -52,125 +52,152 @@ export function ProfitSettingsDialog(props: ProfitSettingsDialogProps) {
   const [accessTokenChanged, setAccessTokenChanged] = useState(false)
 
   const parsedInterval = Number(syncInterval)
-  const intervalValid =
+  const isIntervalValid =
     Number.isInteger(parsedInterval) &&
     parsedInterval >= 1 &&
     parsedInterval <= 10080
 
-  const handleSave = async () => {
-    if (!intervalValid) return
+  const isDisplayNameValid = displayName.trim().length > 0
+  const isFormValid = isIntervalValid && isDisplayNameValid
+
+  const handleSubmit = async (event: FormEvent) => {
+    event.preventDefault()
+    if (!isFormValid || props.saving) return
+
     const input: ChannelProfitConfigInput = {
       display_name: displayName.trim(),
       sync_interval_minutes: parsedInterval,
     }
+
     if (accessTokenChanged) {
       input.access_token = accessToken.trim()
     }
+
     await props.onSave(props.row.channel_id, input)
     props.onClose()
   }
 
   return (
-    <Dialog open onOpenChange={(open) => !open && props.onClose()}>
-      <DialogContent className='sm:max-w-md'>
-        <DialogHeader>
-          <DialogTitle>{t('Profit monitoring settings')}</DialogTitle>
-          <DialogDescription className='truncate font-mono text-xs'>
-            {props.row.base_url}
-          </DialogDescription>
-        </DialogHeader>
-        <FieldGroup>
-          <Field>
-            <FieldLabel htmlFor='profit-display-name'>
-              {t('Display name')}
-            </FieldLabel>
-            <Input
-              id='profit-display-name'
-              value={displayName}
-              maxLength={100}
-              onChange={(event) => setDisplayName(event.target.value)}
-              disabled={props.saving}
-            />
-          </Field>
-          <Field data-invalid={!intervalValid}>
-            <FieldLabel htmlFor='profit-sync-interval'>
-              {t('Automatic sync interval')}
-            </FieldLabel>
-            <div className='flex items-center gap-2'>
-              <Input
-                id='profit-sync-interval'
-                type='number'
-                min={1}
-                max={10080}
-                step={1}
-                value={syncInterval}
-                onChange={(event) => setSyncInterval(event.target.value)}
-                aria-invalid={!intervalValid}
-                disabled={props.saving}
-              />
-              <span className='text-muted-foreground shrink-0 text-sm'>
-                {t('minutes')}
-              </span>
-            </div>
-          </Field>
-          {props.row.provider === 'new_api' && (
-            <Field>
-              <FieldLabel htmlFor='profit-access-token'>
-                {t('Access token')}
+    <Dialog
+      open
+      onOpenChange={(open) => !open && !props.saving && props.onClose()}
+    >
+      <DialogContent className='rounded-xl sm:max-w-md'>
+        <form onSubmit={(e) => void handleSubmit(e)}>
+          <DialogHeader>
+            <DialogTitle className='text-base font-semibold'>
+              {t('Profit monitoring settings')}
+            </DialogTitle>
+            <DialogDescription className='text-muted-foreground/80 mt-1 truncate font-mono text-xs'>
+              {props.row.base_url}
+            </DialogDescription>
+          </DialogHeader>
+
+          <FieldGroup className='my-4 space-y-3.5'>
+            <Field data-invalid={!isDisplayNameValid}>
+              <FieldLabel
+                htmlFor='profit-display-name'
+                className='text-xs font-medium'
+              >
+                {t('Display name')}
               </FieldLabel>
               <Input
-                id='profit-access-token'
-                type='password'
-                value={accessToken}
-                placeholder={
-                  props.row.access_token_configured && !accessTokenChanged
-                    ? t('Access token configured')
-                    : t('Enter access token')
-                }
-                onChange={(event) => {
-                  setAccessToken(event.target.value)
-                  setAccessTokenChanged(true)
-                }}
+                id='profit-display-name'
+                value={displayName}
+                maxLength={100}
+                onChange={(event) => setDisplayName(event.target.value)}
                 disabled={props.saving}
+                aria-invalid={!isDisplayNameValid}
+                required
               />
-              {props.row.access_token_configured && !accessTokenChanged && (
-                <Button
-                  type='button'
-                  variant='link'
-                  size='xs'
-                  className='h-auto px-0'
-                  onClick={() => {
-                    setAccessToken('')
+            </Field>
+
+            <Field data-invalid={!isIntervalValid}>
+              <FieldLabel
+                htmlFor='profit-sync-interval'
+                className='text-xs font-medium'
+              >
+                {t('Automatic sync interval')}
+              </FieldLabel>
+              <div className='flex items-center gap-2'>
+                <Input
+                  id='profit-sync-interval'
+                  type='number'
+                  min={1}
+                  max={10080}
+                  step={1}
+                  value={syncInterval}
+                  onChange={(event) => setSyncInterval(event.target.value)}
+                  aria-invalid={!isIntervalValid}
+                  disabled={props.saving}
+                  required
+                />
+                <span className='text-muted-foreground shrink-0 text-xs'>
+                  {t('minutes')}
+                </span>
+              </div>
+            </Field>
+
+            {props.row.provider === 'new_api' && (
+              <Field>
+                <FieldLabel
+                  htmlFor='profit-access-token'
+                  className='text-xs font-medium'
+                >
+                  {t('Access token')}
+                </FieldLabel>
+                <Input
+                  id='profit-access-token'
+                  type='password'
+                  value={accessToken}
+                  autoComplete='off'
+                  placeholder={
+                    props.row.access_token_configured && !accessTokenChanged
+                      ? t('Access token configured')
+                      : t('Enter access token')
+                  }
+                  onChange={(event) => {
+                    setAccessToken(event.target.value)
                     setAccessTokenChanged(true)
                   }}
                   disabled={props.saving}
-                >
-                  {t('Clear access token')}
-                </Button>
-              )}
-            </Field>
-          )}
-        </FieldGroup>
-        <DialogFooter>
-          <Button
-            type='button'
-            variant='outline'
-            onClick={props.onClose}
-            disabled={props.saving}
-          >
-            {t('Cancel')}
-          </Button>
-          <Button
-            type='button'
-            onClick={() => void handleSave()}
-            disabled={props.saving || !intervalValid}
-          >
-            {props.saving && (
-              <Spinner data-icon='inline-start' aria-label={t('Loading')} />
+                />
+                {props.row.access_token_configured && !accessTokenChanged && (
+                  <Button
+                    type='button'
+                    variant='link'
+                    size='xs'
+                    className='text-muted-foreground hover:text-foreground mt-1 h-auto px-0 text-[11px]'
+                    onClick={() => {
+                      setAccessToken('')
+                      setAccessTokenChanged(true)
+                    }}
+                    disabled={props.saving}
+                  >
+                    {t('Clear access token')}
+                  </Button>
+                )}
+              </Field>
             )}
-            {t('Save')}
-          </Button>
-        </DialogFooter>
+          </FieldGroup>
+
+          <DialogFooter className='pt-2'>
+            <Button
+              type='button'
+              variant='outline'
+              onClick={props.onClose}
+              disabled={props.saving}
+            >
+              {t('Cancel')}
+            </Button>
+            <Button type='submit' disabled={props.saving || !isFormValid}>
+              {props.saving && (
+                <Spinner data-icon='inline-start' aria-label={t('Loading')} />
+              )}
+              {t('Save')}
+            </Button>
+          </DialogFooter>
+        </form>
       </DialogContent>
     </Dialog>
   )

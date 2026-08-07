@@ -18,7 +18,6 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { flexRender, type Cell, type Table } from '@tanstack/react-table'
 import { Database } from 'lucide-react'
-import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import {
@@ -41,16 +40,15 @@ import { cn } from '@/lib/utils'
 
 import { LOG_TYPE_ENUM } from '../constants'
 import type { UsageLog } from '../data/schema'
-import { getUpstreamTimingAttempts, parseLogOther } from '../lib/format'
+import { parseLogOther } from '../lib/format'
 import {
   getLogTypeConfig,
   isDisplayableLogType,
   isTimingLogType,
 } from '../lib/utils'
 import type { LogCategory } from '../types'
-import { TimingDetailsDialog } from './dialogs/timing-details-dialog'
 import { StreamTpsCell, TimingMetricsCell } from './timing-metrics-cell'
-import { useLogsViewScope, useUsageLogsContext } from './usage-logs-provider'
+import { useUsageLogsContext } from './usage-logs-provider'
 
 const logTypeRowTint: Record<number, string> = {
   [LOG_TYPE_ENUM.ERROR]:
@@ -281,13 +279,9 @@ function MobileUserField({ log }: { log: UsageLog }) {
 
 /** Merge stream badge + TPS with first-token / duration on one row. */
 function MobileStreamTimingField({ log }: { log: UsageLog }) {
-  const { t } = useTranslation()
-  const { isAdminView: isAdmin } = useLogsViewScope()
-  const [dialogOpen, setDialogOpen] = useState(false)
   if (!isTimingLogType(log.type)) return null
 
   const other = parseLogOther(log.other)
-  const hasTimingDetails = isAdmin && getUpstreamTimingAttempts(log).length > 0
   const useTime = log.use_time || 0
   const tokensPerSecond =
     useTime > 0 && log.completion_tokens > 0
@@ -295,33 +289,22 @@ function MobileStreamTimingField({ log }: { log: UsageLog }) {
       : null
 
   return (
-    <>
-      <div className='bg-muted/20 flex min-w-0 items-center gap-2.5 rounded-md px-2 py-1.5'>
-        <TimingMetricsCell
-          useTimeSec={useTime}
-          completionTokens={log.completion_tokens}
-          frtMs={other?.frt}
-          isStream={log.is_stream}
-          indicator='dot'
-          className='min-w-0 flex-1'
-          onClick={hasTimingDetails ? () => setDialogOpen(true) : undefined}
-          ariaLabel={hasTimingDetails ? t('View timing details') : undefined}
-        />
-        <StreamTpsCell
-          isStream={log.is_stream}
-          tokensPerSecond={tokensPerSecond}
-          streamStatus={other?.stream_status}
-          className='shrink-0'
-        />
-      </div>
-      {hasTimingDetails && (
-        <TimingDetailsDialog
-          log={log}
-          open={dialogOpen}
-          onOpenChange={setDialogOpen}
-        />
-      )}
-    </>
+    <div className='bg-muted/20 flex min-w-0 items-center gap-2.5 rounded-md px-2 py-1.5'>
+      <TimingMetricsCell
+        useTimeSec={useTime}
+        completionTokens={log.completion_tokens}
+        frtMs={other?.frt}
+        isStream={log.is_stream}
+        indicator='dot'
+        className='min-w-0 flex-1'
+      />
+      <StreamTpsCell
+        isStream={log.is_stream}
+        tokensPerSecond={tokensPerSecond}
+        streamStatus={other?.stream_status}
+        className='shrink-0'
+      />
+    </div>
   )
 }
 

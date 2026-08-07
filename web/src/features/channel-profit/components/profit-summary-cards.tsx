@@ -24,6 +24,7 @@ import {
   TrendingUp,
   type LucideIcon,
 } from 'lucide-react'
+import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Card, CardContent } from '@/components/ui/card'
@@ -33,9 +34,12 @@ import { cn } from '@/lib/utils'
 import type { ChannelProfitSummary } from '../types'
 
 type Metric = {
+  id: string
   label: string
   value: string
   icon: LucideIcon
+  iconBg: string
+  iconColor: string
   tone?: string
 }
 
@@ -43,63 +47,89 @@ type ProfitSummaryCardsProps = {
   summary: ChannelProfitSummary
 }
 
-export function ProfitSummaryCards(props: ProfitSummaryCardsProps) {
+export function ProfitSummaryCards({ summary }: ProfitSummaryCardsProps) {
   const { t } = useTranslation()
-  const profitTone =
-    props.summary.profit_available && props.summary.profit_usd < 0
-      ? 'text-destructive'
-      : 'text-emerald-600 dark:text-emerald-400'
-  const metrics: Metric[] = [
-    {
-      label: t('Downstream revenue'),
-      value: formatBillingCurrencyFromUSD(props.summary.revenue_usd),
-      icon: TrendingUp,
-    },
-    {
-      label: t('Upstream cost'),
-      value: props.summary.cost_available
-        ? formatBillingCurrencyFromUSD(props.summary.cost_usd)
-        : '-',
-      icon: ReceiptText,
-    },
-    {
-      label: t('Net profit'),
-      value: props.summary.profit_available
-        ? formatBillingCurrencyFromUSD(props.summary.profit_usd)
-        : '-',
-      icon: BadgeDollarSign,
-      tone: props.summary.profit_available ? profitTone : undefined,
-    },
-    {
-      label: t('Profit margin'),
-      value: props.summary.margin_available
-        ? `${(props.summary.margin * 100).toFixed(2)}%`
-        : '-',
-      icon: CirclePercent,
-      tone: props.summary.margin_available ? profitTone : undefined,
-    },
-  ]
+
+  const metrics = useMemo<Metric[]>(() => {
+    const profitTone =
+      summary.profit_available && summary.profit_usd < 0
+        ? 'text-destructive'
+        : 'text-emerald-600 dark:text-emerald-400'
+
+    return [
+      {
+        id: 'revenue',
+        label: t('Downstream revenue'),
+        value: formatBillingCurrencyFromUSD(summary.revenue_usd),
+        icon: TrendingUp,
+        iconBg: 'bg-emerald-500/10 dark:bg-emerald-500/15',
+        iconColor: 'text-emerald-600 dark:text-emerald-400',
+      },
+      {
+        id: 'cost',
+        label: t('Upstream cost'),
+        value: summary.cost_available
+          ? formatBillingCurrencyFromUSD(summary.cost_usd)
+          : '-',
+        icon: ReceiptText,
+        iconBg: 'bg-amber-500/10 dark:bg-amber-500/15',
+        iconColor: 'text-amber-600 dark:text-amber-400',
+      },
+      {
+        id: 'profit',
+        label: t('Net profit'),
+        value: summary.profit_available
+          ? formatBillingCurrencyFromUSD(summary.profit_usd)
+          : '-',
+        icon: BadgeDollarSign,
+        iconBg: 'bg-blue-500/10 dark:bg-blue-500/15',
+        iconColor: 'text-blue-600 dark:text-blue-400',
+        tone: summary.profit_available ? profitTone : undefined,
+      },
+      {
+        id: 'margin',
+        label: t('Profit margin'),
+        value: summary.margin_available
+          ? `${(summary.margin * 100).toFixed(2)}%`
+          : '-',
+        icon: CirclePercent,
+        iconBg: 'bg-indigo-500/10 dark:bg-indigo-500/15',
+        iconColor: 'text-indigo-600 dark:text-indigo-400',
+        tone: summary.margin_available ? profitTone : undefined,
+      },
+    ]
+  }, [summary, t])
 
   return (
     <div className='grid gap-3 sm:grid-cols-2 xl:grid-cols-4'>
       {metrics.map((metric) => (
-        <Card key={metric.label} size='sm' className='rounded-lg shadow-xs'>
-          <CardContent className='flex min-h-20 items-center justify-between gap-4'>
+        <Card
+          key={metric.id}
+          size='sm'
+          className='bg-card hover:border-foreground/15 rounded-xl border shadow-xs transition-all duration-200 hover:shadow-md'
+        >
+          <CardContent className='flex min-h-20 items-center justify-between gap-4 p-4'>
             <div className='min-w-0'>
-              <p className='text-muted-foreground truncate text-xs'>
+              <p className='text-muted-foreground truncate text-xs font-medium'>
                 {metric.label}
               </p>
               <p
                 className={cn(
-                  'mt-1 truncate text-xl font-semibold tabular-nums',
+                  'mt-1 truncate text-2xl font-bold tabular-nums tracking-tight text-foreground',
                   metric.tone
                 )}
               >
                 {metric.value}
               </p>
             </div>
-            <span className='bg-muted text-muted-foreground flex size-9 shrink-0 items-center justify-center rounded-md'>
-              <metric.icon className='size-4' aria-hidden='true' />
+            <span
+              className={cn(
+                'flex size-10 shrink-0 items-center justify-center rounded-xl transition-colors',
+                metric.iconBg,
+                metric.iconColor
+              )}
+            >
+              <metric.icon className='size-5' aria-hidden='true' />
             </span>
           </CardContent>
         </Card>

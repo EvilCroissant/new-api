@@ -50,7 +50,6 @@ import {
   Info,
   LogIn,
 } from 'lucide-react'
-import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Dialog } from '@/components/dialog'
@@ -71,7 +70,6 @@ import {
   parseAuditLine,
   decodeBillingExprB64,
   getTieredBillingSummary,
-  getUpstreamTimingAttempts,
   hasAnyCacheTokens,
   isViolationFeeLog,
   getFirstResponseTimeColor,
@@ -84,7 +82,6 @@ import {
   isTimingLogType,
 } from '../../lib/utils'
 import { USAGE_BILLING_PATH, type LogOtherData } from '../../types'
-import { TimingDetailsDialog } from './timing-details-dialog'
 
 // Maps a channel-update changed-field token (as recorded by the backend audit)
 // to its i18n label key for display in the audit details.
@@ -502,9 +499,6 @@ export function DetailsDialog(props: DetailsDialogProps) {
   const showAdminIp =
     !!props.log.ip && (showTiming || (props.isAdmin && isTopup))
   const adminInfo = other?.admin_info
-  const [timingDialogOpen, setTimingDialogOpen] = useState(false)
-  const hasTimingDetails =
-    props.isAdmin && getUpstreamTimingAttempts(props.log).length > 0
   const topupAuditFields =
     isTopup && props.isAdmin && adminInfo
       ? ([
@@ -734,24 +728,7 @@ export function DetailsDialog(props: DetailsDialogProps) {
           )}
 
           {showTiming && props.log.use_time > 0 && (
-            <DetailRow
-              label={t('Response Time')}
-              value={
-                hasTimingDetails ? (
-                  <button
-                    type='button'
-                    className='hover:bg-muted/50 focus-visible:ring-ring cursor-pointer rounded-sm text-left transition-colors focus-visible:ring-2 focus-visible:outline-none'
-                    onClick={() => setTimingDialogOpen(true)}
-                    title={t('View timing details')}
-                    aria-label={t('View timing details')}
-                  >
-                    {responseTimeDisplay}
-                  </button>
-                ) : (
-                  responseTimeDisplay
-                )
-              }
-            />
+            <DetailRow label={t('Response Time')} value={responseTimeDisplay} />
           )}
         </div>
 
@@ -1267,13 +1244,6 @@ export function DetailsDialog(props: DetailsDialogProps) {
           </div>
         )}
       </div>
-      {hasTimingDetails && (
-        <TimingDetailsDialog
-          log={props.log}
-          open={timingDialogOpen}
-          onOpenChange={setTimingDialogOpen}
-        />
-      )}
     </Dialog>
   )
 }

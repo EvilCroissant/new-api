@@ -96,35 +96,6 @@ export interface ChannelAffinityInfo {
   using_group?: string
 }
 
-export interface UpstreamTimingAttempt {
-  retry_index?: number
-  channel_id?: number
-  body_bytes?: number
-  conn_reused?: boolean
-  conn_idle_ms?: number
-  conn_acquire_ms?: number
-  dns_ms?: number
-  dial_ms?: number
-  tls_handshake_ms?: number
-  upload_ms?: number
-  response_header_wait_ms?: number
-  first_byte_ms?: number
-  header_to_first_sse_ms?: number
-  upstream_first_sse_ms?: number
-  stream_end_ms?: number
-  downstream_first_event_ms?: number
-  downstream_end_ms?: number
-  upstream_to_downstream_first_ms?: number
-  upstream_to_downstream_end_ms?: number
-  status_code?: number
-  write_error?: string
-  error?: string
-}
-
-export interface UpstreamTimingInfo {
-  attempts?: UpstreamTimingAttempt[]
-}
-
 export const USAGE_BILLING_PATH = {
   LOCAL: 'local',
   UPSTREAM: 'upstream',
@@ -153,7 +124,6 @@ export interface LogOtherData {
     local_count_tokens?: boolean
     usage_billing_path?: UsageBillingPath | string
     channel_affinity?: ChannelAffinityInfo
-    upstream_timing?: UpstreamTimingInfo
     // Top-up audit fields (type=1, admin only)
     payment_method?: string
     callback_payment_method?: string

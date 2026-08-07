@@ -50,8 +50,12 @@ type ChannelProfitKeySummary struct {
 	UpstreamGroup         string                    `json:"upstream_group"`
 	UpstreamGroupRatio    float64                   `json:"upstream_group_ratio"`
 	RatioAvailable        bool                      `json:"ratio_available"`
+	RevenueUSD            float64                   `json:"revenue_usd"`
+	RevenueAvailable      bool                      `json:"revenue_available"`
 	CostUSD               float64                   `json:"cost_usd"`
 	CostAvailable         bool                      `json:"cost_available"`
+	ProfitUSD             float64                   `json:"profit_usd"`
+	ProfitAvailable       bool                      `json:"profit_available"`
 	Partial               bool                      `json:"partial"`
 	LastSyncedAt          int64                     `json:"last_synced_at"`
 	LastError             string                    `json:"last_error"`
@@ -672,13 +676,11 @@ func GetChannelProfitSummary(usageDate string, includeDisabled bool) (*ChannelPr
 		if !group.Enabled && !includeDisabled {
 			continue
 		}
-		revenueQuota := int64(0)
 		groupSnapshots := make([]*model.ChannelProfitSnapshot, 0)
 		for _, channel := range group.Channels {
-			revenueQuota += quotaByChannel[channel.Id]
 			groupSnapshots = append(groupSnapshots, snapshotsByChannel[channel.Id]...)
 		}
-		row := buildChannelProfitGroupRow(group, revenueQuota, groupSnapshots)
+		row := buildChannelProfitGroupRow(group, quotaByChannel, groupSnapshots)
 		summary.Rows = append(summary.Rows, row)
 		if !group.Enabled {
 			continue
@@ -709,12 +711,14 @@ func GetChannelProfitSummary(usageDate string, includeDisabled bool) (*ChannelPr
 	return summary, nil
 }
 
-func buildChannelProfitGroupRow(group *channelProfitGroup, revenueQuota int64, snapshots []*model.ChannelProfitSnapshot) ChannelProfitRow {
+func buildChannelProfitGroupRow(group *channelProfitGroup, quotaByChannel map[int]int64, snapshots []*model.ChannelProfitSnapshot) ChannelProfitRow {
 	channelIds := make([]int, 0, len(group.Channels))
 	channelNames := make([]string, 0, len(group.Channels))
+	revenueQuota := int64(0)
 	for _, channel := range group.Channels {
 		channelIds = append(channelIds, channel.Id)
 		channelNames = append(channelNames, channel.Name)
+		revenueQuota += quotaByChannel[channel.Id]
 	}
 	row := ChannelProfitRow{
 		GroupId:               group.Id,
@@ -766,18 +770,37 @@ func buildChannelProfitGroupRow(group *channelProfitGroup, revenueQuota int64, s
 
 	row.CostAvailable = group.Enabled && len(group.Keys) > 0
 	row.Status = "synced"
+	keyCountByChannel := make(map[int]int, len(group.Channels))
+	for _, groupKey := range group.Keys {
+		for _, channelId := range groupKey.ChannelIds {
+			keyCountByChannel[channelId]++
+		}
+	}
 	for _, groupKey := range group.Keys {
 		snapshot := snapshotByKey[groupKey.Fingerprint]
 		keyId := groupKey.Fingerprint
 		if len(keyId) > 12 {
 			keyId = keyId[:12]
 		}
+		keyRevenueQuota := int64(0)
+		keyRevenueAvailable := true
+		for _, channelId := range groupKey.ChannelIds {
+			if keyCountByChannel[channelId] != 1 {
+				keyRevenueAvailable = false
+				break
+			}
+			keyRevenueQuota += quotaByChannel[channelId]
+		}
 		key := ChannelProfitKeySummary{
-			KeyId:           keyId,
-			KeyHint:         model.MaskTokenKey(groupKey.Value),
-			ChannelIds:      append([]int(nil), groupKey.ChannelIds...),
-			ChannelNames:    append([]string(nil), groupKey.ChannelNames...),
-			DownstreamRates: make([]ChannelProfitGroupRatio, 0),
+			KeyId:            keyId,
+			KeyHint:          model.MaskTokenKey(groupKey.Value),
+			ChannelIds:       append([]int(nil), groupKey.ChannelIds...),
+			ChannelNames:     append([]string(nil), groupKey.ChannelNames...),
+			DownstreamRates:  make([]ChannelProfitGroupRatio, 0),
+			RevenueAvailable: keyRevenueAvailable,
+		}
+		if keyRevenueAvailable {
+			key.RevenueUSD = float64(keyRevenueQuota) / common.QuotaPerUnit
 		}
 		keyRateByGroup := make(map[string]float64)
 		for _, channelId := range groupKey.ChannelIds {
@@ -840,6 +863,10 @@ func buildChannelProfitGroupRow(group *channelProfitGroup, revenueQuota int64, s
 		key.RatioAvailable = snapshot.RatioAvailable
 		key.CostUSD = cost
 		key.CostAvailable = costAvailable
+		key.ProfitAvailable = key.RevenueAvailable && key.CostAvailable
+		if key.ProfitAvailable {
+			key.ProfitUSD = key.RevenueUSD - key.CostUSD
+		}
 		key.Partial = snapshot.Partial
 		key.LastSyncedAt = snapshot.LastSyncedAt
 		key.LastError = snapshot.LastError

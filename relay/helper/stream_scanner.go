@@ -201,7 +201,6 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	wg.Add(1)
 	gopool.Go(func() {
 		defer func() {
-			info.MarkDownstreamEnd(time.Now())
 			if r := recover(); r != nil {
 				logger.LogError(c, fmt.Sprintf("data handler goroutine panic: %v", r))
 				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonPanic, fmt.Errorf("handler panic: %v", r))
@@ -220,7 +219,6 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 				dataHandler(data, sr)
 			}()
 			if !firstEventCompleted {
-				info.MarkDownstreamFirstEvent(time.Now())
 				firstEventCompleted = true
 			}
 			if sr.IsStopped() {
@@ -270,7 +268,6 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 			}
 			if !strings.HasPrefix(data, "[DONE]") {
 				info.SetFirstResponseTime()
-				info.MarkUpstreamFirstSSE(time.Now())
 				info.ReceivedResponseCount++
 
 				select {
@@ -281,7 +278,6 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 					return
 				}
 			} else {
-				info.MarkUpstreamStreamEnd(time.Now())
 				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonDone, nil)
 				logger.LogDebug(c, "received [DONE], stopping scanner")
 				return
@@ -294,7 +290,6 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonScannerErr, err)
 			}
 		}
-		info.MarkUpstreamStreamEnd(time.Now())
 		info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonEOF, nil)
 	})
 
