@@ -1,7 +1,9 @@
+import { Gift } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Skeleton } from '@/components/ui/skeleton'
 import {
   Table,
   TableBody,
@@ -19,6 +21,13 @@ type ReferralRewardsTableProps = {
   loading: boolean
   onPageChange: (page: number) => void
 }
+
+const LOADING_ROW_IDS = [
+  'referral-reward-loading-1',
+  'referral-reward-loading-2',
+  'referral-reward-loading-3',
+  'referral-reward-loading-4',
+] as const
 
 function formatRate(rateBps: number): string {
   return `${(rateBps / 100).toLocaleString(undefined, {
@@ -41,69 +50,91 @@ export function ReferralRewardsTable(props: ReferralRewardsTableProps) {
   const hasPrevious = currentPage > 1
   const hasNext = currentPage * pageSize < total
 
+  if (props.loading) {
+    return (
+      <div className='space-y-2 py-2'>
+        {LOADING_ROW_IDS.map((rowId) => (
+          <Skeleton key={rowId} className='h-12 w-full rounded-lg' />
+        ))}
+      </div>
+    )
+  }
+
+  if (rewards.length === 0) {
+    return (
+      <div className='flex flex-col items-center justify-center py-12 text-center'>
+        <div className='bg-muted/50 text-muted-foreground/60 mb-3 rounded-full p-3.5'>
+          <Gift className='h-6 w-6' aria-hidden='true' />
+        </div>
+        <p className='text-muted-foreground text-sm font-medium'>
+          {t('No referral rewards yet')}
+        </p>
+        <p className='text-muted-foreground/60 mt-1 max-w-sm text-balance text-xs'>
+          {t(
+            'Share your invite link. Rewards will automatically appear here after invited users top up.'
+          )}
+        </p>
+      </div>
+    )
+  }
+
   return (
     <div className='space-y-3'>
-      <Table>
+      <Table className='min-w-[720px] table-fixed'>
         <TableHeader>
           <TableRow>
-            <TableHead>{t('Time')}</TableHead>
-            <TableHead>{t('Source')}</TableHead>
-            <TableHead className='text-right'>{t('Qualified Credit')}</TableHead>
-            <TableHead className='text-right'>{t('Reward Rate')}</TableHead>
-            <TableHead className='text-right'>{t('Reward')}</TableHead>
-            <TableHead className='text-right'>{t('Status')}</TableHead>
+            <TableHead className='w-[22%]'>{t('Time')}</TableHead>
+            <TableHead className='w-[16%]'>{t('Type')}</TableHead>
+            <TableHead className='w-[18%] text-right'>
+              {t('Recharge Amount')}
+            </TableHead>
+            <TableHead className='w-[14%] text-right'>
+              {t('Rate')}
+            </TableHead>
+            <TableHead className='w-[15%] text-right'>
+              {t('Commission')}
+            </TableHead>
+            <TableHead className='w-[15%] text-center'>
+              {t('Status')}
+            </TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
-          {props.loading ? (
-            <TableRow>
-              <TableCell colSpan={6} className='text-muted-foreground h-28 text-center'>
-                {t('Loading...')}
+          {rewards.map((reward) => (
+            <TableRow key={reward.id}>
+              <TableCell className='text-muted-foreground truncate font-mono text-xs'>
+                {formatTimestamp(reward.issued_at)}
+              </TableCell>
+              <TableCell className='truncate text-xs'>
+                {getSourceLabel(reward, t)}
+              </TableCell>
+              <TableCell className='truncate text-right font-mono text-xs tabular-nums'>
+                {formatQuota(reward.base_quota)}
+              </TableCell>
+              <TableCell className='text-muted-foreground truncate text-right font-mono text-xs tabular-nums'>
+                {formatRate(reward.reward_rate_bps)}
+              </TableCell>
+              <TableCell className='truncate text-right font-mono text-xs tabular-nums'>
+                +{formatQuota(reward.reward_quota)}
+              </TableCell>
+              <TableCell className='text-center'>
+                <Badge
+                  variant={reward.status === 'issued' ? 'outline' : 'warning'}
+                  className={
+                    reward.status === 'issued'
+                      ? 'border-success/40 bg-success/10 text-success'
+                      : undefined
+                  }
+                >
+                  {reward.status === 'issued' ? t('Issued') : t('Reversed')}
+                </Badge>
               </TableCell>
             </TableRow>
-          ) : null}
-          {!props.loading && rewards.length === 0 ? (
-            <TableRow>
-              <TableCell colSpan={6} className='text-muted-foreground h-28 text-center'>
-                {t('No referral rewards yet')}
-              </TableCell>
-            </TableRow>
-          ) : null}
-          {!props.loading
-            ? rewards.map((reward) => (
-                <TableRow key={reward.id}>
-                  <TableCell className='text-muted-foreground text-xs'>
-                    {formatTimestamp(reward.issued_at)}
-                  </TableCell>
-                  <TableCell>{getSourceLabel(reward, t)}</TableCell>
-                  <TableCell className='text-right'>
-                    {formatQuota(reward.base_quota)}
-                  </TableCell>
-                  <TableCell className='text-right'>
-                    {formatRate(reward.reward_rate_bps)}
-                  </TableCell>
-                  <TableCell className='text-right font-medium'>
-                    {formatQuota(reward.reward_quota)}
-                  </TableCell>
-                  <TableCell className='text-right'>
-                    <Badge
-                      variant={reward.status === 'issued' ? 'outline' : 'warning'}
-                      className={
-                        reward.status === 'issued'
-                          ? 'border-success/40 bg-success/10 text-success'
-                          : undefined
-                      }
-                    >
-                      {reward.status === 'issued' ? t('Issued') : t('Reversed')}
-                    </Badge>
-                  </TableCell>
-                </TableRow>
-              ))
-            : null}
+          ))}
         </TableBody>
       </Table>
       {total > pageSize ? (
-        <div className='flex items-center justify-end gap-2'>
+        <div className='flex items-center justify-end gap-2 pt-2'>
           <Button
             type='button'
             variant='outline'

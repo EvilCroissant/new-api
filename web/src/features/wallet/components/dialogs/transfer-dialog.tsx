@@ -27,12 +27,8 @@ import { Label } from '@/components/ui/label'
 import {
   formatQuota,
   parseQuotaFromDollars,
-  quotaUnitsToDollars,
+  quotaUnitsToEditableAmount,
 } from '@/lib/format'
-import {
-  DEFAULT_CURRENCY_CONFIG,
-  useSystemConfigStore,
-} from '@/stores/system-config-store'
 
 interface TransferDialogProps {
   open: boolean
@@ -50,27 +46,37 @@ export function TransferDialog({
   transferring,
 }: TransferDialogProps) {
   const { t } = useTranslation()
-  const currencyConfig = useSystemConfigStore((state) => state.config.currency)
-  const minimumQuota = Math.ceil(
-    currencyConfig.quotaPerUnit > 0
-      ? currencyConfig.quotaPerUnit
-      : DEFAULT_CURRENCY_CONFIG.quotaPerUnit
-  )
-  const minimumAmount = quotaUnitsToDollars(minimumQuota)
-  const maximumAmount = quotaUnitsToDollars(availableQuota)
-  const [amount, setAmount] = useState(minimumAmount)
-  const transferQuota = parseQuotaFromDollars(amount)
+  const maximumAmount = quotaUnitsToEditableAmount(availableQuota)
+  const [amount, setAmount] = useState('')
+  const [transferAll, setTransferAll] = useState(false)
+  const parsedAmount = Number(amount)
+  const transferQuota = transferAll
+    ? availableQuota
+    : parseQuotaFromDollars(parsedAmount)
   const canTransfer =
-    Number.isFinite(amount) &&
-    transferQuota >= minimumQuota &&
+    amount !== '' &&
+    Number.isFinite(parsedAmount) &&
+    transferQuota > 0 &&
     transferQuota <= availableQuota
 
   useEffect(() => {
     if (open) {
       // eslint-disable-next-line react-hooks/set-state-in-effect
-      setAmount(minimumAmount)
+      setAmount('')
+      setTransferAll(false)
     }
-  }, [minimumAmount, open])
+  }, [open])
+
+  const handleAmountChange = (value: string) => {
+    if (!/^\d*(?:\.\d*)?$/.test(value)) return
+    setAmount(value)
+    setTransferAll(false)
+  }
+
+  const handleTransferAll = () => {
+    setAmount(String(maximumAmount))
+    setTransferAll(true)
+  }
 
   const handleConfirm = async () => {
     if (!canTransfer) return
@@ -128,19 +134,26 @@ export function TransferDialog({
           >
             {t('Transfer Amount')}
           </Label>
-          <Input
-            id='transfer-amount'
-            type='number'
-            value={amount}
-            onChange={(e) => setAmount(Number(e.target.value))}
-            min={minimumAmount}
-            max={maximumAmount}
-            step={minimumAmount}
-            className='font-mono text-lg'
-          />
-          <p className='text-muted-foreground text-xs'>
-            {t('Minimum:')} {formatQuota(minimumQuota)}
-          </p>
+          <div className='flex items-center gap-2'>
+            <Input
+              id='transfer-amount'
+              type='text'
+              inputMode='decimal'
+              value={amount}
+              onChange={(event) => handleAmountChange(event.target.value)}
+              className='font-mono text-lg'
+            />
+            <Button
+              type='button'
+              variant={transferAll ? 'secondary' : 'outline'}
+              onClick={handleTransferAll}
+              disabled={transferring || availableQuota <= 0}
+              aria-pressed={transferAll}
+              className='shrink-0'
+            >
+              {t('All')}
+            </Button>
+          </div>
         </div>
       </div>
     </Dialog>

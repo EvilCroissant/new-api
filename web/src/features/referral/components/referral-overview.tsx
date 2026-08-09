@@ -41,24 +41,44 @@ export function ReferralOverview(props: ReferralOverviewProps) {
   if (!summary) return null
 
   const stats = [
-    [t('Invited Users'), String(summary.aff_count)],
-    [t('Referral Rate'), formatRewardRate(summary.reward_rate_percent)],
-    [t('Total Rewards'), formatQuota(summary.aff_history_quota)],
-    [t('Available Rewards'), formatQuota(summary.aff_quota)],
-    [t('Transferred to Balance'), formatQuota(summary.transferred_quota)],
+    {
+      id: 'invited',
+      label: t('Invited Users'),
+      value: String(summary.aff_count),
+    },
+    {
+      id: 'rate',
+      label: t('Referral Rate'),
+      value: formatRewardRate(summary.reward_rate_percent),
+    },
+    {
+      id: 'total',
+      label: t('Total Rewards'),
+      value: formatQuota(summary.aff_history_quota),
+    },
+    {
+      id: 'available',
+      label: t('Available Rewards'),
+      value: formatQuota(summary.aff_quota),
+    },
+    {
+      id: 'transferred',
+      label: t('Transferred to Balance'),
+      value: formatQuota(summary.transferred_quota),
+    },
   ]
 
   return (
     <div className='space-y-4'>
       <div className='grid gap-3 sm:grid-cols-2 xl:grid-cols-5'>
-        {stats.map(([label, value]) => (
-          <Card key={label} data-card-hover='false' className='gap-0 py-0'>
+        {stats.map((stat) => (
+          <Card key={stat.id} data-card-hover='false' className='gap-0 py-0'>
             <CardContent className='p-4'>
               <p className='text-muted-foreground text-xs font-medium'>
-                {label}
+                {stat.label}
               </p>
               <p className='mt-2 truncate text-xl font-semibold tabular-nums'>
-                {value}
+                {stat.value}
               </p>
             </CardContent>
           </Card>
@@ -93,41 +113,31 @@ export function ReferralOverview(props: ReferralOverviewProps) {
             )}
           </p>
         </CardHeader>
-        <CardContent className='grid gap-3 p-4 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end sm:p-5'>
-          <div className='space-y-2'>
-            <p className='text-muted-foreground text-xs font-medium'>
-              {t('Invitation Code')}
-            </p>
-            <div className='flex gap-2'>
-              <Input value={summary.aff_code} readOnly className='font-mono' />
-              <CopyButton
-                value={summary.aff_code}
-                variant='outline'
-                className='shrink-0'
-                tooltip={t('Copy invitation code')}
-                aria-label={t('Copy invitation code')}
-              />
-            </div>
-          </div>
-          <div className='flex gap-2 sm:justify-end'>
+        <CardContent className='flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:p-5'>
+          <div className='flex min-w-0 flex-1 items-center gap-2'>
+            <Input
+              value={props.referralLink}
+              readOnly
+              className='min-w-0 font-mono text-xs'
+              aria-label={t('Your referral link')}
+            />
             <CopyButton
               value={props.referralLink}
               variant='outline'
-              className='flex-1 sm:flex-none'
+              size='icon'
+              className='shrink-0'
               tooltip={t('Copy referral link')}
               aria-label={t('Copy referral link')}
-            >
-              {t('Copy referral link')}
-            </CopyButton>
-            <Button
-              type='button'
-              className='flex-1 sm:flex-none'
-              onClick={props.onTransfer}
-              disabled={summary.aff_quota <= 0 || !summary.compliance_confirmed}
-            >
-              {t('Transfer to Balance')}
-            </Button>
+            />
           </div>
+          <Button
+            type='button'
+            className='w-full shrink-0 whitespace-nowrap sm:w-auto'
+            onClick={props.onTransfer}
+            disabled={summary.aff_quota <= 0 || !summary.compliance_confirmed}
+          >
+            {t('Transfer to Balance')}
+          </Button>
         </CardContent>
       </Card>
     </div>
