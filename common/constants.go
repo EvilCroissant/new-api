@@ -122,8 +122,10 @@ var TelegramBotToken = ""
 var TelegramBotName = ""
 
 var QuotaForNewUser = 0
-var QuotaForInviter = 0
-var QuotaForInvitee = 0
+
+// InvitationRewardRateBps is the inviter rebate rate in basis points.
+// 10000 basis points equals 100%.
+var InvitationRewardRateBps = 0
 var ChannelDisableThreshold = 5.0
 var AutomaticDisableChannelEnabled = false
 var AutomaticEnableChannelEnabled = false

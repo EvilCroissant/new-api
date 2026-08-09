@@ -128,6 +128,10 @@ export function SidebarModulesSection({
         title: t('Profile'),
         description: t('Personal settings and profile management.'),
       },
+      referral: {
+        title: t('Referral Program'),
+        description: t('Referral link, rewards, and reward activity.'),
+      },
     },
     admin: {
       channel: {

@@ -142,11 +142,19 @@ func UpdateOption(c *gin.Context) {
 		option.Value = fmt.Sprintf("%v", option.Value)
 	}
 	switch option.Key {
-	case "QuotaForInviter", "QuotaForInvitee":
-		if isPositiveOptionValue(option.Value.(string)) && !operation_setting.IsPaymentComplianceConfirmed() {
+	case "InvitationRewardRateBps":
+		rateBps, parseErr := strconv.Atoi(strings.TrimSpace(option.Value.(string)))
+		if parseErr != nil || rateBps < 0 || rateBps > 10000 {
+			common.ApiErrorMsg(c, "邀请返利比例必须在 0% 到 100% 之间")
+			return
+		}
+		if rateBps > 0 && !operation_setting.IsPaymentComplianceConfirmed() {
 			common.ApiErrorI18n(c, i18n.MsgPaymentComplianceRequired)
 			return
 		}
+	case "QuotaForInviter", "QuotaForInvitee":
+		common.ApiErrorMsg(c, "旧邀请奖励设置已移除，请使用邀请返利比例")
+		return
 	default:
 		if isPaymentComplianceOptionKey(option.Key) {
 			common.ApiErrorMsg(c, "合规确认字段不允许通过通用设置接口修改")

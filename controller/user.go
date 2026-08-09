@@ -460,22 +460,45 @@ func GetAffCode(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	if user.AffCode == "" {
-		user.AffCode = common.GetRandomString(4)
-		if err := user.Update(false); err != nil {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": err.Error(),
-			})
-			return
-		}
+	affCode, err := model.EnsureAffiliateCode(id)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	transferredQuota := user.AffHistoryQuota - user.AffQuota
+	if transferredQuota < 0 {
+		transferredQuota = 0
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
-		"data":    user.AffCode,
+		"data": gin.H{
+			"aff_code":             affCode,
+			"aff_count":            user.AffCount,
+			"aff_quota":            user.AffQuota,
+			"aff_history_quota":    user.AffHistoryQuota,
+			"transferred_quota":    transferredQuota,
+			"reward_rate_bps":      common.InvitationRewardRateBps,
+			"reward_rate_percent":  float64(common.InvitationRewardRateBps) / 100,
+			"compliance_confirmed": operation_setting.IsPaymentComplianceConfirmed(),
+		},
 	})
-	return
+}
+
+func GetAffRewards(c *gin.Context) {
+	pageInfo := common.GetPageQuery(c)
+	rewards, total, err := model.GetReferralRewards(c.GetInt("id"), pageInfo)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	pageInfo.SetTotal(int(total))
+	pageInfo.SetItems(rewards)
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "",
+		"data":    pageInfo,
+	})
 }
 
 func GetSelf(c *gin.Context) {

@@ -34,6 +34,7 @@ import {
   User,
   Users,
   Wallet,
+  Gift,
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
@@ -113,6 +114,11 @@ export function useSidebarData(): SidebarData {
             title: t('Profile'),
             url: '/profile',
             icon: User,
+          },
+          {
+            title: t('Referral Program'),
+            url: '/referral',
+            icon: Gift,
           },
         ],
       },

@@ -72,6 +72,11 @@ func createRootAccountIfNeed() error {
 			AccessToken: nil,
 			Quota:       100000000,
 		}
+		affCode, err := generateAffiliateCode(DB)
+		if err != nil {
+			return err
+		}
+		rootUser.AffCode = affCode
 		DB.Create(&rootUser)
 	}
 	return nil
@@ -264,6 +269,7 @@ func migrateDB() error {
 		&ChannelProfitSnapshot{},
 		&Token{},
 		&User{},
+		&ReferralReward{},
 		&UserSession{},
 		&AuthFlow{},
 		&ExternalIdentityClaim{},
@@ -304,6 +310,12 @@ func migrateDB() error {
 	if err := InitializeExternalIdentityClaims(); err != nil {
 		return err
 	}
+	if err := MigrateAffiliateCodes(); err != nil {
+		return err
+	}
+	if err := MigrateInvitationRewardOptions(); err != nil {
+		return err
+	}
 	if common.UsingMainDatabase(common.DatabaseTypeSQLite) {
 		if err := ensureSubscriptionPlanTableSQLite(); err != nil {
 			return err
@@ -329,6 +341,7 @@ func migrateDBFast() error {
 		{&ChannelProfitSnapshot{}, "ChannelProfitSnapshot"},
 		{&Token{}, "Token"},
 		{&User{}, "User"},
+		{&ReferralReward{}, "ReferralReward"},
 		{&UserSession{}, "UserSession"},
 		{&AuthFlow{}, "AuthFlow"},
 		{&ExternalIdentityClaim{}, "ExternalIdentityClaim"},
@@ -385,6 +398,12 @@ func migrateDBFast() error {
 		return err
 	}
 	if err := InitializeExternalIdentityClaims(); err != nil {
+		return err
+	}
+	if err := MigrateAffiliateCodes(); err != nil {
+		return err
+	}
+	if err := MigrateInvitationRewardOptions(); err != nil {
 		return err
 	}
 	if common.UsingMainDatabase(common.DatabaseTypeSQLite) {

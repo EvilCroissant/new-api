@@ -120,6 +120,11 @@ export function SidebarModulesCard() {
           title: t('Personal Settings'),
           description: t('Personal info settings'),
         },
+        {
+          key: 'referral',
+          title: t('Referral Program'),
+          description: t('Invitation link and reward activity'),
+        },
       ],
     },
   ]

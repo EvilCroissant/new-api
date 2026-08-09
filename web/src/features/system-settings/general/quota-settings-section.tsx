@@ -53,8 +53,7 @@ import { useUpdateOption } from '../hooks/use-update-option'
 const quotaSchema = z.object({
   QuotaForNewUser: z.coerce.number().min(0),
   PreConsumedQuota: z.coerce.number().min(0),
-  QuotaForInviter: z.coerce.number().min(0),
-  QuotaForInvitee: z.coerce.number().min(0),
+  InvitationRewardRatePercent: z.coerce.number().min(0).max(100),
   TopUpLink: z.string(),
   general_setting: z.object({
     docs_link: z.string(),
@@ -99,9 +98,17 @@ export function QuotaSettingsSection({
       defaultValues,
       onSubmit: async (_data, changedFields) => {
         for (const [key, value] of Object.entries(changedFields)) {
+          const optionKey =
+            key === 'InvitationRewardRatePercent'
+              ? 'InvitationRewardRateBps'
+              : key
+          const optionValue =
+            key === 'InvitationRewardRatePercent'
+              ? Math.round(Number(value) * 100)
+              : value
           await updateOption.mutateAsync({
-            key,
-            value: value as string | number | boolean,
+            key: optionKey,
+            value: optionValue as string | number | boolean,
           })
         }
       },
@@ -184,13 +191,16 @@ export function QuotaSettingsSection({
 
             <FormField
               control={form.control}
-              name='QuotaForInviter'
+              name='InvitationRewardRatePercent'
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>{t('Inviter Reward')}</FormLabel>
+                  <FormLabel>{t('Referral Reward Rate')}</FormLabel>
                   <FormControl>
                     <Input
                       type='number'
+                      min='0'
+                      max='100'
+                      step='0.01'
                       value={field.value ?? ''}
                       onChange={handleNumberChange(field.onChange)}
                       name={field.name}
@@ -200,37 +210,8 @@ export function QuotaSettingsSection({
                   </FormControl>
                   <FormDescription>
                     {t(
-                      'Quota given to users who invite others ({{formattedQuota}})',
-                      {
-                        formattedQuota: formatQuotaInputValue(field.value),
-                      }
+                      'Inviters receive this percentage of an invited user’s eligible top-up or redemption credit.'
                     )}
-                  </FormDescription>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            <FormField
-              control={form.control}
-              name='QuotaForInvitee'
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>{t('Invitee Reward')}</FormLabel>
-                  <FormControl>
-                    <Input
-                      type='number'
-                      value={field.value ?? ''}
-                      onChange={handleNumberChange(field.onChange)}
-                      name={field.name}
-                      onBlur={field.onBlur}
-                      ref={field.ref}
-                    />
-                  </FormControl>
-                  <FormDescription>
-                    {t('Quota given to invited users ({{formattedQuota}})', {
-                      formattedQuota: formatQuotaInputValue(field.value),
-                    })}
                   </FormDescription>
                   <FormMessage />
                 </FormItem>

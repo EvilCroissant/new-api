@@ -54,6 +54,7 @@ const DEFAULT_SIDEBAR_MODULES: SidebarModulesAdminConfig = {
     enabled: true,
     topup: true,
     personal: true,
+    referral: true,
   },
   admin: {
     enabled: true,
@@ -108,6 +109,7 @@ const URL_TO_CONFIG_MAP: Record<string, { section: string; module: string }> = {
   '/usage-logs/task': { section: 'console', module: 'task' },
   '/wallet': { section: 'personal', module: 'topup' },
   '/profile': { section: 'personal', module: 'personal' },
+  '/referral': { section: 'personal', module: 'referral' },
   '/channels': { section: 'admin', module: 'channel' },
   '/profit': { section: 'admin', module: 'profit' },
   '/models': { section: 'admin', module: 'models' },
