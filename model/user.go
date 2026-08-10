@@ -100,6 +100,7 @@ type User struct {
 	AffQuota         int                        `json:"aff_quota" gorm:"type:int;default:0;column:aff_quota"`           // 邀请剩余额度
 	AffHistoryQuota  int                        `json:"aff_history_quota" gorm:"type:int;default:0;column:aff_history"` // 邀请历史额度
 	InviterId        int                        `json:"inviter_id" gorm:"type:int;column:inviter_id;index"`
+	InviterName      string                     `json:"inviter_name,omitempty" gorm:"-:all"`
 	DeletedAt        gorm.DeletedAt             `gorm:"index"`
 	LinuxDOId        string                     `json:"linux_do_id" gorm:"column:linux_do_id;index"`
 	Setting          string                     `json:"setting" gorm:"type:text;column:setting"`
@@ -388,6 +389,10 @@ func GetAllUsers(pageInfo *common.PageInfo, sortOptions ...UserSortOptions) (use
 		tx.Rollback()
 		return nil, 0, err
 	}
+	if err = populateInviterNames(tx, users); err != nil {
+		tx.Rollback()
+		return nil, 0, err
+	}
 
 	// Commit transaction
 	if err = tx.Commit().Error; err != nil {
@@ -457,6 +462,10 @@ func SearchUsers(keyword string, group string, role *int, status *int, startIdx 
 		tx.Rollback()
 		return nil, 0, err
 	}
+	if err = populateInviterNames(tx, users); err != nil {
+		tx.Rollback()
+		return nil, 0, err
+	}
 
 	// 提交事务
 	if err = tx.Commit().Error; err != nil {
@@ -464,6 +473,38 @@ func SearchUsers(keyword string, group string, role *int, status *int, startIdx 
 	}
 
 	return users, total, nil
+}
+
+// 为管理员用户列表批量补齐邀请人名称，避免逐行查询。
+func populateInviterNames(tx *gorm.DB, users []*User) error {
+	inviterIds := make([]int, 0, len(users))
+	seen := make(map[int]struct{}, len(users))
+	for _, user := range users {
+		if user.InviterId <= 0 {
+			continue
+		}
+		if _, exists := seen[user.InviterId]; exists {
+			continue
+		}
+		seen[user.InviterId] = struct{}{}
+		inviterIds = append(inviterIds, user.InviterId)
+	}
+	if len(inviterIds) == 0 {
+		return nil
+	}
+
+	var inviters []User
+	if err := tx.Unscoped().Select("id", "username").Where("id IN ?", inviterIds).Find(&inviters).Error; err != nil {
+		return err
+	}
+	inviterNames := make(map[int]string, len(inviters))
+	for _, inviter := range inviters {
+		inviterNames[inviter.Id] = inviter.Username
+	}
+	for _, user := range users {
+		user.InviterName = inviterNames[user.InviterId]
+	}
+	return nil
 }
 
 func GetUserById(id int, selectAll bool) (*User, error) {
