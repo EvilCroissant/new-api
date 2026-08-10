@@ -3,12 +3,14 @@ package model
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
 	"github.com/samber/lo"
 	"gorm.io/gorm"
@@ -228,6 +230,98 @@ func getChannelSkippingPriority(group string, model string, retry int, requestPa
 	}
 	err = DB.First(&channel, "id = ?", channel.Id).Error
 	return &channel, err
+}
+
+func getChannelForRetry(group string, model string, currentPriority int64, remainingRetries int, requestPath string, failedChannelIDs map[int]struct{}) (*Channel, error) {
+	if remainingRetries <= 0 {
+		return nil, nil
+	}
+
+	loadAbilities := func(modelName string) ([]Ability, error) {
+		var abilities []Ability
+		err := DB.
+			Where(&Ability{Group: group, Model: modelName, Enabled: true}).
+			Where("priority <= ?", currentPriority).
+			Order("priority DESC").
+			Order("weight DESC").
+			Find(&abilities).Error
+		if err != nil {
+			return nil, err
+		}
+		return filterAbilitiesByRequestPathAndModel(abilities, requestPath, model), nil
+	}
+
+	abilities, err := loadAbilities(model)
+	if err != nil {
+		return nil, err
+	}
+	if len(abilities) == 0 {
+		normalizedModel := ratio_setting.FormatMatchingModelName(model)
+		if normalizedModel != model {
+			abilities, err = loadAbilities(normalizedModel)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	availableAbilities := make([]Ability, 0, len(abilities))
+	prioritySet := make(map[int64]struct{})
+	for _, ability := range abilities {
+		if _, failed := failedChannelIDs[ability.ChannelId]; failed {
+			continue
+		}
+		priority := int64(0)
+		if ability.Priority != nil {
+			priority = *ability.Priority
+		}
+		availableAbilities = append(availableAbilities, ability)
+		prioritySet[priority] = struct{}{}
+	}
+	if len(availableAbilities) == 0 {
+		return nil, nil
+	}
+
+	priorities := make([]int64, 0, len(prioritySet))
+	for priority := range prioritySet {
+		priorities = append(priorities, priority)
+	}
+	sort.Slice(priorities, func(i, j int) bool {
+		return priorities[i] > priorities[j]
+	})
+
+	targetPriority := priorities[0]
+	if targetPriority == currentPriority && len(priorities) > 1 && remainingRetries <= len(priorities)-1 {
+		targetPriority = priorities[1]
+	}
+
+	var weightSum uint
+	for _, ability := range availableAbilities {
+		priority := int64(0)
+		if ability.Priority != nil {
+			priority = *ability.Priority
+		}
+		if priority == targetPriority {
+			weightSum += ability.Weight + 10
+		}
+	}
+	weight := common.GetRandomInt(int(weightSum))
+	for _, ability := range availableAbilities {
+		priority := int64(0)
+		if ability.Priority != nil {
+			priority = *ability.Priority
+		}
+		if priority != targetPriority {
+			continue
+		}
+		weight -= int(ability.Weight) + 10
+		if weight <= 0 {
+			channel := Channel{}
+			err = DB.First(&channel, "id = ?", ability.ChannelId).Error
+			return &channel, err
+		}
+	}
+	return nil, errors.New("channel not found")
 }
 
 // filterAbilitiesByRequestPathAndModel restricts candidates by request path and

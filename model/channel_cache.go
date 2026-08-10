@@ -222,6 +222,63 @@ func GetRandomSatisfiedChannelSkippingPriorityAndChannels(group string, model st
 	return randomSatisfiedChannelAtPriority(channels, targetPriority, failedChannelIDs)
 }
 
+// GetRandomSatisfiedChannelForRetry selects an untried channel at or below
+// currentPriority. A downward move always selects the immediately next
+// available priority. It never skips an intermediate priority to reach a
+// lower one before the retry budget runs out.
+func GetRandomSatisfiedChannelForRetry(group string, model string, currentPriority int64, remainingRetries int, requestPath string, failedChannelIDs map[int]struct{}) (*Channel, error) {
+	if remainingRetries <= 0 {
+		return nil, nil
+	}
+	if !common.MemoryCacheEnabled {
+		return getChannelForRetry(group, model, currentPriority, remainingRetries, requestPath, failedChannelIDs)
+	}
+
+	channelSyncLock.RLock()
+	defer channelSyncLock.RUnlock()
+
+	channels := filterChannelsByRequestPathAndModel(group2model2channels[group][model], requestPath, model)
+	if len(channels) == 0 {
+		normalizedModel := ratio_setting.FormatMatchingModelName(model)
+		channels = filterChannelsByRequestPathAndModel(group2model2channels[group][normalizedModel], requestPath, model)
+	}
+
+	availableChannels := make([]int, 0, len(channels))
+	prioritySet := make(map[int64]struct{})
+	for _, channelID := range channels {
+		channel, ok := channelsIDM[channelID]
+		if !ok {
+			return nil, fmt.Errorf("数据库一致性错误，渠道# %d 不存在，请联系管理员修复", channelID)
+		}
+		priority := channel.GetPriority()
+		if priority > currentPriority {
+			continue
+		}
+		if _, failed := failedChannelIDs[channelID]; failed {
+			continue
+		}
+		availableChannels = append(availableChannels, channelID)
+		prioritySet[priority] = struct{}{}
+	}
+	if len(availableChannels) == 0 {
+		return nil, nil
+	}
+
+	priorities := make([]int64, 0, len(prioritySet))
+	for priority := range prioritySet {
+		priorities = append(priorities, priority)
+	}
+	sort.Slice(priorities, func(i, j int) bool {
+		return priorities[i] > priorities[j]
+	})
+
+	targetPriority := priorities[0]
+	if targetPriority == currentPriority && len(priorities) > 1 && remainingRetries <= len(priorities)-1 {
+		targetPriority = priorities[1]
+	}
+	return randomSatisfiedChannelAtPriority(availableChannels, targetPriority, nil)
+}
+
 func randomSatisfiedChannelAtPriority(channels []int, targetPriority int64, failedChannelIDs map[int]struct{}) (*Channel, error) {
 	var targetChannels []*Channel
 	for _, channelID := range channels {

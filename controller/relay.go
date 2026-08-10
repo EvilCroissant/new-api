@@ -241,7 +241,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		if !shouldRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry()) {
 			break
 		}
-		retryParam.MarkChannelFailed(channel.Id)
+		retryParam.MarkChannelFailed(channel)
 	}
 
 	useChannel := c.GetStringSlice("use_channel")
@@ -300,17 +300,15 @@ func fastTokenCountMetaForPricing(request dto.Request) *types.TokenCountMeta {
 
 func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service.RetryParam) (*model.Channel, *types.NewAPIError) {
 	if info.ChannelMeta == nil {
-		autoBan := c.GetBool("auto_ban")
-		autoBanInt := 1
-		if !autoBan {
-			autoBanInt = 0
+		channel, err := model.CacheGetChannel(c.GetInt("channel_id"))
+		if err != nil {
+			return nil, types.NewError(
+				fmt.Errorf("获取当前渠道失败: %w", err),
+				types.ErrorCodeGetChannelFailed,
+				types.ErrOptionWithSkipRetry(),
+			)
 		}
-		return &model.Channel{
-			Id:      c.GetInt("channel_id"),
-			Type:    c.GetInt("channel_type"),
-			Name:    c.GetString("channel_name"),
-			AutoBan: &autoBanInt,
-		}, nil
+		return channel, nil
 	}
 	channel, selectGroup, err := service.CacheGetRandomSatisfiedChannel(retryParam)
 	if err != nil {
@@ -570,7 +568,7 @@ func RelayTask(c *gin.Context) {
 		if !shouldRetryTaskRelay(c, channel.Id, taskErr, common.RetryTimes-retryParam.GetRetry()) {
 			break
 		}
-		retryParam.MarkChannelFailed(channel.Id)
+		retryParam.MarkChannelFailed(channel)
 	}
 
 	useChannel := c.GetStringSlice("use_channel")
