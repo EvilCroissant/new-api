@@ -64,7 +64,7 @@ func runRetryBudgetSequence(t *testing.T, group, modelName string, firstFailedID
 	param.MarkChannelFailed(firstFailed)
 
 	selected := make([]*model.Channel, 0, retryTimes)
-	for retry < retryTimes {
+	for retry <= retryTimes {
 		channel, selectedGroup, err := CacheGetRandomSatisfiedChannel(param)
 		require.NoError(t, err)
 		require.NotNil(t, channel)

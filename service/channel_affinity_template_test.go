@@ -21,6 +21,18 @@ func buildChannelAffinityTemplateContextForTest(meta channelAffinityMeta) *gin.C
 	return ctx
 }
 
+func buildChannelAffinityStateForTest(channelID int, ttl time.Duration) channelAffinityState {
+	versionEpoch, versionSeq := nextChannelAffinityVersion()
+	expiresAt := time.Now().Add(ttl).UnixMilli()
+	return channelAffinityState{
+		ChannelID:     channelID,
+		VersionEpoch:  versionEpoch,
+		VersionSeq:    versionSeq,
+		NextProbeAt:   expiresAt,
+		IdleExpiresAt: expiresAt,
+	}
+}
+
 func TestApplyChannelAffinityOverrideTemplate_NoTemplate(t *testing.T) {
 	ctx := buildChannelAffinityTemplateContextForTest(channelAffinityMeta{
 		RuleName: "rule-no-template",
@@ -208,7 +220,7 @@ func TestGetPreferredChannelByAffinity_RequestHeaderKeySource(t *testing.T) {
 	cacheKeySuffix := buildChannelAffinityCacheKeySuffix(rule, "gpt-5", "default", affinityValue)
 
 	cache := getChannelAffinityCache()
-	require.NoError(t, cache.SetWithTTL(cacheKeySuffix, 9528, time.Minute))
+	require.NoError(t, cache.SetWithTTL(cacheKeySuffix, buildChannelAffinityStateForTest(9528, time.Minute), time.Minute))
 	t.Cleanup(func() {
 		_, _ = cache.DeleteMany([]string{cacheKeySuffix})
 	})
@@ -242,7 +254,8 @@ func TestClearCurrentChannelAffinityCache(t *testing.T) {
 	cacheKeySuffix := fmt.Sprintf("codex cli trace:default:clear-current-%d", time.Now().UnixNano())
 	cacheKeyFull := channelAffinityCacheNamespace + ":" + cacheKeySuffix
 	cache := getChannelAffinityCache()
-	require.NoError(t, cache.SetWithTTL(cacheKeySuffix, 9527, time.Minute))
+	state := buildChannelAffinityStateForTest(9527, time.Minute)
+	require.NoError(t, cache.SetWithTTL(cacheKeySuffix, state, time.Minute))
 	t.Cleanup(func() {
 		_, _ = cache.DeleteMany([]string{cacheKeySuffix})
 	})
@@ -252,6 +265,10 @@ func TestClearCurrentChannelAffinityCache(t *testing.T) {
 		TTLSeconds: 60,
 		RuleName:   "codex cli trace",
 		SkipRetry:  true,
+	})
+	ctx.Set(ginKeyChannelAffinityState, channelAffinityRequestState{
+		State: state,
+		Found: true,
 	})
 	require.True(t, ShouldSkipRetryAfterChannelAffinityFailure(ctx))
 
@@ -283,7 +300,7 @@ func TestChannelAffinityHitCodexTemplatePassHeadersEffective(t *testing.T) {
 	cacheKeySuffix := buildChannelAffinityCacheKeySuffix(*codexRule, "gpt-5", "default", affinityValue)
 
 	cache := getChannelAffinityCache()
-	require.NoError(t, cache.SetWithTTL(cacheKeySuffix, 9527, time.Minute))
+	require.NoError(t, cache.SetWithTTL(cacheKeySuffix, buildChannelAffinityStateForTest(9527, time.Minute), time.Minute))
 	t.Cleanup(func() {
 		_, _ = cache.DeleteMany([]string{cacheKeySuffix})
 	})
