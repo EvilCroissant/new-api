@@ -29,6 +29,9 @@ type ChannelAffinityRule struct {
 
 type ChannelAffinitySetting struct {
 	Enabled                    bool                  `json:"enabled"`
+	FRTOptimizationEnabled     bool                  `json:"frt_optimization_enabled"`
+	FRTConsecutiveSlowLimit    int                   `json:"frt_consecutive_slow_limit"`
+	FRTAllSlowHoldSeconds      int                   `json:"frt_all_slow_hold_seconds"`
 	SwitchOnSuccess            bool                  `json:"switch_on_success"`
 	KeepOnChannelDisabled      bool                  `json:"keep_on_channel_disabled"`
 	MaxEntries                 int                   `json:"max_entries"`
@@ -112,6 +115,9 @@ func buildCodexPassHeaderTemplate() map[string]interface{} {
 
 var channelAffinitySetting = ChannelAffinitySetting{
 	Enabled:                    true,
+	FRTOptimizationEnabled:     false,
+	FRTConsecutiveSlowLimit:    2,
+	FRTAllSlowHoldSeconds:      300,
 	SwitchOnSuccess:            true,
 	KeepOnChannelDisabled:      false,
 	MaxEntries:                 100_000,

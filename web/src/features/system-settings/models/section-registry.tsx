@@ -153,6 +153,12 @@ const MODELS_SECTIONS = [
         defaultValues={{
           'channel_affinity_setting.enabled':
             settings['channel_affinity_setting.enabled'],
+          'channel_affinity_setting.frt_optimization_enabled':
+            settings['channel_affinity_setting.frt_optimization_enabled'],
+          'channel_affinity_setting.frt_consecutive_slow_limit':
+            settings['channel_affinity_setting.frt_consecutive_slow_limit'],
+          'channel_affinity_setting.frt_all_slow_hold_seconds':
+            settings['channel_affinity_setting.frt_all_slow_hold_seconds'],
           'channel_affinity_setting.switch_on_success':
             settings['channel_affinity_setting.switch_on_success'],
           'channel_affinity_setting.keep_on_channel_disabled':

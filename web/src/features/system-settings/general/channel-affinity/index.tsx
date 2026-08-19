@@ -129,6 +129,15 @@ export function ChannelAffinitySection(props: Props) {
   const [enabled, setEnabled] = useState(
     props.defaultValues['channel_affinity_setting.enabled']
   )
+  const [frtOptimizationEnabled, setFRTOptimizationEnabled] = useState(
+    props.defaultValues['channel_affinity_setting.frt_optimization_enabled']
+  )
+  const [frtConsecutiveSlowLimit, setFRTConsecutiveSlowLimit] = useState(
+    props.defaultValues['channel_affinity_setting.frt_consecutive_slow_limit']
+  )
+  const [frtAllSlowHoldSeconds, setFRTAllSlowHoldSeconds] = useState(
+    props.defaultValues['channel_affinity_setting.frt_all_slow_hold_seconds']
+  )
   const [switchOnSuccess, setSwitchOnSuccess] = useState(
     props.defaultValues['channel_affinity_setting.switch_on_success']
   )
@@ -173,6 +182,15 @@ export function ChannelAffinitySection(props: Props) {
 
   useEffect(() => {
     setEnabled(props.defaultValues['channel_affinity_setting.enabled'])
+    setFRTOptimizationEnabled(
+      props.defaultValues['channel_affinity_setting.frt_optimization_enabled']
+    )
+    setFRTConsecutiveSlowLimit(
+      props.defaultValues['channel_affinity_setting.frt_consecutive_slow_limit']
+    )
+    setFRTAllSlowHoldSeconds(
+      props.defaultValues['channel_affinity_setting.frt_all_slow_hold_seconds']
+    )
     setSwitchOnSuccess(
       props.defaultValues['channel_affinity_setting.switch_on_success']
     )
@@ -270,6 +288,37 @@ export function ChannelAffinitySection(props: Props) {
         updates.push({
           key: 'channel_affinity_setting.enabled',
           value: String(enabled),
+        })
+      }
+      if (
+        frtOptimizationEnabled !==
+        props.defaultValues['channel_affinity_setting.frt_optimization_enabled']
+      ) {
+        updates.push({
+          key: 'channel_affinity_setting.frt_optimization_enabled',
+          value: String(frtOptimizationEnabled),
+        })
+      }
+      if (
+        frtConsecutiveSlowLimit !==
+        props.defaultValues[
+          'channel_affinity_setting.frt_consecutive_slow_limit'
+        ]
+      ) {
+        updates.push({
+          key: 'channel_affinity_setting.frt_consecutive_slow_limit',
+          value: String(frtConsecutiveSlowLimit),
+        })
+      }
+      if (
+        frtAllSlowHoldSeconds !==
+        props.defaultValues[
+          'channel_affinity_setting.frt_all_slow_hold_seconds'
+        ]
+      ) {
+        updates.push({
+          key: 'channel_affinity_setting.frt_all_slow_hold_seconds',
+          value: String(frtAllSlowHoldSeconds),
         })
       }
       if (
@@ -441,6 +490,36 @@ export function ChannelAffinitySection(props: Props) {
             label={t('Enable')}
             className='py-0'
           />
+          <SettingsSwitchField
+            checked={frtOptimizationEnabled}
+            onCheckedChange={setFRTOptimizationEnabled}
+            label={t('FRT Optimization')}
+            className='py-0'
+          />
+          <div className='grid gap-1.5'>
+            <Label>{t('FRT consecutive slow limit')}</Label>
+            <Input
+              type='number'
+              min={1}
+              max={10}
+              value={frtConsecutiveSlowLimit}
+              onChange={(e) =>
+                setFRTConsecutiveSlowLimit(Number(e.target.value))
+              }
+            />
+          </div>
+          <div className='grid gap-1.5'>
+            <Label>{t('FRT all-slow hold (seconds)')}</Label>
+            <Input
+              type='number'
+              min={1}
+              max={3600}
+              value={frtAllSlowHoldSeconds}
+              onChange={(e) =>
+                setFRTAllSlowHoldSeconds(Number(e.target.value))
+              }
+            />
+          </div>
           <div className='grid gap-1.5'>
             <Label>{t('Max Entries')}</Label>
             <Input

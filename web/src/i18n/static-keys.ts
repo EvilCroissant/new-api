@@ -214,6 +214,9 @@ export const STATIC_I18N_KEYS = [
 
   // Channel Affinity section
   'Channel Affinity',
+  'FRT Optimization',
+  'FRT consecutive slow limit',
+  'FRT all-slow hold (seconds)',
 
   // Models constants
   'Exact Match',

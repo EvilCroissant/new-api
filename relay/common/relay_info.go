@@ -89,6 +89,7 @@ type RelayInfo struct {
 	UserGroup         string // 用户所在分组
 	TokenUnlimited    bool
 	StartTime         time.Time
+	AttemptStartTime  time.Time
 	FirstResponseTime time.Time
 	isFirstResponse   bool
 	//SendLastReasoningResponse bool
@@ -273,9 +274,9 @@ func (info *RelayInfo) ToString() string {
 	fmt.Fprintf(b, "Token{ Id: %d, Unlimited: %t, Key: ***masked*** }, ", info.TokenId, info.TokenUnlimited)
 
 	// Time info
-	latencyMs := info.FirstResponseTime.Sub(info.StartTime).Milliseconds()
-	fmt.Fprintf(b, "Timing{ Start: %s, FirstResponse: %s, LatencyMs: %d }, ",
-		info.StartTime.Format(time.RFC3339Nano), info.FirstResponseTime.Format(time.RFC3339Nano), latencyMs)
+	frtMs, hasFRT := info.FRTMilliseconds()
+	fmt.Fprintf(b, "Timing{ Start: %s, AttemptStart: %s, FirstResponse: %s, FRTMs: %d, HasFRT: %t }, ",
+		info.StartTime.Format(time.RFC3339Nano), info.AttemptStartTime.Format(time.RFC3339Nano), info.FirstResponseTime.Format(time.RFC3339Nano), frtMs, hasFRT)
 
 	// Audio / realtime
 	if info.InputAudioFormat != "" || info.OutputAudioFormat != "" || len(info.RealtimeTools) > 0 || info.AudioUsage {
@@ -525,8 +526,8 @@ func genBaseRelayInfo(c *gin.Context, request dto.Request) *RelayInfo {
 		RequestHeaders:  cloneRequestHeaders(c),
 		IsStream:        isStream,
 
-		StartTime:         startTime,
-		FirstResponseTime: startTime.Add(-time.Second),
+		StartTime:        startTime,
+		AttemptStartTime: startTime,
 		ThinkingContentInfo: ThinkingContentInfo{
 			IsFirstThinkingContent:  true,
 			SendLastThinkingContent: false,
@@ -839,15 +840,34 @@ func (info *RelayInfo) ConvOptions() *convmeta.Options {
 	return options
 }
 
+func (info *RelayInfo) BeginAttempt() {
+	if info == nil {
+		return
+	}
+	info.AttemptStartTime = time.Now()
+	info.FirstResponseTime = time.Time{}
+	info.isFirstResponse = true
+}
+
 func (info *RelayInfo) SetFirstResponseTime() {
-	if info.isFirstResponse {
+	if info != nil && info.isFirstResponse {
 		info.FirstResponseTime = time.Now()
 		info.isFirstResponse = false
 	}
 }
 
 func (info *RelayInfo) HasSendResponse() bool {
-	return info.FirstResponseTime.After(info.StartTime)
+	if info == nil {
+		return false
+	}
+	return !info.FirstResponseTime.IsZero() && info.FirstResponseTime.After(info.AttemptStartTime)
+}
+
+func (info *RelayInfo) FRTMilliseconds() (int64, bool) {
+	if !info.HasSendResponse() {
+		return 0, false
+	}
+	return info.FirstResponseTime.Sub(info.AttemptStartTime).Milliseconds(), true
 }
 
 type TaskRelayInfo struct {

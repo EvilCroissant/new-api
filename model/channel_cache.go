@@ -150,6 +150,83 @@ func GetRandomSatisfiedChannelAtNextHigherPriority(group string, model string, c
 	return randomSatisfiedChannelAtPriority(channels, targetPriority, nil)
 }
 
+// GetSatisfiedChannelsAtPriority returns enabled channels for the exact model
+// (or its normalized model) at one priority. The result is backed by the
+// existing channel cache and does not issue a database query.
+func GetSatisfiedChannelsAtPriority(group string, model string, priority int64, requestPath string) ([]*Channel, error) {
+	if !common.MemoryCacheEnabled {
+		loadAbilities := func(modelName string) ([]Ability, error) {
+			var abilities []Ability
+			err := DB.Where(commonGroupCol+" = ? and model = ? and enabled = ? and priority = ?", group, modelName, true, priority).
+				Find(&abilities).Error
+			if err != nil {
+				return nil, err
+			}
+			return filterAbilitiesByRequestPathAndModel(abilities, requestPath, model), nil
+		}
+		abilities, err := loadAbilities(model)
+		if err != nil {
+			return nil, err
+		}
+		if len(abilities) == 0 {
+			normalizedModel := ratio_setting.FormatMatchingModelName(model)
+			if normalizedModel != model {
+				abilities, err = loadAbilities(normalizedModel)
+				if err != nil {
+					return nil, err
+				}
+			}
+		}
+		if len(abilities) == 0 {
+			return nil, nil
+		}
+		ids := make([]int, 0, len(abilities))
+		seen := make(map[int]struct{}, len(abilities))
+		for _, ability := range abilities {
+			if _, ok := seen[ability.ChannelId]; ok {
+				continue
+			}
+			seen[ability.ChannelId] = struct{}{}
+			ids = append(ids, ability.ChannelId)
+		}
+		channels, err := GetChannelsByIds(ids)
+		if err != nil {
+			return nil, err
+		}
+		result := make([]*Channel, 0, len(channels))
+		for _, channel := range channels {
+			if channel.Status == common.ChannelStatusEnabled {
+				result = append(result, channel)
+			}
+		}
+		return result, nil
+	}
+
+	channelSyncLock.RLock()
+	defer channelSyncLock.RUnlock()
+
+	channels := filterChannelsByRequestPathAndModel(group2model2channels[group][model], requestPath, model)
+	if len(channels) == 0 {
+		normalizedModel := ratio_setting.FormatMatchingModelName(model)
+		channels = filterChannelsByRequestPathAndModel(group2model2channels[group][normalizedModel], requestPath, model)
+	}
+	if len(channels) == 0 {
+		return nil, nil
+	}
+
+	result := make([]*Channel, 0, len(channels))
+	for _, channelID := range channels {
+		channel, ok := channelsIDM[channelID]
+		if !ok {
+			return nil, fmt.Errorf("数据库一致性错误，渠道# %d 不存在，请联系管理员修复", channelID)
+		}
+		if channel.GetPriority() == priority {
+			result = append(result, channel)
+		}
+	}
+	return result, nil
+}
+
 // GetRandomSatisfiedChannelSkippingPriority keeps the original priority-based
 // retry order while omitting the priority already consumed by an affinity hit.
 func GetRandomSatisfiedChannelSkippingPriority(group string, model string, retry int, requestPath string, skippedPriority *int64) (*Channel, error) {

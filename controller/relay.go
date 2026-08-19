@@ -216,6 +216,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			break
 		}
 		c.Request.Body = io.NopCloser(bodyStorage)
+		relayInfo.BeginAttempt()
 
 		switch relayFormat {
 		case types.RelayFormatOpenAIRealtime:

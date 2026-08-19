@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/binary"
 	"fmt"
 	"hash/fnv"
@@ -40,6 +41,27 @@ type channelAffinityState struct {
 	VersionSeq    uint64
 	NextProbeAt   int64
 	IdleExpiresAt int64
+	FRT           *channelAffinityFRTState
+}
+
+const maxChannelAffinityFRTChannels = 16
+
+type channelAffinityFRTChannelScore struct {
+	ChannelID      int       `json:"channel_id"`
+	BaselineFRTMs  float64   `json:"baseline_frt_ms"`
+	PeakScoreMs    float64   `json:"peak_score_ms"`
+	LastObservedAt int64     `json:"last_observed_at"`
+	RecentFRTMs    []float64 `json:"recent_frt_ms,omitempty"`
+}
+
+type channelAffinityFRTState struct {
+	Group                string                           `json:"group"`
+	Priority             int64                            `json:"priority"`
+	ConsecutiveSlow      int                              `json:"consecutive_slow"`
+	VisitedChannelIDs    []int                            `json:"visited_channel_ids,omitempty"`
+	AllSlowHoldChannelID int                              `json:"all_slow_hold_channel_id,omitempty"`
+	AllSlowHoldUntil     int64                            `json:"all_slow_hold_until,omitempty"`
+	Channels             []channelAffinityFRTChannelScore `json:"channels,omitempty"`
 }
 
 type channelAffinityRequestState struct {
@@ -54,19 +76,27 @@ func (channelAffinityStateCodec) Encode(state channelAffinityState) (string, err
 		state.NextProbeAt <= 0 || state.IdleExpiresAt <= 0 {
 		return "", fmt.Errorf("invalid channel affinity state")
 	}
-	return fmt.Sprintf(
+	encoded := fmt.Sprintf(
 		"%d:%d:%d:%d:%d",
 		state.ChannelID,
 		state.VersionEpoch,
 		state.VersionSeq,
 		state.NextProbeAt,
 		state.IdleExpiresAt,
-	), nil
+	)
+	if state.FRT == nil {
+		return encoded, nil
+	}
+	payload, err := common.Marshal(state.FRT)
+	if err != nil {
+		return "", fmt.Errorf("encode channel affinity frt state: %w", err)
+	}
+	return encoded + ":" + base64.RawURLEncoding.EncodeToString(payload), nil
 }
 
 func (channelAffinityStateCodec) Decode(value string) (channelAffinityState, error) {
-	parts := strings.Split(strings.TrimSpace(value), ":")
-	if len(parts) != 5 {
+	parts := strings.SplitN(strings.TrimSpace(value), ":", 6)
+	if len(parts) < 5 {
 		return channelAffinityState{}, fmt.Errorf("invalid channel affinity state encoding")
 	}
 
@@ -97,6 +127,17 @@ func (channelAffinityStateCodec) Decode(value string) (channelAffinityState, err
 		VersionSeq:    versionSeq,
 		NextProbeAt:   nextProbeAt,
 		IdleExpiresAt: idleExpiresAt,
+	}
+	if len(parts) == 6 && parts[5] != "" {
+		payload, err := base64.RawURLEncoding.DecodeString(parts[5])
+		if err != nil {
+			return channelAffinityState{}, fmt.Errorf("decode channel affinity frt payload: %w", err)
+		}
+		var frt channelAffinityFRTState
+		if err := common.Unmarshal(payload, &frt); err != nil {
+			return channelAffinityState{}, fmt.Errorf("decode channel affinity frt state: %w", err)
+		}
+		state.FRT = &frt
 	}
 	if _, err := (channelAffinityStateCodec{}).Encode(state); err != nil {
 		return channelAffinityState{}, err
@@ -172,11 +213,15 @@ func sameChannelAffinityVersion(left, right channelAffinityState) bool {
 const channelAffinityRefreshScript = `
 local current = redis.call('GET', KEYS[1])
 if not current then return 0 end
-local channel, epoch, sequence, next_probe = string.match(current, '^(-?%d+):(%d+):(%d+):(-?%d+):(-?%d+)$')
+local channel, epoch, sequence, next_probe, idle_expires = string.match(current, '^(-?%d+):(%d+):(%d+):(-?%d+):(-?%d+)$')
+local suffix = ''
+if not channel then
+  channel, epoch, sequence, next_probe, idle_expires, suffix = string.match(current, '^(-?%d+):(%d+):(%d+):(-?%d+):(-?%d+)(:.*)$')
+end
 if not channel or epoch ~= ARGV[1] or sequence ~= ARGV[2] then return 0 end
 local ttl_ms = tonumber(ARGV[4])
 if not ttl_ms or ttl_ms <= 0 then return 0 end
-local updated = channel .. ':' .. epoch .. ':' .. sequence .. ':' .. next_probe .. ':' .. ARGV[3]
+local updated = channel .. ':' .. epoch .. ':' .. sequence .. ':' .. next_probe .. ':' .. ARGV[3] .. (suffix or '')
 redis.call('PSETEX', KEYS[1], ttl_ms, updated)
 return 1
 `
@@ -185,12 +230,16 @@ const channelAffinityClaimProbeScript = `
 local current = redis.call('GET', KEYS[1])
 if not current then return 0 end
 local channel, epoch, sequence, next_probe, idle_expires = string.match(current, '^(-?%d+):(%d+):(%d+):(-?%d+):(-?%d+)$')
+local suffix = ''
+if not channel then
+  channel, epoch, sequence, next_probe, idle_expires, suffix = string.match(current, '^(-?%d+):(%d+):(%d+):(-?%d+):(-?%d+)(:.*)$')
+end
 if not channel or epoch ~= ARGV[1] or sequence ~= ARGV[2] then return 0 end
 local now_ms = tonumber(ARGV[3])
 if not now_ms or tonumber(next_probe) > now_ms then return 0 end
 local ttl_ms = tonumber(idle_expires) - now_ms
 if ttl_ms <= 0 then return 0 end
-local updated = channel .. ':' .. epoch .. ':' .. sequence .. ':' .. ARGV[4] .. ':' .. idle_expires
+local updated = channel .. ':' .. epoch .. ':' .. sequence .. ':' .. ARGV[4] .. ':' .. idle_expires .. (suffix or '')
 redis.call('PSETEX', KEYS[1], ttl_ms, updated)
 return 1
 `
@@ -199,6 +248,9 @@ const channelAffinitySwitchScript = `
 local current = redis.call('GET', KEYS[1])
 if not current then return 0 end
 local _, epoch, sequence = string.match(current, '^(-?%d+):(%d+):(%d+):(-?%d+):(-?%d+)$')
+if not epoch then
+  _, epoch, sequence = string.match(current, '^(-?%d+):(%d+):(%d+):(-?%d+):(-?%d+)(:.*)$')
+end
 if not epoch or epoch ~= ARGV[1] or sequence ~= ARGV[2] then return 0 end
 local ttl_ms = tonumber(ARGV[4])
 if not ttl_ms or ttl_ms <= 0 then return 0 end
@@ -210,6 +262,9 @@ const channelAffinityDeleteScript = `
 local current = redis.call('GET', KEYS[1])
 if not current then return 0 end
 local _, epoch, sequence = string.match(current, '^(-?%d+):(%d+):(%d+):(-?%d+):(-?%d+)$')
+if not epoch then
+  _, epoch, sequence = string.match(current, '^(-?%d+):(%d+):(%d+):(-?%d+):(-?%d+)(:.*)$')
+end
 if not epoch or epoch ~= ARGV[1] or sequence ~= ARGV[2] then return 0 end
 return redis.call('UNLINK', KEYS[1])
 `
