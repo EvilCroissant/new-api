@@ -16,14 +16,22 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-// ============================================================================
-// Wallet Hooks Exports
-// ============================================================================
+import { useQuery } from '@tanstack/react-query'
 
-export * from './use-topup-info'
-export * from './use-topup-link'
-export * from './use-payment'
-export * from './use-redemption'
-export * from './use-creem-payment'
-export * from './use-waffo-payment'
-export * from './use-waffo-pancake-payment'
+import { getTopupInfo } from '../api'
+
+export function useTopupLink(): string | undefined {
+  const { data } = useQuery({
+    queryKey: ['topup-link'],
+    queryFn: async () => {
+      const response = await getTopupInfo()
+      if (!response.success) {
+        throw new Error(response.message)
+      }
+      return response.data?.topup_link?.trim()
+    },
+    staleTime: 5 * 60 * 1000,
+  })
+
+  return data
+}

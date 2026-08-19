@@ -39,6 +39,7 @@ import {
 import { useTranslation } from 'react-i18next'
 
 import type { SidebarData } from '@/components/layout/types'
+import { useTopupLink } from '@/features/wallet/hooks'
 import { ROLE } from '@/lib/roles'
 
 /**
@@ -49,6 +50,7 @@ import { ROLE } from '@/lib/roles'
  */
 export function useSidebarData(): SidebarData {
   const { t } = useTranslation()
+  const topupLink = useTopupLink()
 
   return {
     navGroups: [
@@ -110,6 +112,17 @@ export function useSidebarData(): SidebarData {
             url: '/wallet',
             icon: Wallet,
           },
+          ...(topupLink
+            ? [
+                {
+                  title: t('Recharge'),
+                  url: topupLink,
+                  icon: CreditCard,
+                  external: true,
+                  configUrls: ['/wallet'],
+                },
+              ]
+            : []),
           {
             title: t('Profile'),
             url: '/profile',
