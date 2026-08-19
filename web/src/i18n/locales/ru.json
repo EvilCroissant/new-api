@@ -2140,6 +2140,8 @@
     "FRT all-slow hold (seconds)": "Время фиксации FRT при медленной работе всех каналов (секунды)",
     "FRT consecutive slow limit": "Лимит последовательных медленных FRT-запросов",
     "FRT Optimization": "Оптимизация FRT",
+    "FRT probe cooldown (seconds)": "Задержка между FRT-проверками (секунды)",
+    "FRT probe count": "Число FRT-проверок",
     "Full API Key": "Полный ключ API",
     "Full Base URL (supports": "Полный базовый URL (поддерживает",
     "Full Code": "Полный код",

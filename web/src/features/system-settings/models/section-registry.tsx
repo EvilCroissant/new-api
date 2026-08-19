@@ -155,6 +155,8 @@ const MODELS_SECTIONS = [
         defaultValues={{
           'channel_affinity_setting.enabled':
             settings['channel_affinity_setting.enabled'],
+          'channel_affinity_setting.optimization_enabled':
+            settings['channel_affinity_setting.optimization_enabled'],
           'channel_affinity_setting.frt_optimization_enabled':
             settings['channel_affinity_setting.frt_optimization_enabled'],
           'channel_affinity_setting.frt_consecutive_slow_limit':

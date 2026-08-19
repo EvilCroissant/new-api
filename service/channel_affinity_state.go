@@ -55,13 +55,13 @@ type channelAffinityFRTChannelScore struct {
 }
 
 type channelAffinityFRTState struct {
-	Group                string                           `json:"group"`
-	Priority             int64                            `json:"priority"`
-	ConsecutiveSlow      int                              `json:"consecutive_slow"`
-	VisitedChannelIDs    []int                            `json:"visited_channel_ids,omitempty"`
-	AllSlowHoldChannelID int                              `json:"all_slow_hold_channel_id,omitempty"`
-	AllSlowHoldUntil     int64                            `json:"all_slow_hold_until,omitempty"`
-	Channels             []channelAffinityFRTChannelScore `json:"channels,omitempty"`
+	Group                  string                           `json:"group"`
+	Priority               int64                            `json:"priority"`
+	ProbeCount             int                              `json:"consecutive_slow"`
+	VisitedChannelIDs      []int                            `json:"visited_channel_ids,omitempty"`
+	ProbeCooldownChannelID int                              `json:"all_slow_hold_channel_id,omitempty"`
+	ProbeCooldownUntil     int64                            `json:"all_slow_hold_until,omitempty"`
+	Channels               []channelAffinityFRTChannelScore `json:"channels,omitempty"`
 }
 
 type channelAffinityRequestState struct {

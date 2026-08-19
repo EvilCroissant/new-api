@@ -129,13 +129,16 @@ export function ChannelAffinitySection(props: Props) {
   const [enabled, setEnabled] = useState(
     props.defaultValues['channel_affinity_setting.enabled']
   )
+  const [optimizationEnabled, setOptimizationEnabled] = useState(
+    props.defaultValues['channel_affinity_setting.optimization_enabled']
+  )
   const [frtOptimizationEnabled, setFRTOptimizationEnabled] = useState(
     props.defaultValues['channel_affinity_setting.frt_optimization_enabled']
   )
-  const [frtConsecutiveSlowLimit, setFRTConsecutiveSlowLimit] = useState(
+  const [frtProbeCount, setFRTProbeCount] = useState(
     props.defaultValues['channel_affinity_setting.frt_consecutive_slow_limit']
   )
-  const [frtAllSlowHoldSeconds, setFRTAllSlowHoldSeconds] = useState(
+  const [frtProbeCooldownSeconds, setFRTProbeCooldownSeconds] = useState(
     props.defaultValues['channel_affinity_setting.frt_all_slow_hold_seconds']
   )
   const [switchOnSuccess, setSwitchOnSuccess] = useState(
@@ -182,13 +185,16 @@ export function ChannelAffinitySection(props: Props) {
 
   useEffect(() => {
     setEnabled(props.defaultValues['channel_affinity_setting.enabled'])
+    setOptimizationEnabled(
+      props.defaultValues['channel_affinity_setting.optimization_enabled']
+    )
     setFRTOptimizationEnabled(
       props.defaultValues['channel_affinity_setting.frt_optimization_enabled']
     )
-    setFRTConsecutiveSlowLimit(
+    setFRTProbeCount(
       props.defaultValues['channel_affinity_setting.frt_consecutive_slow_limit']
     )
-    setFRTAllSlowHoldSeconds(
+    setFRTProbeCooldownSeconds(
       props.defaultValues['channel_affinity_setting.frt_all_slow_hold_seconds']
     )
     setSwitchOnSuccess(
@@ -291,6 +297,15 @@ export function ChannelAffinitySection(props: Props) {
         })
       }
       if (
+        optimizationEnabled !==
+        props.defaultValues['channel_affinity_setting.optimization_enabled']
+      ) {
+        updates.push({
+          key: 'channel_affinity_setting.optimization_enabled',
+          value: String(optimizationEnabled),
+        })
+      }
+      if (
         frtOptimizationEnabled !==
         props.defaultValues['channel_affinity_setting.frt_optimization_enabled']
       ) {
@@ -300,25 +315,25 @@ export function ChannelAffinitySection(props: Props) {
         })
       }
       if (
-        frtConsecutiveSlowLimit !==
+        frtProbeCount !==
         props.defaultValues[
           'channel_affinity_setting.frt_consecutive_slow_limit'
         ]
       ) {
         updates.push({
           key: 'channel_affinity_setting.frt_consecutive_slow_limit',
-          value: String(frtConsecutiveSlowLimit),
+          value: String(frtProbeCount),
         })
       }
       if (
-        frtAllSlowHoldSeconds !==
+        frtProbeCooldownSeconds !==
         props.defaultValues[
           'channel_affinity_setting.frt_all_slow_hold_seconds'
         ]
       ) {
         updates.push({
           key: 'channel_affinity_setting.frt_all_slow_hold_seconds',
-          value: String(frtAllSlowHoldSeconds),
+          value: String(frtProbeCooldownSeconds),
         })
       }
       if (
@@ -487,7 +502,13 @@ export function ChannelAffinitySection(props: Props) {
           <SettingsSwitchField
             checked={enabled}
             onCheckedChange={setEnabled}
-            label={t('Enable')}
+            label={t('Channel Affinity')}
+            className='py-0'
+          />
+          <SettingsSwitchField
+            checked={optimizationEnabled}
+            onCheckedChange={setOptimizationEnabled}
+            label={t('Channel Optimization')}
             className='py-0'
           />
           <SettingsSwitchField
@@ -497,26 +518,24 @@ export function ChannelAffinitySection(props: Props) {
             className='py-0'
           />
           <div className='grid gap-1.5'>
-            <Label>{t('FRT consecutive slow limit')}</Label>
+            <Label>{t('FRT probe count')}</Label>
             <Input
               type='number'
               min={1}
               max={10}
-              value={frtConsecutiveSlowLimit}
-              onChange={(e) =>
-                setFRTConsecutiveSlowLimit(Number(e.target.value))
-              }
+              value={frtProbeCount}
+              onChange={(e) => setFRTProbeCount(Number(e.target.value))}
             />
           </div>
           <div className='grid gap-1.5'>
-            <Label>{t('FRT all-slow hold (seconds)')}</Label>
+            <Label>{t('FRT probe cooldown (seconds)')}</Label>
             <Input
               type='number'
               min={1}
               max={3600}
-              value={frtAllSlowHoldSeconds}
+              value={frtProbeCooldownSeconds}
               onChange={(e) =>
-                setFRTAllSlowHoldSeconds(Number(e.target.value))
+                setFRTProbeCooldownSeconds(Number(e.target.value))
               }
             />
           </div>

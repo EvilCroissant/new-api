@@ -2140,6 +2140,8 @@
     "FRT all-slow hold (seconds)": "Thời gian giữ FRT khi tất cả kênh chậm (giây)",
     "FRT consecutive slow limit": "Giới hạn yêu cầu FRT chậm liên tiếp",
     "FRT Optimization": "Tối ưu hóa FRT",
+    "FRT probe cooldown (seconds)": "Thời gian chờ thăm dò FRT (giây)",
+    "FRT probe count": "Số lần thăm dò FRT",
     "Full API Key": "Khóa API đầy đủ",
     "Full Base URL (supports": "URL cơ sở đầy đủ (hỗ trợ",
     "Full Code": "Mã đầy đủ",

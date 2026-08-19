@@ -2140,6 +2140,8 @@
     "FRT all-slow hold (seconds)": "FRT all-slow hold (seconds)",
     "FRT consecutive slow limit": "FRT consecutive slow limit",
     "FRT Optimization": "FRT Optimization",
+    "FRT probe cooldown (seconds)": "FRT probe cooldown (seconds)",
+    "FRT probe count": "FRT probe count",
     "Full API Key": "Full API Key",
     "Full Base URL (supports": "Full Base URL (supports",
     "Full Code": "Full Code",

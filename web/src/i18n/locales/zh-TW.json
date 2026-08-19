@@ -2140,6 +2140,8 @@
     "FRT all-slow hold (seconds)": "FRT 全慢固定時間（秒）",
     "FRT consecutive slow limit": "FRT 連續慢請求次數",
     "FRT Optimization": "FRT 调優",
+    "FRT probe cooldown (seconds)": "FRT 探測冷卻時間（秒）",
+    "FRT probe count": "FRT 探測次數",
     "Full API Key": "完整 API 金鑰",
     "Full Base URL (supports": "完整基礎 URL (支援",
     "Full Code": "完整代碼",

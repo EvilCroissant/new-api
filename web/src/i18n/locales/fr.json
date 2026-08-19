@@ -2140,6 +2140,8 @@
     "FRT all-slow hold (seconds)": "Durée de maintien FRT tout-lent (secondes)",
     "FRT consecutive slow limit": "Seuil de requêtes FRT lentes consécutives",
     "FRT Optimization": "Optimisation FRT",
+    "FRT probe cooldown (seconds)": "Délai de refroidissement des sondes FRT (secondes)",
+    "FRT probe count": "Nombre de sondes FRT",
     "Full API Key": "Clé API complète",
     "Full Base URL (supports": "URL de base complète (prend en charge",
     "Full Code": "Code complet",

@@ -338,6 +338,7 @@ export function ModelMutateDrawer({
       'monitor_setting.channel_test_concurrency': 1,
       'monitor_setting.channel_test_mode': 'scheduled_all',
       'channel_affinity_setting.enabled': false,
+      'channel_affinity_setting.optimization_enabled': true,
       'channel_affinity_setting.frt_optimization_enabled': false,
       'channel_affinity_setting.frt_consecutive_slow_limit': 2,
       'channel_affinity_setting.frt_all_slow_hold_seconds': 300,

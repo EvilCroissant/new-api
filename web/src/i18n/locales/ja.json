@@ -2140,6 +2140,8 @@
     "FRT all-slow hold (seconds)": "FRT 全チャネル低速固定時間（秒）",
     "FRT consecutive slow limit": "FRT連続低速リクエスト回数",
     "FRT Optimization": "FRT 最適化",
+    "FRT probe cooldown (seconds)": "FRT プローブのクールダウン（秒）",
+    "FRT probe count": "FRT プローブ回数",
     "Full API Key": "完全なAPIキー",
     "Full Base URL (supports": "完全なベースURL (サポート",
     "Full Code": "完全なコード",

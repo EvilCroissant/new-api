@@ -49,6 +49,7 @@ export interface CacheStats {
 
 export interface ChannelAffinitySettings {
   'channel_affinity_setting.enabled': boolean
+  'channel_affinity_setting.optimization_enabled': boolean
   'channel_affinity_setting.frt_optimization_enabled': boolean
   'channel_affinity_setting.frt_consecutive_slow_limit': number
   'channel_affinity_setting.frt_all_slow_hold_seconds': number

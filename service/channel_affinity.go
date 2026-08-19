@@ -46,10 +46,10 @@ const (
 	channelAffinityFRTRecentSampleLimit  = 5
 	// Keep unknown channels neutral: slower than a normal channel, but still
 	// eligible when the current affinity channel is persistently congested.
-	channelAffinityFRTColdStartMs = 7_500.0
-	channelAffinityFRTPeakDecay   = 3 * time.Minute
-	channelAffinityFRTStateTTL    = 30 * time.Minute
-	channelAffinityFRTAllSlowHold = 5 * time.Minute
+	channelAffinityFRTColdStartMs   = 7_500.0
+	channelAffinityFRTPeakDecay     = 3 * time.Minute
+	channelAffinityFRTStateTTL      = 30 * time.Minute
+	channelAffinityFRTProbeCooldown = 5 * time.Minute
 )
 
 var (
@@ -733,6 +733,10 @@ func TryClaimHigherPriorityAffinityProbe(c *gin.Context, selectedGroup string, p
 	if c == nil || preferred == nil || selectedGroup == "" {
 		return nil
 	}
+	setting := operation_setting.GetChannelAffinitySetting()
+	if setting == nil || !setting.Enabled || !setting.OptimizationEnabled {
+		return nil
+	}
 	meta, hasMeta := getChannelAffinityMeta(c)
 	requestState, hasState := getChannelAffinityRequestState(c)
 	if !hasMeta || !hasState || !requestState.Found ||
@@ -746,7 +750,7 @@ func TryClaimHigherPriorityAffinityProbe(c *gin.Context, selectedGroup string, p
 		return nil
 	}
 
-	nextProbeAt := now.Add(channelAffinityProbeInterval(operation_setting.GetChannelAffinitySetting())).UnixMilli()
+	nextProbeAt := now.Add(channelAffinityProbeInterval(setting)).UnixMilli()
 	claimed, err := claimChannelAffinityProbe(meta.CacheKey, requestState.State, nowMillis, nextProbeAt)
 	if err != nil {
 		common.SysError(fmt.Sprintf("channel affinity probe claim failed: key=%s, err=%v", meta.CacheKey, err))
@@ -945,9 +949,9 @@ func recordChannelAffinityFRTState(
 		frt = &channelAffinityFRTState{Group: selection.Group, Priority: selection.Priority}
 	}
 	frt.Channels = pruneChannelAffinityFRTScores(frt.Channels, now)
-	if frt.AllSlowHoldUntil > 0 && frt.AllSlowHoldUntil <= now.UnixMilli() {
-		frt.AllSlowHoldChannelID = 0
-		frt.AllSlowHoldUntil = 0
+	if frt.ProbeCooldownUntil > 0 && frt.ProbeCooldownUntil <= now.UnixMilli() {
+		frt.ProbeCooldownChannelID = 0
+		frt.ProbeCooldownUntil = 0
 	}
 	score := upsertChannelAffinityFRTScore(frt, channelID)
 	threshold := channelAffinityFRTDynamicThreshold(score.BaselineFRTMs)
@@ -957,21 +961,21 @@ func recordChannelAffinityFRTState(
 	if observeOnly {
 		// Retry observations update only the candidate score. Keep the
 		// current affinity target and its state-machine counters unchanged.
-	} else if frt.AllSlowHoldUntil > now.UnixMilli() {
-		frt.ConsecutiveSlow = 0
+	} else if frt.ProbeCooldownUntil > now.UnixMilli() {
+		frt.ProbeCount = 0
 		frt.VisitedChannelIDs = nil
 		if !slow {
-			frt.AllSlowHoldChannelID = 0
-			frt.AllSlowHoldUntil = 0
+			frt.ProbeCooldownChannelID = 0
+			frt.ProbeCooldownUntil = 0
 		}
 	} else if slow {
-		frt.ConsecutiveSlow++
+		frt.ProbeCount++
 		frt.VisitedChannelIDs = appendUniqueChannelID(frt.VisitedChannelIDs, channelID)
 	} else {
-		frt.ConsecutiveSlow = 0
+		frt.ProbeCount = 0
 		frt.VisitedChannelIDs = nil
-		frt.AllSlowHoldChannelID = 0
-		frt.AllSlowHoldUntil = 0
+		frt.ProbeCooldownChannelID = 0
+		frt.ProbeCooldownUntil = 0
 	}
 
 	toChannelID := expected.ChannelID
@@ -982,7 +986,7 @@ func recordChannelAffinityFRTState(
 	if slow {
 		frtEvent = "slow"
 	}
-	if !observeOnly && slow && frt.ConsecutiveSlow >= channelAffinityFRTSlowLimit(setting) && frt.AllSlowHoldUntil <= now.UnixMilli() {
+	if !observeOnly && slow && frt.ProbeCount >= channelAffinityFRTProbeCount(setting) && frt.ProbeCooldownUntil <= now.UnixMilli() {
 		candidates, err := model.GetSatisfiedChannelsAtPriority(selection.Group, meta.ModelName, frt.Priority, meta.RequestPath)
 		if err != nil {
 			common.SysError(fmt.Sprintf("channel affinity frt candidate lookup failed: group=%s, model=%s, priority=%d, err=%v", selection.Group, meta.ModelName, frt.Priority, err))
@@ -991,28 +995,28 @@ func recordChannelAffinityFRTState(
 			if target != nil {
 				toChannelID = target.Id
 				if allVisited {
-					frtEvent = "all_slow_hold"
-					frt.AllSlowHoldChannelID = target.Id
-					holdSeconds := channelAffinityFRTAllSlowHoldSeconds(setting)
-					frt.AllSlowHoldUntil = now.Add(time.Duration(holdSeconds) * time.Second).UnixMilli()
+					frtEvent = "probe_cooldown"
+					frt.ProbeCooldownChannelID = target.Id
+					cooldownSeconds := channelAffinityFRTProbeCooldownSeconds(setting)
+					frt.ProbeCooldownUntil = now.Add(time.Duration(cooldownSeconds) * time.Second).UnixMilli()
 				} else {
 					frtEvent = "switched"
 				}
-				frt.ConsecutiveSlow = 0
+				frt.ProbeCount = 0
 			}
 		}
 	}
 
 	frtInfo := map[string]interface{}{
-		"event":               frtEvent,
-		"frt_ms":              frtMs,
-		"baseline_frt_ms":     score.BaselineFRTMs,
-		"peak_score_ms":       score.PeakScoreMs,
-		"threshold_ms":        threshold,
-		"consecutive_slow":    frt.ConsecutiveSlow,
-		"from_channel_id":     channelID,
-		"to_channel_id":       toChannelID,
-		"all_slow_hold_until": frt.AllSlowHoldUntil,
+		"event":                frtEvent,
+		"frt_ms":               frtMs,
+		"baseline_frt_ms":      score.BaselineFRTMs,
+		"peak_score_ms":        score.PeakScoreMs,
+		"threshold_ms":         threshold,
+		"probe_count":          frt.ProbeCount,
+		"from_channel_id":      channelID,
+		"to_channel_id":        toChannelID,
+		"probe_cooldown_until": frt.ProbeCooldownUntil,
 	}
 	if observeOnly {
 		frtInfo["event"] = "retry_observation"
@@ -1060,24 +1064,24 @@ func recordChannelAffinityFRTState(
 	setChannelAffinityFRTAdminInfo(c, frtInfo)
 }
 
-func channelAffinityFRTSlowLimit(setting *operation_setting.ChannelAffinitySetting) int {
-	if setting == nil || setting.FRTConsecutiveSlowLimit < 1 {
+func channelAffinityFRTProbeCount(setting *operation_setting.ChannelAffinitySetting) int {
+	if setting == nil || setting.FRTProbeCount < 1 {
 		return channelAffinityFRTSlowCountThreshold
 	}
-	if setting.FRTConsecutiveSlowLimit > 10 {
+	if setting.FRTProbeCount > 10 {
 		return 10
 	}
-	return setting.FRTConsecutiveSlowLimit
+	return setting.FRTProbeCount
 }
 
-func channelAffinityFRTAllSlowHoldSeconds(setting *operation_setting.ChannelAffinitySetting) int {
-	if setting == nil || setting.FRTAllSlowHoldSeconds < 1 {
-		return int(channelAffinityFRTAllSlowHold / time.Second)
+func channelAffinityFRTProbeCooldownSeconds(setting *operation_setting.ChannelAffinitySetting) int {
+	if setting == nil || setting.FRTProbeCooldownSeconds < 1 {
+		return int(channelAffinityFRTProbeCooldown / time.Second)
 	}
-	if setting.FRTAllSlowHoldSeconds > 3600 {
+	if setting.FRTProbeCooldownSeconds > 3600 {
 		return 3600
 	}
-	return setting.FRTAllSlowHoldSeconds
+	return setting.FRTProbeCooldownSeconds
 }
 
 func channelAffinityFRTDynamicThreshold(baselineFRTMs float64) float64 {

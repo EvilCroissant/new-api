@@ -241,6 +241,7 @@ export type ModelSettings = {
     | 'auto_ban_only'
     | 'passive_recovery'
   'channel_affinity_setting.enabled': boolean
+  'channel_affinity_setting.optimization_enabled': boolean
   'channel_affinity_setting.frt_optimization_enabled': boolean
   'channel_affinity_setting.frt_consecutive_slow_limit': number
   'channel_affinity_setting.frt_all_slow_hold_seconds': number
