@@ -74,21 +74,13 @@ export function UpstreamMonitorTable(props: UpstreamMonitorTableProps) {
     useState<UpstreamMonitor | null>(null)
 
   if (!props.monitors.length) {
-    return (
-      <EmptyState
-        icon={Database}
-        title={t('No upstream monitors')}
-        description={t(
-          'Add an upstream monitor to view account balance, groups, and pricing.'
-        )}
-      />
-    )
+    return <EmptyState icon={Database} title={t('No upstream monitors')} />
   }
 
   return (
     <>
       <div className='overflow-x-auto rounded-xl border'>
-        <Table className='min-w-[860px]'>
+        <Table className='min-w-[720px]'>
           <TableHeader>
             <TableRow>
               <TableHead>{t('Site')}</TableHead>
@@ -96,9 +88,6 @@ export function UpstreamMonitorTable(props: UpstreamMonitorTableProps) {
                 {t('Available balance')}
               </TableHead>
               <TableHead className='text-right'>{t('Groups')}</TableHead>
-              <TableHead className='text-right'>
-                {t('Pricing entries')}
-              </TableHead>
               <TableHead>{t('Last synchronized')}</TableHead>
               <TableHead>{t('Status')}</TableHead>
               <TableHead className='w-[180px] text-right'>
@@ -168,9 +157,6 @@ export function UpstreamMonitorTable(props: UpstreamMonitorTableProps) {
                   </TableCell>
                   <TableCell className='text-right tabular-nums'>
                     {formatNumber(monitor.group_count)}
-                  </TableCell>
-                  <TableCell className='text-right tabular-nums'>
-                    {formatNumber(monitor.pricing_count)}
                   </TableCell>
                   <TableCell className='text-muted-foreground whitespace-nowrap'>
                     {monitor.last_synced_at > 0

@@ -118,6 +118,7 @@ func TestValidateUpstreamMonitorCreateInputRequiresSub2APIRefreshToken(t *testin
 func TestSyncSub2APIUpstreamMonitorRefreshesExpiredAccessToken(t *testing.T) {
 	var refreshCalls int
 	var accountCalls int
+	var modelPlazaCalls int
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
 		case "/api/v1/auth/refresh":
@@ -144,8 +145,8 @@ func TestSyncSub2APIUpstreamMonitorRefreshesExpiredAccessToken(t *testing.T) {
 			assert.Equal(t, "Bearer access-new", request.Header.Get("Authorization"))
 			_, _ = writer.Write([]byte(`{"code":0,"data":{"1":0.5}}`))
 		case "/api/v1/model-plaza":
-			assert.Equal(t, "Bearer access-new", request.Header.Get("Authorization"))
-			_, _ = writer.Write([]byte(`{"code":0,"data":{"groups":[{"models":[{"id":"grok-4.5"}]}]}}`))
+			modelPlazaCalls++
+			writer.WriteHeader(http.StatusInternalServerError)
 		default:
 			writer.WriteHeader(http.StatusNotFound)
 		}
@@ -166,7 +167,9 @@ func TestSyncSub2APIUpstreamMonitorRefreshesExpiredAccessToken(t *testing.T) {
 	assert.Equal(t, "refresh-new", monitor.RefreshToken)
 	assert.Equal(t, 12.5, monitor.BalanceUSD)
 	assert.Equal(t, 1, monitor.GroupCount)
-	assert.Equal(t, 1, monitor.PricingCount)
+	assert.Zero(t, modelPlazaCalls)
+	assert.Zero(t, monitor.PricingCount)
+	assert.Empty(t, monitor.PricingJSON)
 }
 
 func TestSyncSub2APIUpstreamMonitorRetriesOnlyOnceAfterRefresh(t *testing.T) {
@@ -224,48 +227,43 @@ func TestSyncSub2APIUpstreamMonitorReturnsRefreshFailure(t *testing.T) {
 	assert.ErrorContains(t, err, "refresh upstream access token: upstream returned HTTP 401")
 }
 
-func TestSyncSub2APIUpstreamMonitorSavesGroupsWhenModelPlazaDisabled(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		switch request.URL.Path {
-		case "/api/v1/auth/me":
-			_, _ = writer.Write([]byte(`{"code":0,"data":{"balance":12.5}}`))
-		case "/api/v1/groups/available":
-			_, _ = writer.Write([]byte(`{"code":0,"data":[{"id":1,"name":"Standard"}]}`))
-		case "/api/v1/groups/rates":
-			_, _ = writer.Write([]byte(`{"code":0,"data":{"1":0.5}}`))
-		case "/api/v1/model-plaza":
-			writer.WriteHeader(http.StatusNotFound)
-		default:
-			writer.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	t.Cleanup(server.Close)
-
-	monitor := &model.UpstreamMonitor{
-		BaseURL:     server.URL,
-		Provider:    UpstreamMonitorProviderSub2API,
-		AccessToken: "access-token",
-	}
-	err := syncSub2APIUpstreamMonitorWithClient(monitor, server.Client())
+func TestParseSub2APIGroupsPreservesGroupsAndRates(t *testing.T) {
+	count, snapshot, err := parseSub2APIGroups(
+		[]byte(`{"code":0,"data":[{"id":1,"name":"Standard","description":"General use","rate_multiplier":0.1}]}`),
+		[]byte(`{"code":0,"data":{"1":0.5}}`),
+	)
 	require.NoError(t, err)
-	assert.Equal(t, 12.5, monitor.BalanceUSD)
-	assert.True(t, monitor.BalanceAvailable)
-	assert.Equal(t, 1, monitor.GroupCount)
-	assert.JSONEq(t, `{"groups":[{"id":1,"name":"Standard"}],"rates":{"1":0.5}}`, monitor.GroupsJSON)
-	assert.Zero(t, monitor.PricingCount)
-	assert.Empty(t, monitor.PricingJSON)
+	assert.Equal(t, 1, count)
+	assert.JSONEq(t, `{"groups":[{"id":"1","name":"Standard","description":"General use","multiplier":0.5}]}`, snapshot)
 }
 
-func TestSyncSub2APIUpstreamMonitorReturnsModelPlazaErrorExceptNotFound(t *testing.T) {
+func TestParseNewAPIGroupsNormalizesDescriptionsAndMultipliers(t *testing.T) {
+	count, snapshot, err := parseNewAPIGroups([]byte(`{
+		"success": true,
+		"data": {
+			"gpt-plus": {"ratio": 0.2, "desc": "GPT Plus"},
+			"auto": {"ratio": "自动", "desc": "Automatic routing"}
+		}
+	}`))
+	require.NoError(t, err)
+	assert.Equal(t, 2, count)
+	assert.JSONEq(t, `{"groups":[{"id":"auto","name":"auto","description":"Automatic routing","multiplier":"自动"},{"id":"gpt-plus","name":"gpt-plus","description":"GPT Plus","multiplier":0.2}]}`, snapshot)
+}
+
+func TestSyncNewAPIUpstreamMonitorStoresGroupMultipliersWithoutPricingRequest(t *testing.T) {
+	var pricingCalls int
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		assert.Equal(t, "Bearer personal-access-token", request.Header.Get("Authorization"))
+		assert.Equal(t, "99", request.Header.Get("New-Api-User"))
 		switch request.URL.Path {
-		case "/api/v1/auth/me":
-			_, _ = writer.Write([]byte(`{"code":0,"data":{"balance":12.5}}`))
-		case "/api/v1/groups/available":
-			_, _ = writer.Write([]byte(`{"code":0,"data":[{"id":1,"name":"Standard"}]}`))
-		case "/api/v1/groups/rates":
-			_, _ = writer.Write([]byte(`{"code":0,"data":{"1":0.5}}`))
-		case "/api/v1/model-plaza":
+		case "/api/status":
+			_, _ = writer.Write([]byte(`{"success":true,"data":{"quota_per_unit":500000}}`))
+		case "/api/user/self":
+			_, _ = writer.Write([]byte(`{"success":true,"data":{"quota":1250000}}`))
+		case "/api/user/self/groups":
+			_, _ = writer.Write([]byte(`{"success":true,"data":{"gpt-plus":{"ratio":0.2,"desc":"GPT Plus"}}}`))
+		case "/api/pricing":
+			pricingCalls++
 			writer.WriteHeader(http.StatusInternalServerError)
 		default:
 			writer.WriteHeader(http.StatusNotFound)
@@ -274,21 +272,17 @@ func TestSyncSub2APIUpstreamMonitorReturnsModelPlazaErrorExceptNotFound(t *testi
 	t.Cleanup(server.Close)
 
 	monitor := &model.UpstreamMonitor{
-		BaseURL:     server.URL,
-		Provider:    UpstreamMonitorProviderSub2API,
-		AccessToken: "access-token",
+		BaseURL:      server.URL,
+		Provider:     UpstreamMonitorProviderNewAPI,
+		NewAPIUserID: 99,
+		AccessToken:  "personal-access-token",
 	}
-	err := syncSub2APIUpstreamMonitorWithClient(monitor, server.Client())
-	require.Error(t, err)
-	assert.ErrorContains(t, err, "fetch upstream pricing: upstream returned HTTP 500")
-}
-
-func TestParseSub2APIGroupsPreservesGroupsAndRates(t *testing.T) {
-	count, snapshot, err := parseSub2APIGroups(
-		[]byte(`{"code":0,"data":[{"id":1,"name":"Standard"}]}`),
-		[]byte(`{"code":0,"data":{"1":0.5}}`),
-	)
+	err := syncNewAPIUpstreamMonitorWithClient(monitor, server.Client())
 	require.NoError(t, err)
-	assert.Equal(t, 1, count)
-	assert.JSONEq(t, `{"groups":[{"id":1,"name":"Standard"}],"rates":{"1":0.5}}`, snapshot)
+	assert.Equal(t, 2.5, monitor.BalanceUSD)
+	assert.Equal(t, 1, monitor.GroupCount)
+	assert.JSONEq(t, `{"groups":[{"id":"gpt-plus","name":"gpt-plus","description":"GPT Plus","multiplier":0.2}]}`, monitor.GroupsJSON)
+	assert.Zero(t, pricingCalls)
+	assert.Zero(t, monitor.PricingCount)
+	assert.Empty(t, monitor.PricingJSON)
 }

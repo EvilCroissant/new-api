@@ -28,6 +28,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -78,6 +79,19 @@ type UpstreamMonitorDetail struct {
 	LastError        string  `json:"last_error"`
 	CreatedAt        int64   `json:"created_at"`
 	UpdatedAt        int64   `json:"updated_at"`
+}
+
+// upstreamMonitorGroupSnapshot is the provider-neutral format persisted for
+// the group data shown in the upstream monitor page.
+type upstreamMonitorGroupSnapshot struct {
+	Groups []upstreamMonitorGroup `json:"groups"`
+}
+
+type upstreamMonitorGroup struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Multiplier  any    `json:"multiplier,omitempty"`
 }
 
 type upstreamMonitorHTTPError struct {
@@ -293,10 +307,16 @@ func SyncUpstreamMonitor(monitor *model.UpstreamMonitor) error {
 }
 
 func syncNewAPIUpstreamMonitor(monitor *model.UpstreamMonitor) error {
+	return syncNewAPIUpstreamMonitorWithClient(monitor, upstreamMonitorHTTPClient())
+}
+
+func syncNewAPIUpstreamMonitorWithClient(monitor *model.UpstreamMonitor, client *http.Client) error {
 	if err := validateUpstreamMonitorInput(monitor.Provider, monitor.NewAPIUserID, monitor.AccessToken); err != nil {
 		return err
 	}
-	client := upstreamMonitorHTTPClient()
+	if client == nil {
+		return errors.New("upstream monitor HTTP client is required")
+	}
 	headers := http.Header{}
 	headers.Set("Authorization", "Bearer "+monitor.AccessToken)
 	headers.Set("New-Api-User", strconv.Itoa(monitor.NewAPIUserID))
@@ -306,7 +326,7 @@ func syncNewAPIUpstreamMonitor(monitor *model.UpstreamMonitor) error {
 		body []byte
 		err  error
 	}
-	results := make(chan result, 4)
+	results := make(chan result, 3)
 	var wg sync.WaitGroup
 	for _, endpoint := range []struct {
 		name string
@@ -315,7 +335,6 @@ func syncNewAPIUpstreamMonitor(monitor *model.UpstreamMonitor) error {
 		{name: "status", path: "/api/status"},
 		{name: "self", path: "/api/user/self"},
 		{name: "groups", path: "/api/user/self/groups"},
-		{name: "pricing", path: "/api/pricing"},
 	} {
 		wg.Add(1)
 		go func(endpointName string, endpointPath string) {
@@ -329,7 +348,7 @@ func syncNewAPIUpstreamMonitor(monitor *model.UpstreamMonitor) error {
 		close(results)
 	}()
 
-	bodies := make(map[string][]byte, 4)
+	bodies := make(map[string][]byte, 3)
 	for result := range results {
 		if result.err != nil {
 			return fmt.Errorf("fetch upstream %s: %w", result.name, result.err)
@@ -347,16 +366,12 @@ func syncNewAPIUpstreamMonitor(monitor *model.UpstreamMonitor) error {
 	}
 	monitor.BalanceUSD = quota / quotaPerUnit
 	monitor.BalanceAvailable = true
-	monitor.GroupCount, err = parseNewAPIGroups(bodies["groups"])
+	monitor.GroupCount, monitor.GroupsJSON, err = parseNewAPIGroups(bodies["groups"])
 	if err != nil {
 		return err
 	}
-	monitor.PricingCount, err = parseNewAPIPricing(bodies["pricing"])
-	if err != nil {
-		return err
-	}
-	monitor.GroupsJSON = string(bodies["groups"])
-	monitor.PricingJSON = string(bodies["pricing"])
+	monitor.PricingCount = 0
+	monitor.PricingJSON = ""
 	return nil
 }
 
@@ -415,24 +430,6 @@ func syncSub2APIUpstreamMonitorWithAccessToken(monitor *model.UpstreamMonitor, c
 	monitor.BalanceAvailable = true
 	monitor.GroupCount = groupCount
 	monitor.GroupsJSON = groupsSnapshot
-
-	pricingBody, pricingErr := fetchUpstreamMonitorJSON(context.Background(), client, http.MethodGet, monitor.BaseURL+"/api/v1/model-plaza", headers, nil)
-	if pricingErr == nil {
-		pricingCount, parseErr := parseSub2APIPricing(pricingBody)
-		if parseErr != nil {
-			return parseErr
-		}
-		monitor.PricingCount = pricingCount
-		monitor.PricingJSON = string(pricingBody)
-		return nil
-	}
-
-	// Model Plaza 是 Sub2API 可选的展示功能。用户实际可用分组及其倍率已由
-	// /groups/available 和 /groups/rates 获取；仅在该功能未启用时允许同步继续。
-	var upstreamErr *upstreamMonitorHTTPError
-	if !errors.As(pricingErr, &upstreamErr) || upstreamErr.StatusCode != http.StatusNotFound {
-		return fmt.Errorf("fetch upstream pricing: %w", pricingErr)
-	}
 	monitor.PricingCount = 0
 	monitor.PricingJSON = ""
 	return nil
@@ -636,32 +633,43 @@ func parseNewAPIQuota(body []byte) (float64, error) {
 	return quota, nil
 }
 
-func parseNewAPIGroups(body []byte) (int, error) {
+func parseNewAPIGroups(body []byte) (int, string, error) {
 	response := struct {
-		Success bool           `json:"success"`
-		Data    map[string]any `json:"data"`
+		Success bool `json:"success"`
+		Data    map[string]struct {
+			Ratio any    `json:"ratio"`
+			Desc  string `json:"desc"`
+		} `json:"data"`
 	}{}
 	if err := common.Unmarshal(body, &response); err != nil {
-		return 0, fmt.Errorf("decode upstream groups: %w", err)
+		return 0, "", fmt.Errorf("decode upstream groups: %w", err)
 	}
 	if !response.Success || response.Data == nil {
-		return 0, errors.New("upstream group response is invalid")
+		return 0, "", errors.New("upstream group response is invalid")
 	}
-	return len(response.Data), nil
-}
 
-func parseNewAPIPricing(body []byte) (int, error) {
-	response := struct {
-		Success bool  `json:"success"`
-		Data    []any `json:"data"`
-	}{}
-	if err := common.Unmarshal(body, &response); err != nil {
-		return 0, fmt.Errorf("decode upstream pricing: %w", err)
+	groupIDs := make([]string, 0, len(response.Data))
+	for groupID := range response.Data {
+		groupIDs = append(groupIDs, groupID)
 	}
-	if !response.Success || response.Data == nil {
-		return 0, errors.New("upstream pricing response is invalid")
+	sort.Strings(groupIDs)
+	snapshot := upstreamMonitorGroupSnapshot{
+		Groups: make([]upstreamMonitorGroup, 0, len(groupIDs)),
 	}
-	return len(response.Data), nil
+	for _, groupID := range groupIDs {
+		group := response.Data[groupID]
+		snapshot.Groups = append(snapshot.Groups, upstreamMonitorGroup{
+			ID:          groupID,
+			Name:        groupID,
+			Description: strings.TrimSpace(group.Desc),
+			Multiplier:  normalizeUpstreamMonitorMultiplier(group.Ratio),
+		})
+	}
+	encodedSnapshot, err := common.Marshal(snapshot)
+	if err != nil {
+		return 0, "", fmt.Errorf("encode upstream groups: %w", err)
+	}
+	return len(snapshot.Groups), string(encodedSnapshot), nil
 }
 
 func parseSub2APIBalance(body []byte) (float64, error) {
@@ -683,8 +691,14 @@ func parseSub2APIBalance(body []byte) (float64, error) {
 
 func parseSub2APIGroups(groupsBody []byte, ratesBody []byte) (int, string, error) {
 	groupsResponse := struct {
-		Code int   `json:"code"`
-		Data []any `json:"data"`
+		Code int `json:"code"`
+		Data []struct {
+			ID             any    `json:"id"`
+			Name           string `json:"name"`
+			Description    string `json:"description"`
+			Desc           string `json:"desc"`
+			RateMultiplier any    `json:"rate_multiplier"`
+		} `json:"data"`
 	}{}
 	if err := common.Unmarshal(groupsBody, &groupsResponse); err != nil {
 		return 0, "", fmt.Errorf("decode upstream groups: %w", err)
@@ -693,8 +707,8 @@ func parseSub2APIGroups(groupsBody []byte, ratesBody []byte) (int, string, error
 		return 0, "", errors.New("upstream group response is invalid")
 	}
 	ratesResponse := struct {
-		Code int `json:"code"`
-		Data any `json:"data"`
+		Code int            `json:"code"`
+		Data map[string]any `json:"data"`
 	}{}
 	if err := common.Unmarshal(ratesBody, &ratesResponse); err != nil {
 		return 0, "", fmt.Errorf("decode upstream group rates: %w", err)
@@ -702,36 +716,66 @@ func parseSub2APIGroups(groupsBody []byte, ratesBody []byte) (int, string, error
 	if ratesResponse.Code != 0 || ratesResponse.Data == nil {
 		return 0, "", errors.New("upstream group rates response is invalid")
 	}
-	snapshot, err := common.Marshal(map[string]any{
-		"groups": groupsResponse.Data,
-		"rates":  ratesResponse.Data,
-	})
+	snapshot := upstreamMonitorGroupSnapshot{
+		Groups: make([]upstreamMonitorGroup, 0, len(groupsResponse.Data)),
+	}
+	for _, group := range groupsResponse.Data {
+		groupID, ok := upstreamMonitorGroupID(group.ID)
+		if !ok {
+			return 0, "", errors.New("upstream group response contains an invalid group ID")
+		}
+		multiplier := group.RateMultiplier
+		if rate, exists := ratesResponse.Data[groupID]; exists {
+			multiplier = rate
+		}
+		description := strings.TrimSpace(group.Description)
+		if description == "" {
+			description = strings.TrimSpace(group.Desc)
+		}
+		name := strings.TrimSpace(group.Name)
+		if name == "" {
+			name = groupID
+		}
+		snapshot.Groups = append(snapshot.Groups, upstreamMonitorGroup{
+			ID:          groupID,
+			Name:        name,
+			Description: description,
+			Multiplier:  normalizeUpstreamMonitorMultiplier(multiplier),
+		})
+	}
+	encodedSnapshot, err := common.Marshal(snapshot)
 	if err != nil {
 		return 0, "", err
 	}
-	return len(groupsResponse.Data), string(snapshot), nil
+	return len(snapshot.Groups), string(encodedSnapshot), nil
 }
 
-func parseSub2APIPricing(body []byte) (int, error) {
-	response := struct {
-		Code int `json:"code"`
-		Data struct {
-			Groups []struct {
-				Models []any `json:"models"`
-			} `json:"groups"`
-		} `json:"data"`
-	}{}
-	if err := common.Unmarshal(body, &response); err != nil {
-		return 0, fmt.Errorf("decode upstream pricing: %w", err)
+func upstreamMonitorGroupID(value any) (string, bool) {
+	switch id := value.(type) {
+	case string:
+		id = strings.TrimSpace(id)
+		return id, id != ""
+	case float64:
+		if math.IsNaN(id) || math.IsInf(id, 0) {
+			return "", false
+		}
+		return strconv.FormatFloat(id, 'f', -1, 64), true
+	default:
+		return "", false
 	}
-	if response.Code != 0 || response.Data.Groups == nil {
-		return 0, errors.New("upstream pricing response is invalid")
+}
+
+func normalizeUpstreamMonitorMultiplier(value any) any {
+	if multiplier, ok := upstreamMonitorNumber(value); ok {
+		return multiplier
 	}
-	count := 0
-	for _, group := range response.Data.Groups {
-		count += len(group.Models)
+	if text, ok := value.(string); ok {
+		text = strings.TrimSpace(text)
+		if text != "" {
+			return text
+		}
 	}
-	return count, nil
+	return nil
 }
 
 func upstreamMonitorNumber(value any) (float64, bool) {
