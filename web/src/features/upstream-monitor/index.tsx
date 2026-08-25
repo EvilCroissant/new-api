@@ -177,28 +177,30 @@ export function UpstreamMonitorPage() {
         </div>
       </SectionPageLayout.Actions>
       <SectionPageLayout.Content>
-        <div className='space-y-4'>
-          <p className='text-muted-foreground text-sm'>
-            {t(
-              'Monitor independent upstream account balances, groups, and pricing.'
-            )}
-          </p>
-          {monitorContent}
-        </div>
-      </SectionPageLayout.Content>
+        <>
+          <div className='space-y-4'>
+            <p className='text-muted-foreground text-sm'>
+              {t(
+                'Monitor independent upstream account balances, groups, and pricing.'
+              )}
+            </p>
+            {monitorContent}
+          </div>
 
-      <UpstreamMonitorAddDialog
-        open={isAddOpen}
-        onOpenChange={setIsAddOpen}
-        onCreated={async (_monitor: UpstreamMonitor) => {
-          await refreshMonitors()
-        }}
-      />
-      <UpstreamMonitorDetailDialog
-        monitorId={detailsId}
-        open={detailsId !== null}
-        onOpenChange={(open) => !open && setDetailsId(null)}
-      />
+          <UpstreamMonitorAddDialog
+            open={isAddOpen}
+            onOpenChange={setIsAddOpen}
+            onCreated={async (_monitor: UpstreamMonitor) => {
+              await refreshMonitors()
+            }}
+          />
+          <UpstreamMonitorDetailDialog
+            monitorId={detailsId}
+            open={detailsId !== null}
+            onOpenChange={(open) => !open && setDetailsId(null)}
+          />
+        </>
+      </SectionPageLayout.Content>
     </SectionPageLayout>
   )
 }
