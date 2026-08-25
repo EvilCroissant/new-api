@@ -101,21 +101,16 @@ describe('UpstreamMonitorDetailDialog', () => {
       await screen.findByRole('columnheader', { name: 'Group' })
     ).toBeInTheDocument()
     expect(
-      screen.getByRole('columnheader', { name: 'Description' })
-    ).toBeInTheDocument()
-    expect(
       screen.getByRole('columnheader', { name: 'Multiplier' })
     ).toBeInTheDocument()
     expect(screen.getByText('ChatGPT-Plus 【稳定通道】')).toBeInTheDocument()
-    expect(screen.getByText('Plus group')).toBeInTheDocument()
     expect(screen.getByText('0.045x')).toBeInTheDocument()
     expect(screen.getByText('ChatGPT-Pro 【高并发通道】')).toBeInTheDocument()
-    expect(screen.getByText('Pro group')).toBeInTheDocument()
     expect(screen.getByText('0.2x')).toBeInTheDocument()
     expect(screen.queryByText(/"groups"/)).not.toBeInTheDocument()
   })
 
-  test('shows New API group descriptions and multipliers', async () => {
+  test('shows New API groups and multipliers', async () => {
     renderDialog({
       success: true,
       data: {
@@ -131,10 +126,8 @@ describe('UpstreamMonitorDetailDialog', () => {
     })
 
     expect(await screen.findByText('gpt-pro')).toBeInTheDocument()
-    expect(screen.getByText('GPT-Pro 小队')).toBeInTheDocument()
     expect(screen.getByText('0.2x')).toBeInTheDocument()
     expect(screen.getByText('auto')).toBeInTheDocument()
-    expect(screen.getByText('自动路由')).toBeInTheDocument()
     expect(screen.getByText('自动')).toBeInTheDocument()
   })
 })

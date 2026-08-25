@@ -51,7 +51,6 @@ type UpstreamMonitorDetailDialogProps = {
 type GroupMultiplier = {
   id: string
   name: string
-  description: string
   multiplier: number | null
   multiplierLabel: string | null
 }
@@ -84,16 +83,9 @@ function getGroupMultiplier(
       : groupID
   const rawMultiplier =
     group.multiplier ?? rates[groupID] ?? group.rate_multiplier ?? group.ratio
-  let description = ''
-  if (typeof group.description === 'string') {
-    description = group.description
-  } else if (typeof group.desc === 'string') {
-    description = group.desc
-  }
   return {
     id: groupID,
     name,
-    description,
     multiplier: toNumber(rawMultiplier),
     multiplierLabel:
       typeof rawMultiplier === 'string' && toNumber(rawMultiplier) === null
@@ -164,7 +156,6 @@ export function UpstreamMonitorDetailDialog(
               <TableHeader>
                 <TableRow>
                   <TableHead>{t('Group')}</TableHead>
-                  <TableHead>{t('Description')}</TableHead>
                   <TableHead className='text-right'>
                     {t('Multiplier')}
                   </TableHead>
@@ -174,9 +165,6 @@ export function UpstreamMonitorDetailDialog(
                 {groupMultipliers.map((group) => (
                   <TableRow key={group.id}>
                     <TableCell className='font-medium'>{group.name}</TableCell>
-                    <TableCell className='text-muted-foreground'>
-                      {group.description || '-'}
-                    </TableCell>
                     <TableCell className='text-right font-medium tabular-nums'>
                       {formatMultiplier(group)}
                     </TableCell>
