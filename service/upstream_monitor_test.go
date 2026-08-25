@@ -224,6 +224,65 @@ func TestSyncSub2APIUpstreamMonitorReturnsRefreshFailure(t *testing.T) {
 	assert.ErrorContains(t, err, "refresh upstream access token: upstream returned HTTP 401")
 }
 
+func TestSyncSub2APIUpstreamMonitorSavesGroupsWhenModelPlazaDisabled(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/v1/auth/me":
+			_, _ = writer.Write([]byte(`{"code":0,"data":{"balance":12.5}}`))
+		case "/api/v1/groups/available":
+			_, _ = writer.Write([]byte(`{"code":0,"data":[{"id":1,"name":"Standard"}]}`))
+		case "/api/v1/groups/rates":
+			_, _ = writer.Write([]byte(`{"code":0,"data":{"1":0.5}}`))
+		case "/api/v1/model-plaza":
+			writer.WriteHeader(http.StatusNotFound)
+		default:
+			writer.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	monitor := &model.UpstreamMonitor{
+		BaseURL:     server.URL,
+		Provider:    UpstreamMonitorProviderSub2API,
+		AccessToken: "access-token",
+	}
+	err := syncSub2APIUpstreamMonitorWithClient(monitor, server.Client())
+	require.NoError(t, err)
+	assert.Equal(t, 12.5, monitor.BalanceUSD)
+	assert.True(t, monitor.BalanceAvailable)
+	assert.Equal(t, 1, monitor.GroupCount)
+	assert.JSONEq(t, `{"groups":[{"id":1,"name":"Standard"}],"rates":{"1":0.5}}`, monitor.GroupsJSON)
+	assert.Zero(t, monitor.PricingCount)
+	assert.Empty(t, monitor.PricingJSON)
+}
+
+func TestSyncSub2APIUpstreamMonitorReturnsModelPlazaErrorExceptNotFound(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/v1/auth/me":
+			_, _ = writer.Write([]byte(`{"code":0,"data":{"balance":12.5}}`))
+		case "/api/v1/groups/available":
+			_, _ = writer.Write([]byte(`{"code":0,"data":[{"id":1,"name":"Standard"}]}`))
+		case "/api/v1/groups/rates":
+			_, _ = writer.Write([]byte(`{"code":0,"data":{"1":0.5}}`))
+		case "/api/v1/model-plaza":
+			writer.WriteHeader(http.StatusInternalServerError)
+		default:
+			writer.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	monitor := &model.UpstreamMonitor{
+		BaseURL:     server.URL,
+		Provider:    UpstreamMonitorProviderSub2API,
+		AccessToken: "access-token",
+	}
+	err := syncSub2APIUpstreamMonitorWithClient(monitor, server.Client())
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "fetch upstream pricing: upstream returned HTTP 500")
+}
+
 func TestParseSub2APIGroupsPreservesGroupsAndRates(t *testing.T) {
 	count, snapshot, err := parseSub2APIGroups(
 		[]byte(`{"code":0,"data":[{"id":1,"name":"Standard"}]}`),

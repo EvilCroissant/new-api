@@ -427,9 +427,15 @@ func syncSub2APIUpstreamMonitorWithAccessToken(monitor *model.UpstreamMonitor, c
 		return nil
 	}
 
+	// Model Plaza 是 Sub2API 可选的展示功能。用户实际可用分组及其倍率已由
+	// /groups/available 和 /groups/rates 获取；仅在该功能未启用时允许同步继续。
+	var upstreamErr *upstreamMonitorHTTPError
+	if !errors.As(pricingErr, &upstreamErr) || upstreamErr.StatusCode != http.StatusNotFound {
+		return fmt.Errorf("fetch upstream pricing: %w", pricingErr)
+	}
 	monitor.PricingCount = 0
 	monitor.PricingJSON = ""
-	return fmt.Errorf("fetch upstream pricing: %w", pricingErr)
+	return nil
 }
 
 func refreshSub2APIUpstreamMonitorAccessToken(monitor *model.UpstreamMonitor, client *http.Client) error {
