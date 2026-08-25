@@ -155,7 +155,7 @@ function ProfitSubRows({ row }: { row: ChannelProfitRow }) {
           >
             <div
               data-profit-detail-column='key'
-              className='grid w-[40%] min-w-0 grid-cols-2 gap-x-3 pr-2 pl-12 text-left'
+              className='flex w-[40%] min-w-0 items-center gap-1.5 pr-2 pl-12 text-left'
             >
               <div
                 data-profit-detail-account
@@ -175,16 +175,11 @@ function ProfitSubRows({ row }: { row: ChannelProfitRow }) {
                     · {downstreamRatioSummary}
                   </span>
                 )}
-              </div>
-              <div
-                data-profit-detail-upstream
-                className='flex min-w-0 items-center gap-1.5'
-              >
-                <span className='text-muted-foreground min-w-0 truncate text-[11px]'>
-                  {key.upstream_group || '-'}
-                </span>
                 {key.ratio_available && (
-                  <span className='text-muted-foreground shrink-0 font-mono text-[11px]'>
+                  <span
+                    data-profit-detail-upstream
+                    className='text-muted-foreground shrink-0 font-mono text-[11px]'
+                  >
                     · {ratioText(key.upstream_group_ratio)}
                   </span>
                 )}

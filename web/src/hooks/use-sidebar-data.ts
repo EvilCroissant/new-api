@@ -28,6 +28,7 @@ import {
   ListTodo,
   MessageSquare,
   Radio,
+  Radar,
   ServerCog,
   Settings,
   Ticket,
@@ -148,6 +149,11 @@ export function useSidebarData(): SidebarData {
             title: t('Profit'),
             url: '/profit',
             icon: CircleDollarSign,
+          },
+          {
+            title: t('Upstream monitoring'),
+            url: '/upstream-monitor',
+            icon: Radar,
           },
           {
             title: t('Models'),

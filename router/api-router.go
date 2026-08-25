@@ -241,6 +241,16 @@ func SetApiRouter(router *gin.Engine) {
 			channelProfitRoute.POST("/sync", middleware.RootAuth(), controller.SyncChannelProfit)
 			channelProfitRoute.POST("/:id/sync", middleware.RootAuth(), controller.SyncChannelProfitGroup)
 		}
+		upstreamMonitorRoute := apiRouter.Group("/upstream-monitors")
+		upstreamMonitorRoute.Use(middleware.AdminAuth())
+		{
+			upstreamMonitorRoute.GET("/", controller.ListUpstreamMonitors)
+			upstreamMonitorRoute.GET("/:id", controller.GetUpstreamMonitor)
+			upstreamMonitorRoute.POST("/detect", middleware.RootAuth(), controller.DetectUpstreamMonitor)
+			upstreamMonitorRoute.POST("/", middleware.RootAuth(), controller.CreateUpstreamMonitor)
+			upstreamMonitorRoute.POST("/:id/sync", middleware.RootAuth(), controller.SyncUpstreamMonitor)
+			upstreamMonitorRoute.DELETE("/:id", middleware.RootAuth(), controller.DeleteUpstreamMonitor)
+		}
 		registerAuthzRoutes(apiRouter)
 		tokenRoute := apiRouter.Group("/token")
 		tokenRoute.Use(middleware.UserAuth())

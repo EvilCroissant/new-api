@@ -77,6 +77,7 @@ export const SIDEBAR_MODULES_DEFAULT: SidebarModulesAdminConfig = {
     enabled: true,
     channel: true,
     profit: true,
+    upstream_monitor: true,
     models: true,
     redemption: true,
     user: true,

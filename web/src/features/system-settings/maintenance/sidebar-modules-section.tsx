@@ -142,6 +142,12 @@ export function SidebarModulesSection({
         title: t('Profit'),
         description: t('Compare downstream revenue with upstream costs.'),
       },
+      upstream_monitor: {
+        title: t('Upstream monitoring'),
+        description: t(
+          'Monitor independent upstream account balances, groups, and pricing.'
+        ),
+      },
       models: {
         title: t('Models'),
         description: t('Manage catalog visibility and pricing.'),
