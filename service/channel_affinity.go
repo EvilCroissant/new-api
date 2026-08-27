@@ -3,10 +3,7 @@ package service
 import (
 	"fmt"
 	"hash/fnv"
-	"math"
-	"math/rand"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -38,18 +35,24 @@ const (
 )
 
 const (
-	channelAffinityFRTSlowCountThreshold = 2
-	channelAffinityFRTAcceptableMs       = 10_000.0
-	channelAffinityFRTExplosionMs        = 20_000.0
-	channelAffinityFRTSlowMultiplier     = 1.5
-	channelAffinityFRTMaxThresholdMs     = channelAffinityFRTAcceptableMs * channelAffinityFRTSlowMultiplier
-	channelAffinityFRTRecentSampleLimit  = 5
-	// Keep unknown channels neutral: slower than a normal channel, but still
-	// eligible when the current affinity channel is persistently congested.
-	channelAffinityFRTColdStartMs   = 7_500.0
-	channelAffinityFRTPeakDecay     = 3 * time.Minute
-	channelAffinityFRTStateTTL      = 30 * time.Minute
-	channelAffinityFRTProbeCooldown = 5 * time.Minute
+	channelAffinityFRTSlowCountThreshold      = 2
+	channelAffinityFRTColdStartBaselineMs     = 7_500.0
+	channelAffinityFRTReferenceMinMs          = 5_000.0
+	channelAffinityFRTReferenceMaxMs          = 10_000.0
+	channelAffinityFRTExplosionMs             = 20_000.0
+	channelAffinityFRTMinimumDispersionMs     = 500.0
+	channelAffinityFRTMADMultiplier           = 1.4826
+	channelAffinityFRTDynamicDispersionFactor = 1.5
+	channelAffinityFRTRecentSampleLimit       = 16
+	channelAffinityFRTMinimumSamples          = 3
+	channelAffinityFRTStateTTL                = 30 * time.Minute
+	channelAffinityFRTSampleTTL               = 5 * time.Minute
+	channelAffinityFRTPeakDecay               = 3 * time.Minute
+	channelAffinityFRTStableCountThreshold    = 3
+	channelAffinityFRTProbeCooldown           = 5 * time.Minute
+	channelAffinityFRTMinimumAdvantageMs      = 1_000.0
+	channelAffinityFRTSamePriorityAdvantage   = 0.20
+	channelAffinityFRTCrossPriorityAdvantage  = 0.40
 )
 
 var (
@@ -615,6 +618,11 @@ func GetPreferredChannelByAffinity(c *gin.Context, modelName string, usingGroup 
 		if found {
 			return state.ChannelID, true
 		}
+		if setting.FRTOptimizationEnabled {
+			if channelID, selected := getPreferredChannelByFRT(c, modelName, usingGroup); selected {
+				return channelID, true
+			}
+		}
 		return 0, false
 	}
 	return 0, false
@@ -893,10 +901,6 @@ func RecordChannelAffinityFRT(c *gin.Context, relayInfo *relaycommon.RelayInfo, 
 	if c.GetInt("id") <= 0 {
 		return
 	}
-	requestState, ok := getChannelAffinityRequestState(c)
-	if !ok || !requestState.Found {
-		return
-	}
 	selection, ok := getChannelAffinitySelection(c)
 	if !ok || selection.Group == "" {
 		return
@@ -912,156 +916,36 @@ func RecordChannelAffinityFRT(c *gin.Context, relayInfo *relaycommon.RelayInfo, 
 	if !ok || meta.UsingGroup == "" || meta.ModelName == "" {
 		return
 	}
-
+	requestState, hasState := getChannelAffinityRequestState(c)
 	observeOnly := false
 	if relayInfo.RetryIndex != 0 {
-		// A retry success is useful FRT evidence, but it must not directly
-		// replace the current affinity target. Only retain observations from
-		// the same group and priority so fallback traffic cannot bleed across
-		// scheduling tiers.
+		// A retry success is useful real FRT evidence, but it must not replace
+		// the current affinity target by itself.
 		retryChannel, channelErr := model.CacheGetChannel(channelID)
-		if channelErr != nil || retryChannel == nil || retryChannel.GetPriority() != selection.Priority ||
+		if channelErr != nil || retryChannel == nil ||
 			!model.IsChannelEnabledForGroupModel(selection.Group, meta.ModelName, channelID) {
 			return
 		}
 		observeOnly = true
-	} else if requestState.State.ChannelID != channelID {
+	} else if hasState && requestState.Found && requestState.State.ChannelID != channelID {
 		return
 	}
 
-	recordChannelAffinityFRTState(c, setting, meta, selection, channelID, frtMs, requestState.State, true, observeOnly)
-}
-
-func recordChannelAffinityFRTState(
-	c *gin.Context,
-	setting *operation_setting.ChannelAffinitySetting,
-	meta channelAffinityMeta,
-	selection channelAffinitySelection,
-	channelID int,
-	frtMs int64,
-	expected channelAffinityState,
-	allowRetry bool,
-	observeOnly bool,
-) {
+	scope := channelAffinityFRTScopeForObservation(meta, selection, relayInfo)
+	userID := c.GetInt("id")
 	now := time.Now()
-	frt := cloneChannelAffinityFRTState(expected.FRT)
-	if frt == nil || frt.Group != selection.Group || frt.Priority != selection.Priority {
-		frt = &channelAffinityFRTState{Group: selection.Group, Priority: selection.Priority}
+	if err := recordChannelAffinityFRTUserObservation(userID, scope, channelID, float64(frtMs), now); err != nil {
+		common.SysError(fmt.Sprintf("channel affinity user frt observation failed: user=%d, channel=%d, err=%v", userID, channelID, err))
 	}
-	frt.Channels = pruneChannelAffinityFRTScores(frt.Channels, now)
-	if frt.ProbeCooldownUntil > 0 && frt.ProbeCooldownUntil <= now.UnixMilli() {
-		frt.ProbeCooldownChannelID = 0
-		frt.ProbeCooldownUntil = 0
-	}
-	score := upsertChannelAffinityFRTScore(frt, channelID)
-	threshold := channelAffinityFRTDynamicThreshold(score.BaselineFRTMs)
-	slow := float64(frtMs) >= channelAffinityFRTExplosionMs || float64(frtMs) > threshold
-	updateChannelAffinityFRTScore(score, float64(frtMs), slow, now)
-
-	if observeOnly {
-		// Retry observations update only the candidate score. Keep the
-		// current affinity target and its state-machine counters unchanged.
-	} else if frt.ProbeCooldownUntil > now.UnixMilli() {
-		frt.ProbeCount = 0
-		frt.VisitedChannelIDs = nil
-		if !slow {
-			frt.ProbeCooldownChannelID = 0
-			frt.ProbeCooldownUntil = 0
-		}
-	} else if slow {
-		frt.ProbeCount++
-		frt.VisitedChannelIDs = appendUniqueChannelID(frt.VisitedChannelIDs, channelID)
-	} else {
-		frt.ProbeCount = 0
-		frt.VisitedChannelIDs = nil
-		frt.ProbeCooldownChannelID = 0
-		frt.ProbeCooldownUntil = 0
+	if err := recordChannelAffinityFRTGlobalObservation(userID, meta.KeyFingerprint, scope, channelID, float64(frtMs), now); err != nil {
+		common.SysError(fmt.Sprintf("channel affinity global frt observation failed: user=%d, channel=%d, err=%v", userID, channelID, err))
 	}
 
-	toChannelID := expected.ChannelID
-	if !observeOnly {
-		toChannelID = channelID
-	}
-	frtEvent := "fast"
-	if slow {
-		frtEvent = "slow"
-	}
-	if !observeOnly && slow && frt.ProbeCount >= channelAffinityFRTProbeCount(setting) && frt.ProbeCooldownUntil <= now.UnixMilli() {
-		candidates, err := model.GetSatisfiedChannelsAtPriority(selection.Group, meta.ModelName, frt.Priority, meta.RequestPath)
-		if err != nil {
-			common.SysError(fmt.Sprintf("channel affinity frt candidate lookup failed: group=%s, model=%s, priority=%d, err=%v", selection.Group, meta.ModelName, frt.Priority, err))
-		} else {
-			target, allVisited := chooseChannelAffinityFRTTarget(candidates, frt, now, channelID)
-			if target != nil {
-				toChannelID = target.Id
-				if allVisited {
-					frtEvent = "probe_cooldown"
-					frt.ProbeCooldownChannelID = target.Id
-					cooldownSeconds := channelAffinityFRTProbeCooldownSeconds(setting)
-					frt.ProbeCooldownUntil = now.Add(time.Duration(cooldownSeconds) * time.Second).UnixMilli()
-				} else {
-					frtEvent = "switched"
-				}
-				frt.ProbeCount = 0
-			}
-		}
-	}
-
-	frtInfo := map[string]interface{}{
-		"event":                frtEvent,
-		"frt_ms":               frtMs,
-		"baseline_frt_ms":      score.BaselineFRTMs,
-		"peak_score_ms":        score.PeakScoreMs,
-		"threshold_ms":         threshold,
-		"probe_count":          frt.ProbeCount,
-		"from_channel_id":      channelID,
-		"to_channel_id":        toChannelID,
-		"probe_cooldown_until": frt.ProbeCooldownUntil,
-	}
-	if observeOnly {
-		frtInfo["event"] = "retry_observation"
-	}
-
-	ttlSeconds := meta.TTLSeconds
-	if ttlSeconds <= 0 {
-		ttlSeconds = setting.DefaultTTLSeconds
-	}
-	if ttlSeconds <= 0 {
-		ttlSeconds = 3600
-	}
-	replacement := expected
-	if !observeOnly {
-		replacement.ChannelID = toChannelID
-	}
-	replacement.FRT = frt
-	replacement.IdleExpiresAt = now.Add(time.Duration(ttlSeconds) * time.Second).UnixMilli()
-	versionEpoch, versionSeq := nextChannelAffinityVersion()
-	replacement.VersionEpoch = versionEpoch
-	replacement.VersionSeq = versionSeq
-	updated, err := switchChannelAffinityState(meta.CacheKey, expected, replacement, time.Duration(ttlSeconds)*time.Second)
-	if err != nil {
-		frtInfo["event"] = "state_update_error"
-		frtInfo["to_channel_id"] = channelID
-		setChannelAffinityFRTAdminInfo(c, frtInfo)
-		common.SysError(fmt.Sprintf("channel affinity frt state update failed: key=%s, err=%v", meta.CacheKey, err))
+	if !hasState || !requestState.Found {
 		return
 	}
-	if updated {
-		setChannelAffinityFRTAdminInfo(c, frtInfo)
-		return
-	}
-	if allowRetry {
-		latest, found, getErr := getChannelAffinityCache().Get(meta.CacheKey)
-		if getErr != nil {
-			common.SysError(fmt.Sprintf("channel affinity frt state reload failed: key=%s, err=%v", meta.CacheKey, getErr))
-		} else if found && (observeOnly || latest.ChannelID == channelID) && !sameChannelAffinityVersion(latest, expected) {
-			recordChannelAffinityFRTState(c, setting, meta, selection, channelID, frtMs, latest, false, observeOnly)
-			return
-		}
-	}
-	frtInfo["event"] = "cas_conflict"
-	frtInfo["to_channel_id"] = channelID
-	setChannelAffinityFRTAdminInfo(c, frtInfo)
+
+	recordChannelAffinityFRTStateV2WithScope(c, setting, meta, selection, scope, channelID, frtMs, requestState.State, observeOnly, true)
 }
 
 func channelAffinityFRTProbeCount(setting *operation_setting.ChannelAffinitySetting) int {
@@ -1082,198 +966,6 @@ func channelAffinityFRTProbeCooldownSeconds(setting *operation_setting.ChannelAf
 		return 3600
 	}
 	return setting.FRTProbeCooldownSeconds
-}
-
-func channelAffinityFRTDynamicThreshold(baselineFRTMs float64) float64 {
-	if baselineFRTMs <= 0 {
-		return channelAffinityFRTAcceptableMs
-	}
-	baselineFRTMs = math.Min(baselineFRTMs, channelAffinityFRTAcceptableMs)
-	return math.Min(channelAffinityFRTMaxThresholdMs, math.Max(channelAffinityFRTAcceptableMs, baselineFRTMs*channelAffinityFRTSlowMultiplier))
-}
-
-func cloneChannelAffinityFRTState(source *channelAffinityFRTState) *channelAffinityFRTState {
-	if source == nil {
-		return nil
-	}
-	cloned := *source
-	cloned.VisitedChannelIDs = append([]int(nil), source.VisitedChannelIDs...)
-	cloned.Channels = make([]channelAffinityFRTChannelScore, len(source.Channels))
-	for i, score := range source.Channels {
-		cloned.Channels[i] = score
-		cloned.Channels[i].RecentFRTMs = append([]float64(nil), score.RecentFRTMs...)
-	}
-	return &cloned
-}
-
-func pruneChannelAffinityFRTScores(scores []channelAffinityFRTChannelScore, now time.Time) []channelAffinityFRTChannelScore {
-	cutoff := now.Add(-channelAffinityFRTStateTTL).UnixMilli()
-	result := make([]channelAffinityFRTChannelScore, 0, len(scores))
-	for _, score := range scores {
-		if score.ChannelID > 0 && score.LastObservedAt >= cutoff {
-			result = append(result, score)
-		}
-	}
-	if len(result) <= maxChannelAffinityFRTChannels {
-		return result
-	}
-	sort.Slice(result, func(i, j int) bool { return result[i].LastObservedAt > result[j].LastObservedAt })
-	return result[:maxChannelAffinityFRTChannels]
-}
-
-func upsertChannelAffinityFRTScore(state *channelAffinityFRTState, channelID int) *channelAffinityFRTChannelScore {
-	for i := range state.Channels {
-		if state.Channels[i].ChannelID == channelID {
-			return &state.Channels[i]
-		}
-	}
-	if len(state.Channels) >= maxChannelAffinityFRTChannels {
-		sort.Slice(state.Channels, func(i, j int) bool { return state.Channels[i].LastObservedAt < state.Channels[j].LastObservedAt })
-		state.Channels = state.Channels[1:]
-	}
-	state.Channels = append(state.Channels, channelAffinityFRTChannelScore{ChannelID: channelID})
-	return &state.Channels[len(state.Channels)-1]
-}
-
-func updateChannelAffinityFRTScore(score *channelAffinityFRTChannelScore, frtMs float64, slow bool, now time.Time) {
-	if !slow && frtMs <= channelAffinityFRTAcceptableMs {
-		if score.LastObservedAt == 0 || score.BaselineFRTMs <= 0 {
-			score.BaselineFRTMs = frtMs
-		} else {
-			score.BaselineFRTMs = score.BaselineFRTMs*0.8 + frtMs*0.2
-		}
-	}
-	score.RecentFRTMs = append(score.RecentFRTMs, frtMs)
-	if len(score.RecentFRTMs) > channelAffinityFRTRecentSampleLimit {
-		score.RecentFRTMs = score.RecentFRTMs[len(score.RecentFRTMs)-channelAffinityFRTRecentSampleLimit:]
-	}
-	peak := score.PeakScoreMs
-	if peak > 0 && score.LastObservedAt > 0 {
-		elapsed := time.Duration(now.UnixMilli()-score.LastObservedAt) * time.Millisecond
-		if elapsed > 0 {
-			peak *= math.Exp(-float64(elapsed) / float64(channelAffinityFRTPeakDecay))
-		}
-	}
-	if frtMs > peak {
-		peak = frtMs
-	}
-	score.PeakScoreMs = peak
-	score.LastObservedAt = now.UnixMilli()
-}
-
-func channelAffinityFRTRecentRoutingScore(state *channelAffinityFRTState, channelID int, now time.Time) float64 {
-	for _, score := range state.Channels {
-		if score.ChannelID != channelID || len(score.RecentFRTMs) == 0 {
-			continue
-		}
-		samples := append([]float64(nil), score.RecentFRTMs...)
-		sort.Float64s(samples)
-		middle := len(samples) / 2
-		if len(samples)%2 == 1 {
-			return samples[middle]
-		}
-		return (samples[middle-1] + samples[middle]) / 2
-	}
-	return channelAffinityFRTRoutingScore(state, channelID, now)
-}
-
-func channelAffinityFRTRoutingScore(state *channelAffinityFRTState, channelID int, now time.Time) float64 {
-	for _, score := range state.Channels {
-		if score.ChannelID != channelID {
-			continue
-		}
-		peak := score.PeakScoreMs
-		if peak > 0 && score.LastObservedAt > 0 {
-			elapsed := time.Duration(now.UnixMilli()-score.LastObservedAt) * time.Millisecond
-			if elapsed > 0 {
-				peak *= math.Exp(-float64(elapsed) / float64(channelAffinityFRTPeakDecay))
-			}
-		}
-		baseline := score.BaselineFRTMs
-		if baseline <= 0 {
-			baseline = channelAffinityFRTColdStartMs
-		}
-		if peak > baseline {
-			return peak
-		}
-		return baseline
-	}
-	return channelAffinityFRTColdStartMs
-}
-
-type channelAffinityFRTScoredChannel struct {
-	channel *model.Channel
-	score   float64
-}
-
-func chooseChannelAffinityFRTTarget(candidates []*model.Channel, state *channelAffinityFRTState, now time.Time, currentID int) (*model.Channel, bool) {
-	if len(candidates) == 0 {
-		return nil, true
-	}
-	visited := make(map[int]struct{}, len(state.VisitedChannelIDs))
-	for _, id := range state.VisitedChannelIDs {
-		visited[id] = struct{}{}
-	}
-	available := make([]channelAffinityFRTScoredChannel, 0, len(candidates))
-	all := make([]channelAffinityFRTScoredChannel, 0, len(candidates))
-	for _, channel := range candidates {
-		if channel == nil {
-			continue
-		}
-		item := channelAffinityFRTScoredChannel{channel: channel, score: channelAffinityFRTRoutingScore(state, channel.Id, now)}
-		all = append(all, item)
-		if channel.Id != currentID {
-			if _, seen := visited[channel.Id]; !seen {
-				available = append(available, item)
-			}
-		}
-	}
-	if len(available) == 0 {
-		if len(all) == 0 {
-			return nil, true
-		}
-		for i := range all {
-			all[i].score = channelAffinityFRTRecentRoutingScore(state, all[i].channel.Id, now)
-		}
-		return selectLowestScoreChannel(all), true
-	}
-	return selectLowestScoreChannel(available), false
-}
-
-func selectLowestScoreChannel(candidates []channelAffinityFRTScoredChannel) *model.Channel {
-	if len(candidates) == 0 {
-		return nil
-	}
-	lowest := candidates[0].score
-	for _, candidate := range candidates[1:] {
-		if candidate.score < lowest {
-			lowest = candidate.score
-		}
-	}
-	tied := make([]*model.Channel, 0, len(candidates))
-	for _, candidate := range candidates {
-		if math.Abs(candidate.score-lowest) < 0.001 {
-			tied = append(tied, candidate.channel)
-		}
-	}
-	if len(tied) == 1 {
-		return tied[0]
-	}
-	weightSum := 0
-	for _, channel := range tied {
-		weightSum += channel.GetWeight()
-	}
-	if weightSum == 0 {
-		return tied[rand.Intn(len(tied))]
-	}
-	choice := rand.Intn(weightSum)
-	for _, channel := range tied {
-		choice -= channel.GetWeight()
-		if choice < 0 {
-			return channel
-		}
-	}
-	return tied[len(tied)-1]
 }
 
 func appendUniqueChannelID(ids []int, id int) []int {

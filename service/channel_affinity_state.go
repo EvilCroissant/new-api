@@ -44,24 +44,49 @@ type channelAffinityState struct {
 	FRT           *channelAffinityFRTState
 }
 
-const maxChannelAffinityFRTChannels = 16
+const (
+	maxChannelAffinityFRTChannels = 16
+	maxChannelAffinityFRTScopes   = 8
+)
+
+// channelAffinityFRTSample is an observation from one completed, real upstream
+// request. FRT data is never synthesized by probes or estimates.
+type channelAffinityFRTSample struct {
+	FRTMs      float64 `json:"frt_ms"`
+	ObservedAt int64   `json:"observed_at"`
+}
 
 type channelAffinityFRTChannelScore struct {
-	ChannelID      int       `json:"channel_id"`
-	BaselineFRTMs  float64   `json:"baseline_frt_ms"`
-	PeakScoreMs    float64   `json:"peak_score_ms"`
-	LastObservedAt int64     `json:"last_observed_at"`
-	RecentFRTMs    []float64 `json:"recent_frt_ms,omitempty"`
+	ChannelID      int                        `json:"channel_id"`
+	LastObservedAt int64                      `json:"last_observed_at"`
+	Samples        []channelAffinityFRTSample `json:"samples,omitempty"`
+}
+
+// channelAffinityFRTScope keeps only request properties that are known both
+// when a channel is selected and when its FRT is recorded. Prompt-token bins
+// are intentionally not used here: token estimation happens after channel
+// selection, so mixing an estimate into the pre-selection key would make the
+// comparison asymmetric and misleading.
+type channelAffinityFRTScope struct {
+	Group       string `json:"group"`
+	ModelName   string `json:"model"`
+	RequestPath string `json:"request_path"`
+	Stream      bool   `json:"stream"`
+}
+
+type channelAffinityFRTScopeState struct {
+	channelAffinityFRTScope
+	ConsecutiveSlow       int                              `json:"consecutive_slow"`
+	EpisodeVisitedChannel []int                            `json:"episode_visited_channel_ids,omitempty"`
+	StableCount           int                              `json:"stable_count"`
+	CooldownChannelID     int                              `json:"all_slow_hold_channel_id,omitempty"`
+	CooldownUntil         int64                            `json:"all_slow_hold_until,omitempty"`
+	LastObservedAt        int64                            `json:"last_observed_at"`
+	Channels              []channelAffinityFRTChannelScore `json:"channels,omitempty"`
 }
 
 type channelAffinityFRTState struct {
-	Group                  string                           `json:"group"`
-	Priority               int64                            `json:"priority"`
-	ProbeCount             int                              `json:"consecutive_slow"`
-	VisitedChannelIDs      []int                            `json:"visited_channel_ids,omitempty"`
-	ProbeCooldownChannelID int                              `json:"all_slow_hold_channel_id,omitempty"`
-	ProbeCooldownUntil     int64                            `json:"all_slow_hold_until,omitempty"`
-	Channels               []channelAffinityFRTChannelScore `json:"channels,omitempty"`
+	Scopes []channelAffinityFRTScopeState `json:"scopes,omitempty"`
 }
 
 type channelAffinityRequestState struct {

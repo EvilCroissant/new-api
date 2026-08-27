@@ -227,6 +227,108 @@ func GetSatisfiedChannelsAtPriority(group string, model string, priority int64, 
 	return result, nil
 }
 
+// GetSatisfiedChannels returns every enabled channel that can serve the model
+// and request path, regardless of priority. Callers must still apply the
+// normal priority/weight policy when they do not have stronger evidence for a
+// cross-priority decision.
+func GetSatisfiedChannels(group string, model string, requestPath string) ([]*Channel, error) {
+	if !common.MemoryCacheEnabled {
+		loadAbilities := func(modelName string) ([]Ability, error) {
+			var abilities []Ability
+			err := DB.Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, modelName, true).
+				Find(&abilities).Error
+			if err != nil {
+				return nil, err
+			}
+			return filterAbilitiesByRequestPathAndModel(abilities, requestPath, model), nil
+		}
+		abilities, err := loadAbilities(model)
+		if err != nil {
+			return nil, err
+		}
+		if len(abilities) == 0 {
+			normalizedModel := ratio_setting.FormatMatchingModelName(model)
+			if normalizedModel != model {
+				abilities, err = loadAbilities(normalizedModel)
+				if err != nil {
+					return nil, err
+				}
+			}
+		}
+		if len(abilities) == 0 {
+			return nil, nil
+		}
+		ids := make([]int, 0, len(abilities))
+		seen := make(map[int]struct{}, len(abilities))
+		for _, ability := range abilities {
+			if _, ok := seen[ability.ChannelId]; ok {
+				continue
+			}
+			seen[ability.ChannelId] = struct{}{}
+			ids = append(ids, ability.ChannelId)
+		}
+		channels, err := GetChannelsByIds(ids)
+		if err != nil {
+			return nil, err
+		}
+		result := make([]*Channel, 0, len(channels))
+		for _, channel := range channels {
+			if channel.Status == common.ChannelStatusEnabled {
+				result = append(result, channel)
+			}
+		}
+		return result, nil
+	}
+
+	channelSyncLock.RLock()
+	defer channelSyncLock.RUnlock()
+
+	channelIDs := filterChannelsByRequestPathAndModel(group2model2channels[group][model], requestPath, model)
+	if len(channelIDs) == 0 {
+		normalizedModel := ratio_setting.FormatMatchingModelName(model)
+		channelIDs = filterChannelsByRequestPathAndModel(group2model2channels[group][normalizedModel], requestPath, model)
+	}
+	result := make([]*Channel, 0, len(channelIDs))
+	seen := make(map[int]struct{}, len(channelIDs))
+	for _, channelID := range channelIDs {
+		if _, ok := seen[channelID]; ok {
+			continue
+		}
+		seen[channelID] = struct{}{}
+		channel, ok := channelsIDM[channelID]
+		if !ok {
+			return nil, fmt.Errorf("数据库一致性错误，渠道# %d 不存在，请联系管理员修复", channelID)
+		}
+		if channel.Status == common.ChannelStatusEnabled {
+			result = append(result, channel)
+		}
+	}
+	return result, nil
+}
+
+// GetRandomSatisfiedChannelAtPrioritySkippingChannels preserves the normal
+// weighted selection within one priority while excluding channels that the
+// caller has already consumed in the current routing episode.
+func GetRandomSatisfiedChannelAtPrioritySkippingChannels(group string, model string, priority int64, requestPath string, skippedChannelIDs map[int]struct{}) (*Channel, error) {
+	candidates, err := GetSatisfiedChannelsAtPriority(group, model, priority, requestPath)
+	if err != nil || len(candidates) == 0 {
+		return nil, err
+	}
+	remaining := make([]*Channel, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate == nil {
+			continue
+		}
+		if _, skipped := skippedChannelIDs[candidate.Id]; !skipped {
+			remaining = append(remaining, candidate)
+		}
+	}
+	if !common.MemoryCacheEnabled {
+		return randomSatisfiedChannelByDatabaseWeight(remaining)
+	}
+	return randomSatisfiedChannelByWeight(remaining)
+}
+
 // GetRandomSatisfiedChannelSkippingPriority keeps the original priority-based
 // retry order while omitting the priority already consumed by an affinity hit.
 func GetRandomSatisfiedChannelSkippingPriority(group string, model string, retry int, requestPath string, skippedPriority *int64) (*Channel, error) {
@@ -382,6 +484,13 @@ func randomSatisfiedChannelAtPriority(channels []int, targetPriority int64, fail
 			targetChannels = remainingChannels
 		}
 	}
+	return randomSatisfiedChannelByWeight(targetChannels)
+}
+
+func randomSatisfiedChannelByWeight(targetChannels []*Channel) (*Channel, error) {
+	if len(targetChannels) == 0 {
+		return nil, errors.New("channel not found")
+	}
 
 	var sumWeight = 0
 	for _, channel := range targetChannels {
@@ -416,6 +525,27 @@ func randomSatisfiedChannelAtPriority(channels []int, targetPriority int64, fail
 		}
 	}
 	// return null if no channel is not found
+	return nil, errors.New("channel not found")
+}
+
+// randomSatisfiedChannelByDatabaseWeight mirrors the database-backed selector,
+// whose effective weight is the configured weight plus the existing +10 floor.
+// It is used by FRT exploration when the in-memory channel cache is disabled.
+func randomSatisfiedChannelByDatabaseWeight(targetChannels []*Channel) (*Channel, error) {
+	if len(targetChannels) == 0 {
+		return nil, errors.New("channel not found")
+	}
+	weightSum := 0
+	for _, channel := range targetChannels {
+		weightSum += channel.GetWeight() + 10
+	}
+	weight := common.GetRandomInt(weightSum)
+	for _, channel := range targetChannels {
+		weight -= channel.GetWeight() + 10
+		if weight <= 0 {
+			return channel, nil
+		}
+	}
 	return nil, errors.New("channel not found")
 }
 

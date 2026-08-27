@@ -119,7 +119,6 @@ func Distribute() func(c *gin.Context) {
 										channel = probe
 									}
 									affinityUsable = true
-									service.MarkChannelAffinityUsed(c, g, channel.Id, channel.GetPriority())
 									break
 								}
 							}
@@ -130,7 +129,6 @@ func Distribute() func(c *gin.Context) {
 								channel = probe
 							}
 							affinityUsable = true
-							service.MarkChannelAffinityUsed(c, usingGroup, channel.Id, channel.GetPriority())
 						}
 					}
 					if !affinityUsable && !service.ShouldKeepChannelAffinityOnChannelDisabled() {
@@ -165,6 +163,10 @@ func Distribute() func(c *gin.Context) {
 						return
 					}
 				}
+				// Keep the selected group available for FRT observations even when
+				// this request was the first affinity-key miss. The affinity state
+				// itself is still created only after a successful response below.
+				service.MarkChannelAffinityUsed(c, selectGroup, channel.Id, channel.GetPriority())
 			}
 		}
 		common.SetContextKey(c, constant.ContextKeyRequestStartTime, time.Now())

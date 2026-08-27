@@ -32,6 +32,8 @@ type ChannelAffinitySetting struct {
 	OptimizationEnabled    bool `json:"optimization_enabled"`
 	FRTOptimizationEnabled bool `json:"frt_optimization_enabled"`
 	// Keep the persisted keys stable so existing deployments retain their FRT tuning.
+	// FRTProbeCount is the administrator-configurable number of consecutive
+	// slow real requests required before FRT evaluates a channel switch.
 	FRTProbeCount              int                   `json:"frt_consecutive_slow_limit"`
 	FRTProbeCooldownSeconds    int                   `json:"frt_all_slow_hold_seconds"`
 	SwitchOnSuccess            bool                  `json:"switch_on_success"`
