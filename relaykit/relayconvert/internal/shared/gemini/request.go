@@ -18,6 +18,7 @@ var SupportedMimeTypes = map[string]bool{
 	"image/png":       true,
 	"image/jpeg":      true,
 	"image/jpg":       true,
+	"image/gif":       true,
 	"image/webp":      true,
 	"image/heic":      true,
 	"image/heif":      true,
