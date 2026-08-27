@@ -69,6 +69,13 @@ interface DetailSegment {
   danger?: boolean
 }
 
+const FRT_CHANNEL_SWITCH_EVENTS = new Set([
+  'switched',
+  'switched_exploration',
+  'probe_cooldown',
+  'cooldown_global_switch',
+])
+
 function formatRatioCompact(ratio: number | undefined): string {
   if (ratio == null || !Number.isFinite(ratio)) return '-'
   return ratio % 1 === 0
@@ -347,7 +354,24 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
             affinity.probe_succeeded === true &&
             typeof affinity.from_channel_id === 'number' &&
             typeof affinity.to_channel_id === 'number'
-          const showChannelRoute = hasRetryChain || hasSuccessfulUpwardProbe
+          const frtOptimization = affinity?.frt_optimization
+          const hasFRTChannelSwitch =
+            frtOptimization != null &&
+            FRT_CHANNEL_SWITCH_EVENTS.has(frtOptimization.event || '') &&
+            typeof frtOptimization.from_channel_id === 'number' &&
+            Number.isInteger(frtOptimization.from_channel_id) &&
+            frtOptimization.from_channel_id > 0 &&
+            typeof frtOptimization.to_channel_id === 'number' &&
+            Number.isInteger(frtOptimization.to_channel_id) &&
+            frtOptimization.to_channel_id > 0 &&
+            frtOptimization.from_channel_id !== frtOptimization.to_channel_id
+          const showChannelRoute =
+            hasRetryChain || hasSuccessfulUpwardProbe || hasFRTChannelSwitch
+          const channelRouteLabel = hasRetryChain
+            ? 'Retry Chain'
+            : hasFRTChannelSwitch
+              ? 'FRT Optimization'
+              : 'Channel Optimization'
           const channelDisplay = log.channel_name
             ? `${log.channel_name} #${log.channel}`
             : `#${log.channel}`
@@ -394,11 +418,7 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
                             <button
                               type='button'
                               className='text-muted-foreground hover:text-foreground focus-visible:ring-ring inline-flex size-5 shrink-0 items-center justify-center rounded-full transition-colors focus-visible:ring-2 focus-visible:outline-none'
-                              aria-label={t(
-                                hasRetryChain
-                                  ? 'Retry Chain'
-                                  : 'Channel Optimization'
-                              )}
+                              aria-label={t(channelRouteLabel)}
                               onClick={(e) => e.stopPropagation()}
                             />
                           }
@@ -432,6 +452,17 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
                                 <p className='text-muted-foreground font-mono break-all'>
                                   #{affinity.from_channel_id} → #
                                   {affinity.to_channel_id}
+                                </p>
+                              </div>
+                            )}
+                            {hasFRTChannelSwitch && (
+                              <div>
+                                <p className='font-medium'>
+                                  {t('FRT Optimization')}
+                                </p>
+                                <p className='text-muted-foreground font-mono break-all'>
+                                  #{frtOptimization.from_channel_id} → #
+                                  {frtOptimization.to_channel_id}
                                 </p>
                               </div>
                             )}
@@ -490,6 +521,15 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
                         <p className='text-muted-foreground font-mono break-all'>
                           #{affinity.from_channel_id} → #
                           {affinity.to_channel_id}
+                        </p>
+                      </div>
+                    )}
+                    {hasFRTChannelSwitch && (
+                      <div className='border-t pt-1 text-xs'>
+                        <p className='font-medium'>{t('FRT Optimization')}</p>
+                        <p className='text-muted-foreground font-mono break-all'>
+                          #{frtOptimization.from_channel_id} → #
+                          {frtOptimization.to_channel_id}
                         </p>
                       </div>
                     )}

@@ -89,6 +89,15 @@ export interface ChannelAffinityInfo {
   from_channel_id?: number
   to_channel_id?: number
   probe_succeeded?: boolean
+  frt_optimization?: {
+    event?: string
+    from_channel_id?: number
+    to_channel_id?: number
+    frt_ms?: number
+    threshold_ms?: number
+    routing_score_ms?: number
+    consecutive_slow?: number
+  }
   key_source?: string
   key_path?: string
   key_key?: string

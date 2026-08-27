@@ -518,7 +518,7 @@ export function ChannelAffinitySection(props: Props) {
             className='py-0'
           />
           <div className='grid gap-1.5'>
-            <Label>{t('FRT probe count')}</Label>
+            <Label>{t('FRT consecutive slow limit')}</Label>
             <Input
               type='number'
               min={1}
@@ -528,7 +528,7 @@ export function ChannelAffinitySection(props: Props) {
             />
           </div>
           <div className='grid gap-1.5'>
-            <Label>{t('FRT probe cooldown (seconds)')}</Label>
+            <Label>{t('FRT all-slow hold (seconds)')}</Label>
             <Input
               type='number'
               min={1}
