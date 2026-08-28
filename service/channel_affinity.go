@@ -870,24 +870,71 @@ func RecordChannelAffinity(c *gin.Context, channelID int) {
 		return
 	}
 
-	if channelID == requestState.State.ChannelID {
-		if _, err := refreshChannelAffinityState(cacheKey, requestState.State, idleExpiresAt, ttl); err != nil {
-			common.SysError(fmt.Sprintf("channel affinity cache refresh failed: key=%s, err=%v", cacheKey, err))
-		}
-		return
+	if _, err := persistSuccessfulChannelAffinity(cacheKey, requestState.State, channelID, ttl, setting); err != nil {
+		common.SysError(fmt.Sprintf("channel affinity cache success write failed: key=%s, err=%v", cacheKey, err))
+	}
+}
+
+const channelAffinitySuccessWriteAttempts = 3
+
+// persistSuccessfulChannelAffinity preserves the native affinity write rules
+// while merging with a concurrent FRT update. FRT stores its observations in
+// the same versioned affinity value, so a successful FRT write can advance the
+// version before the outer middleware records the request's successful channel.
+// A CAS miss is retried from the latest state only while the affinity channel
+// is still the one observed at request start. If another routing decision has
+// already changed the channel, that newer decision wins and must not be
+// overwritten by this request.
+func persistSuccessfulChannelAffinity(cacheKey string, expected channelAffinityState, channelID int, ttl time.Duration, setting *operation_setting.ChannelAffinitySetting) (bool, error) {
+	if cacheKey == "" || channelID <= 0 || ttl <= 0 || setting == nil {
+		return false, nil
 	}
 
-	versionEpoch, versionSeq := nextChannelAffinityVersion()
-	replacement := channelAffinityState{
-		ChannelID:     channelID,
-		VersionEpoch:  versionEpoch,
-		VersionSeq:    versionSeq,
-		NextProbeAt:   now.Add(channelAffinityProbeInterval(setting)).UnixMilli(),
-		IdleExpiresAt: idleExpiresAt,
+	for attempt := 0; attempt < channelAffinitySuccessWriteAttempts; attempt++ {
+		now := time.Now()
+		idleExpiresAt := now.Add(ttl).UnixMilli()
+
+		if channelID == expected.ChannelID {
+			updated, err := refreshChannelAffinityState(cacheKey, expected, idleExpiresAt, ttl)
+			if err != nil {
+				return false, err
+			}
+			if updated {
+				return true, nil
+			}
+		} else {
+			replacement := expected
+			replacement.ChannelID = channelID
+			replacement.NextProbeAt = now.Add(channelAffinityProbeInterval(setting)).UnixMilli()
+			replacement.IdleExpiresAt = idleExpiresAt
+			// The native affinity writer changes only the selected channel and
+			// expiry metadata; never clear FRT observations already persisted.
+			versionEpoch, versionSeq := nextChannelAffinityVersion()
+			replacement.VersionEpoch = versionEpoch
+			replacement.VersionSeq = versionSeq
+
+			updated, err := switchChannelAffinityState(cacheKey, expected, replacement, ttl)
+			if err != nil {
+				return false, err
+			}
+			if updated {
+				return true, nil
+			}
+		}
+
+		latest, found, err := getChannelAffinityCache().Get(cacheKey)
+		if err != nil {
+			return false, err
+		}
+		if !found || latest.ChannelID != expected.ChannelID {
+			// Missing state or a different channel means the request no longer
+			// owns the affinity transition. Keep the newer routing decision.
+			return false, nil
+		}
+		expected = latest
 	}
-	if _, err := switchChannelAffinityState(cacheKey, requestState.State, replacement, ttl); err != nil {
-		common.SysError(fmt.Sprintf("channel affinity cache switch failed: key=%s, err=%v", cacheKey, err))
-	}
+
+	return false, fmt.Errorf("channel affinity success write CAS conflict after %d attempts", channelAffinitySuccessWriteAttempts)
 }
 
 // RecordChannelAffinityFRT updates the user-scoped latency state whenever the
