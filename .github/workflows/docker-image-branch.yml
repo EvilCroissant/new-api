@@ -1,9 +1,6 @@
 name: Publish Docker image (branch)
 
 on:
-  push:
-    branches:
-      - develop
   workflow_dispatch:
     inputs:
       branch:
