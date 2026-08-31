@@ -8,8 +8,7 @@ import (
 	"sync"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/constant"
-	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
 	"github.com/samber/lo"
@@ -130,13 +129,13 @@ func getChannelQuerySkippingPriority(group string, model string, retry int, skip
 	return DB.Where(commonGroupCol+" = ? and model = ? and enabled = ? and priority = ?", group, model, true, priorities[retry]), nil
 }
 
-func GetChannel(group string, model string, retry int, requestPath string) (*Channel, error) {
-	return getChannelSkippingPriority(group, model, retry, requestPath, nil, nil)
+func GetChannel(group string, model string, retry int, filters []dto.ChannelFilter) (*Channel, error) {
+	return getChannelSkippingPriority(group, model, retry, filters, nil, nil)
 }
 
 // GetChannelAtNextHigherPriority is the database-backed equivalent of
 // GetRandomSatisfiedChannelAtNextHigherPriority.
-func GetChannelAtNextHigherPriority(group string, model string, currentPriority int64, requestPath string) (*Channel, error) {
+func GetChannelAtNextHigherPriority(group string, model string, currentPriority int64, filters []dto.ChannelFilter) (*Channel, error) {
 	var abilities []Ability
 	err := DB.
 		Where(commonGroupCol+" = ? and model = ? and enabled = ? and priority > ?", group, model, true, currentPriority).
@@ -146,7 +145,7 @@ func GetChannelAtNextHigherPriority(group string, model string, currentPriority 
 	if err != nil {
 		return nil, err
 	}
-	abilities = filterAbilitiesByRequestPathAndModel(abilities, requestPath, model)
+	abilities = filterAbilitiesByConstraints(abilities, model, filters)
 	if len(abilities) == 0 {
 		return nil, nil
 	}
@@ -176,11 +175,11 @@ func GetChannelAtNextHigherPriority(group string, model string, currentPriority 
 
 // GetChannelSkippingPriority is the database-backed equivalent of
 // GetRandomSatisfiedChannelSkippingPriority.
-func GetChannelSkippingPriority(group string, model string, retry int, requestPath string, skippedPriority *int64) (*Channel, error) {
-	return getChannelSkippingPriority(group, model, retry, requestPath, skippedPriority, nil)
+func GetChannelSkippingPriority(group string, model string, retry int, filters []dto.ChannelFilter, skippedPriority *int64) (*Channel, error) {
+	return getChannelSkippingPriority(group, model, retry, filters, skippedPriority, nil)
 }
 
-func getChannelSkippingPriority(group string, model string, retry int, requestPath string, skippedPriority *int64, failedChannelIDs map[int]struct{}) (*Channel, error) {
+func getChannelSkippingPriority(group string, model string, retry int, filters []dto.ChannelFilter, skippedPriority *int64, failedChannelIDs map[int]struct{}) (*Channel, error) {
 	var abilities []Ability
 
 	var err error = nil
@@ -196,7 +195,7 @@ func getChannelSkippingPriority(group string, model string, retry int, requestPa
 	if err != nil {
 		return nil, err
 	}
-	abilities = filterAbilitiesByRequestPathAndModel(abilities, requestPath, model)
+	abilities = filterAbilitiesByConstraints(abilities, model, filters)
 	if len(failedChannelIDs) > 0 {
 		remainingAbilities := make([]Ability, 0, len(abilities))
 		for _, ability := range abilities {
@@ -232,7 +231,7 @@ func getChannelSkippingPriority(group string, model string, retry int, requestPa
 	return &channel, err
 }
 
-func getChannelForRetry(group string, model string, currentPriority int64, remainingRetries int, requestPath string, failedChannelIDs map[int]struct{}) (*Channel, error) {
+func getChannelForRetry(group string, model string, currentPriority int64, remainingRetries int, filters []dto.ChannelFilter, failedChannelIDs map[int]struct{}) (*Channel, error) {
 	if remainingRetries <= 0 {
 		return nil, nil
 	}
@@ -248,7 +247,7 @@ func getChannelForRetry(group string, model string, currentPriority int64, remai
 		if err != nil {
 			return nil, err
 		}
-		return filterAbilitiesByRequestPathAndModel(abilities, requestPath, model), nil
+		return filterAbilitiesByConstraints(abilities, model, filters), nil
 	}
 
 	abilities, err := loadAbilities(model)
@@ -324,51 +323,53 @@ func getChannelForRetry(group string, model string, currentPriority int64, remai
 	return nil, errors.New("channel not found")
 }
 
-// filterAbilitiesByRequestPathAndModel restricts candidates by request path and
-// model for the DB (non-memory-cache) selection path. Only Advanced Custom
-// (type 58) channels are path-checked: kept only when one of their routes matches
-// requestPath and model; all other channel types always pass. When requestPath is
-// empty, filtering is skipped.
-func filterAbilitiesByRequestPathAndModel(abilities []Ability, requestPath string, model string) []Ability {
-	if requestPath == "" || len(abilities) == 0 {
-		return abilities
+// filterAbilitiesByConstraints applies the same predicate as the memory-cache
+// path. A failed channel lookup fails closed when a keyed task-plugin identity
+// is required and otherwise preserves the historical database behavior.
+func filterAbilitiesByConstraints(abilities []Ability, modelName string, filters []dto.ChannelFilter) []Ability {
+	if len(abilities) == 0 {
+		return nil
 	}
 
-	channelIds := make([]int, 0, len(abilities))
+	channelIDs := make([]int, 0, len(abilities))
 	seen := make(map[int]struct{}, len(abilities))
 	for _, ability := range abilities {
 		if _, ok := seen[ability.ChannelId]; ok {
 			continue
 		}
 		seen[ability.ChannelId] = struct{}{}
-		channelIds = append(channelIds, ability.ChannelId)
+		channelIDs = append(channelIDs, ability.ChannelId)
 	}
 
 	var channels []*Channel
-	if err := DB.Where("id IN ?", channelIds).Find(&channels).Error; err != nil {
-		// On error, fall back to unfiltered candidates to avoid blocking selection
+	if err := DB.Where("id IN ?", channelIDs).Find(&channels).Error; err != nil {
+		if identityFilterRequiresKey(filters) {
+			return nil
+		}
 		return abilities
 	}
 
-	advancedConfigs := make(map[int]*dto.AdvancedCustomConfig)
+	channelsByID := make(map[int]*Channel, len(channels))
 	for _, channel := range channels {
-		if channel.Type == constant.ChannelTypeAdvancedCustom {
-			advancedConfigs[channel.Id] = channel.GetOtherSettings().AdvancedCustom
-		}
+		channelsByID[channel.Id] = channel
 	}
 
 	filtered := make([]Ability, 0, len(abilities))
 	for _, ability := range abilities {
-		config, isAdvancedCustom := advancedConfigs[ability.ChannelId]
-		if !isAdvancedCustom {
-			filtered = append(filtered, ability)
-			continue
-		}
-		if config != nil && config.SupportsPathForModel(requestPath, model) {
+		if ok, _ := ChannelSatisfiesFilters(channelsByID[ability.ChannelId], modelName, filters); ok {
 			filtered = append(filtered, ability)
 		}
 	}
 	return filtered
+}
+
+func identityFilterRequiresKey(filters []dto.ChannelFilter) bool {
+	for _, filter := range filters {
+		if filter.Kind == dto.FilterTaskPluginIdentity && filter.TaskPluginKey != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func (channel *Channel) AddAbilities(tx *gorm.DB) error {

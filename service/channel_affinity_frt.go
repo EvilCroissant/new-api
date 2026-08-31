@@ -502,7 +502,7 @@ func getPreferredChannelByFRT(c *gin.Context, modelName string, usingGroup strin
 		if strings.TrimSpace(group) == "" {
 			continue
 		}
-		candidates, err := model.GetSatisfiedChannels(group, modelName, requestPathFromContext(c))
+		candidates, err := model.GetSatisfiedChannels(group, modelName, channelSelectionFilters(c, requestPathFromContext(c)))
 		if err != nil {
 			common.SysError(fmt.Sprintf("channel affinity initial frt candidate lookup failed: group=%s, model=%s, err=%v", group, modelName, err))
 			continue
@@ -833,7 +833,8 @@ func recordChannelAffinityFRTStateV2WithScope(c *gin.Context, setting *operation
 
 		triggerConsecutiveSlow = scopeState.ConsecutiveSlow
 		if slow && channelAffinityFRTShouldEvaluate(scopeState, setting) {
-			candidates, err := model.GetSatisfiedChannels(selection.Group, meta.ModelName, meta.RequestPath)
+			filters := channelSelectionFilters(c, meta.RequestPath)
+			candidates, err := model.GetSatisfiedChannels(selection.Group, meta.ModelName, filters)
 			if err != nil {
 				common.SysError(fmt.Sprintf("channel affinity frt candidate lookup failed: group=%s, model=%s, err=%v", selection.Group, meta.ModelName, err))
 			} else {
@@ -869,7 +870,7 @@ func recordChannelAffinityFRTStateV2WithScope(c *gin.Context, setting *operation
 						for _, visitedID := range scopeState.EpisodeVisitedChannel {
 							skippedChannelIDs[visitedID] = struct{}{}
 						}
-						target, selectErr := model.GetRandomSatisfiedChannelAtPrioritySkippingChannels(selection.Group, meta.ModelName, selection.Priority, meta.RequestPath, skippedChannelIDs)
+						target, selectErr := model.GetRandomSatisfiedChannelAtPrioritySkippingChannels(selection.Group, meta.ModelName, selection.Priority, filters, skippedChannelIDs)
 						if selectErr != nil {
 							common.SysError(fmt.Sprintf("channel affinity frt unknown candidate selection failed: group=%s, model=%s, priority=%d, err=%v", selection.Group, meta.ModelName, selection.Priority, selectErr))
 						} else if target != nil {

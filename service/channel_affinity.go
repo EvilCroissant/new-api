@@ -772,7 +772,7 @@ func TryClaimHigherPriorityAffinityProbe(c *gin.Context, selectedGroup string, p
 		selectedGroup,
 		meta.ModelName,
 		preferred.GetPriority(),
-		meta.RequestPath,
+		channelSelectionFilters(c, meta.RequestPath),
 	)
 	if err != nil {
 		common.SysError(fmt.Sprintf(
