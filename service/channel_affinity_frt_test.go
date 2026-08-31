@@ -1,11 +1,13 @@
 package service
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
-	"github.com/QuantumNous/new-api/relay/common"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -37,15 +39,136 @@ func TestChannelAffinityFRTDynamicThresholdV2(t *testing.T) {
 }
 
 func TestChannelAffinityFRTShouldEvaluate(t *testing.T) {
-	setting := &operation_setting.ChannelAffinitySetting{FRTProbeCount: 2}
+	setting := &operation_setting.ChannelAffinitySetting{FRTProbeCount: 3}
 	scope := &channelAffinityFRTScopeState{ConsecutiveSlow: 1}
-	assert.False(t, channelAffinityFRTShouldEvaluate(scope, 12_000, setting))
+	assert.False(t, channelAffinityFRTShouldEvaluate(scope, setting))
 
 	scope.ConsecutiveSlow = 2
-	assert.True(t, channelAffinityFRTShouldEvaluate(scope, 12_000, setting))
+	assert.False(t, channelAffinityFRTShouldEvaluate(scope, setting))
 
-	scope.ConsecutiveSlow = 0
-	assert.True(t, channelAffinityFRTShouldEvaluate(scope, int64(channelAffinityFRTExplosionMs), setting))
+	scope.ConsecutiveSlow = 3
+	assert.True(t, channelAffinityFRTShouldEvaluate(scope, setting))
+}
+
+func TestChannelAffinityFRTPendingSwitchIsConsumedOnlyByTarget(t *testing.T) {
+	scope := &channelAffinityFRTScopeState{
+		PendingSwitch: &channelAffinityFRTPendingSwitch{
+			Event:         "switched",
+			FromChannelID: 56,
+			ToChannelID:   54,
+		},
+	}
+
+	assert.Nil(t, takeChannelAffinityFRTPendingSwitch(scope, 56))
+	require.NotNil(t, scope.PendingSwitch)
+
+	pending := takeChannelAffinityFRTPendingSwitch(scope, 54)
+	require.NotNil(t, pending)
+	assert.Equal(t, 56, pending.FromChannelID)
+	assert.Equal(t, 54, pending.ToChannelID)
+	assert.Nil(t, scope.PendingSwitch)
+}
+
+func TestChannelAffinityFRTPendingSwitchIsLoggedOnDestinationRequest(t *testing.T) {
+	previousRedisEnabled := common.RedisEnabled
+	previousRedisClient := common.RDB
+	common.RedisEnabled = false
+	common.RDB = nil
+	t.Cleanup(func() {
+		common.RedisEnabled = previousRedisEnabled
+		common.RDB = previousRedisClient
+	})
+
+	cacheKey := fmt.Sprintf("test-frt-pending-destination:%d", time.Now().UnixNano())
+	cache := getChannelAffinityCache()
+	t.Cleanup(func() { _, _ = cache.DeleteMany([]string{cacheKey}) })
+
+	scope := channelAffinityFRTScope{
+		Group:       "default",
+		ModelName:   "gpt-5.6-terra",
+		RequestPath: "/v1/chat/completions",
+		Stream:      true,
+	}
+	initial := buildChannelAffinityStateForTest(54, time.Minute)
+	initial.FRT = &channelAffinityFRTState{Scopes: []channelAffinityFRTScopeState{{
+		channelAffinityFRTScope: scope,
+		PendingSwitch: &channelAffinityFRTPendingSwitch{
+			Event:           "switched",
+			FromChannelID:   56,
+			ToChannelID:     54,
+			FRTMs:           44_200,
+			ThresholdMs:     10_000,
+			RoutingScoreMs:  44_200,
+			ConsecutiveSlow: 3,
+		},
+	}}}
+	require.NoError(t, cache.SetWithTTL(cacheKey, initial, time.Minute))
+
+	meta := channelAffinityMeta{
+		CacheKey:    cacheKey,
+		TTLSeconds:  60,
+		UsingGroup:  "default",
+		ModelName:   scope.ModelName,
+		RequestPath: scope.RequestPath,
+	}
+	selection := channelAffinitySelection{Group: "default"}
+	setting := &operation_setting.ChannelAffinitySetting{FRTProbeCount: 3, DefaultTTLSeconds: 60}
+	ctx := buildChannelAffinityTemplateContextForTest(meta)
+	recordChannelAffinityFRTStateV2WithScope(ctx, setting, meta, selection, scope, 54, 2_800, initial, false, true)
+
+	anyInfo, ok := ctx.Get(ginKeyChannelAffinityLogInfo)
+	require.True(t, ok)
+	info, ok := anyInfo.(map[string]interface{})
+	require.True(t, ok)
+	frtInfo, ok := info["frt_optimization"].(map[string]interface{})
+	require.True(t, ok)
+	require.Equal(t, "switched", frtInfo["event"])
+	require.Equal(t, 56, frtInfo["from_channel_id"])
+	require.Equal(t, 54, frtInfo["to_channel_id"])
+
+	stored, found, err := cache.Get(cacheKey)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Nil(t, stored.FRT.Scopes[0].PendingSwitch)
+
+	secondCtx := buildChannelAffinityTemplateContextForTest(meta)
+	recordChannelAffinityFRTStateV2WithScope(secondCtx, setting, meta, selection, scope, 54, 2_600, stored, false, true)
+	secondAnyInfo, ok := secondCtx.Get(ginKeyChannelAffinityLogInfo)
+	require.True(t, ok)
+	secondInfo, ok := secondAnyInfo.(map[string]interface{})
+	require.True(t, ok)
+	secondFRTInfo, ok := secondInfo["frt_optimization"].(map[string]interface{})
+	require.True(t, ok)
+	require.Equal(t, "fast", secondFRTInfo["event"])
+}
+
+func TestChannelAffinityStateCodecPreservesPendingFRTSwitch(t *testing.T) {
+	state := buildChannelAffinityStateForTest(54, time.Minute)
+	state.FRT = &channelAffinityFRTState{Scopes: []channelAffinityFRTScopeState{{
+		channelAffinityFRTScope: channelAffinityFRTScope{
+			Group:       "default",
+			ModelName:   "gpt-5.6-terra",
+			RequestPath: "/v1/chat/completions",
+			Stream:      true,
+		},
+		PendingSwitch: &channelAffinityFRTPendingSwitch{
+			Event:           "switched",
+			FromChannelID:   56,
+			ToChannelID:     54,
+			FRTMs:           44_200,
+			ThresholdMs:     10_000,
+			RoutingScoreMs:  44_200,
+			ConsecutiveSlow: 3,
+		},
+	}}}
+
+	encoded, err := (channelAffinityStateCodec{}).Encode(state)
+	require.NoError(t, err)
+	decoded, err := (channelAffinityStateCodec{}).Decode(encoded)
+	require.NoError(t, err)
+	require.NotNil(t, decoded.FRT)
+	require.Len(t, decoded.FRT.Scopes, 1)
+	require.Equal(t, state.FRT.Scopes[0].PendingSwitch, decoded.FRT.Scopes[0].PendingSwitch)
 }
 
 func TestChooseChannelAffinityFRTTargetV2AvoidsEpisodeOscillation(t *testing.T) {
@@ -187,7 +310,7 @@ func TestChannelAffinityFRTGlobalWindowRejectsSingleUserDominance(t *testing.T) 
 func TestChannelAffinityFRTObservationScopeKeepsStreamSeparate(t *testing.T) {
 	meta := channelAffinityMeta{ModelName: "gpt-5", RequestPath: "/v1/responses"}
 	selection := channelAffinitySelection{Group: "default"}
-	scope := channelAffinityFRTScopeForObservation(meta, selection, &common.RelayInfo{IsStream: true})
+	scope := channelAffinityFRTScopeForObservation(meta, selection, &relaycommon.RelayInfo{IsStream: true})
 	assert.True(t, scope.Stream)
 	assert.Equal(t, "default", scope.Group)
 }

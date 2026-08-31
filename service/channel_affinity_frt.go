@@ -386,6 +386,10 @@ func cloneChannelAffinityFRTStateV2(source *channelAffinityFRTState) *channelAff
 		cloned.Scopes[i] = scope
 		cloned.Scopes[i].EpisodeVisitedChannel = append([]int(nil), scope.EpisodeVisitedChannel...)
 		cloned.Scopes[i].Channels = cloneChannelAffinityFRTScoresV2(scope.Channels)
+		if scope.PendingSwitch != nil {
+			pending := *scope.PendingSwitch
+			cloned.Scopes[i].PendingSwitch = &pending
+		}
 	}
 	return &cloned
 }
@@ -737,11 +741,44 @@ func chooseChannelAffinityFRTObservedCurrentPriorityTarget(candidates []*model.C
 	return nil
 }
 
-func channelAffinityFRTShouldEvaluate(scopeState *channelAffinityFRTScopeState, frtMs int64, setting *operation_setting.ChannelAffinitySetting) bool {
+func channelAffinityFRTShouldEvaluate(scopeState *channelAffinityFRTScopeState, setting *operation_setting.ChannelAffinitySetting) bool {
 	if scopeState == nil {
 		return false
 	}
-	return frtMs >= int64(channelAffinityFRTExplosionMs) || scopeState.ConsecutiveSlow >= channelAffinityFRTProbeCount(setting)
+	return scopeState.ConsecutiveSlow >= channelAffinityFRTProbeCount(setting)
+}
+
+func channelAffinityFRTIsSwitchEvent(event string) bool {
+	switch event {
+	case "switched", "switched_exploration", "probe_cooldown", "cooldown_global_switch":
+		return true
+	default:
+		return false
+	}
+}
+
+func takeChannelAffinityFRTPendingSwitch(scopeState *channelAffinityFRTScopeState, channelID int) *channelAffinityFRTPendingSwitch {
+	if scopeState == nil || scopeState.PendingSwitch == nil || scopeState.PendingSwitch.ToChannelID != channelID {
+		return nil
+	}
+	pending := scopeState.PendingSwitch
+	scopeState.PendingSwitch = nil
+	return pending
+}
+
+func channelAffinityFRTPendingSwitchLogInfo(pending *channelAffinityFRTPendingSwitch) map[string]interface{} {
+	if pending == nil {
+		return nil
+	}
+	return map[string]interface{}{
+		"event":            pending.Event,
+		"frt_ms":           pending.FRTMs,
+		"threshold_ms":     pending.ThresholdMs,
+		"routing_score_ms": pending.RoutingScoreMs,
+		"consecutive_slow": pending.ConsecutiveSlow,
+		"from_channel_id":  pending.FromChannelID,
+		"to_channel_id":    pending.ToChannelID,
+	}
 }
 
 func recordChannelAffinityFRTStateV2WithScope(c *gin.Context, setting *operation_setting.ChannelAffinitySetting, meta channelAffinityMeta, selection channelAffinitySelection, scope channelAffinityFRTScope, channelID int, frtMs int64, expected channelAffinityState, observeOnly bool, allowRetry bool) {
@@ -757,6 +794,7 @@ func recordChannelAffinityFRTStateV2WithScope(c *gin.Context, setting *operation
 		scopeState.EpisodeVisitedChannel = nil
 		scopeState.StableCount = 0
 	}
+	pendingSwitch := takeChannelAffinityFRTPendingSwitch(scopeState, channelID)
 
 	score := upsertChannelAffinityFRTScoreV2(&scopeState.Channels, channelID, now)
 	if score == nil {
@@ -775,6 +813,7 @@ func recordChannelAffinityFRTStateV2WithScope(c *gin.Context, setting *operation
 	if slow {
 		event = "slow"
 	}
+	triggerConsecutiveSlow := scopeState.ConsecutiveSlow
 
 	if !observeOnly {
 		if slow {
@@ -792,7 +831,8 @@ func recordChannelAffinityFRTStateV2WithScope(c *gin.Context, setting *operation
 			}
 		}
 
-		if slow && channelAffinityFRTShouldEvaluate(scopeState, frtMs, setting) {
+		triggerConsecutiveSlow = scopeState.ConsecutiveSlow
+		if slow && channelAffinityFRTShouldEvaluate(scopeState, setting) {
 			candidates, err := model.GetSatisfiedChannels(selection.Group, meta.ModelName, meta.RequestPath)
 			if err != nil {
 				common.SysError(fmt.Sprintf("channel affinity frt candidate lookup failed: group=%s, model=%s, err=%v", selection.Group, meta.ModelName, err))
@@ -863,6 +903,17 @@ func recordChannelAffinityFRTStateV2WithScope(c *gin.Context, setting *operation
 	}
 
 	afterStats, _ := calculateChannelAffinityFRTScoreStats(*score, now)
+	if channelAffinityFRTIsSwitchEvent(event) && toChannelID != channelID {
+		scopeState.PendingSwitch = &channelAffinityFRTPendingSwitch{
+			Event:           event,
+			FromChannelID:   channelID,
+			ToChannelID:     toChannelID,
+			FRTMs:           frtMs,
+			ThresholdMs:     threshold,
+			RoutingScoreMs:  afterStats.ScoreMs,
+			ConsecutiveSlow: triggerConsecutiveSlow,
+		}
+	}
 	frtInfo := map[string]interface{}{
 		"event":                event,
 		"frt_ms":               frtMs,
@@ -871,7 +922,7 @@ func recordChannelAffinityFRTStateV2WithScope(c *gin.Context, setting *operation
 		"mad_frt_ms":           afterStats.MADMs,
 		"routing_score_ms":     afterStats.ScoreMs,
 		"sample_count":         afterStats.Samples,
-		"consecutive_slow":     scopeState.ConsecutiveSlow,
+		"consecutive_slow":     triggerConsecutiveSlow,
 		"stable_count":         scopeState.StableCount,
 		"from_channel_id":      channelID,
 		"to_channel_id":        toChannelID,
@@ -890,6 +941,10 @@ func recordChannelAffinityFRTStateV2WithScope(c *gin.Context, setting *operation
 	}
 	if observeOnly {
 		frtInfo["event"] = "retry_observation"
+	} else if channelAffinityFRTIsSwitchEvent(event) && toChannelID != channelID {
+		// The actual route is persisted now, but the visible switch marker is
+		// deferred until a successful request reaches the destination channel.
+		frtInfo["event"] = "switch_scheduled"
 	}
 
 	ttlSeconds := meta.TTLSeconds
@@ -917,7 +972,11 @@ func recordChannelAffinityFRTStateV2WithScope(c *gin.Context, setting *operation
 		return
 	}
 	if updated {
-		setChannelAffinityFRTAdminInfo(c, frtInfo)
+		if pendingInfo := channelAffinityFRTPendingSwitchLogInfo(pendingSwitch); pendingInfo != nil {
+			setChannelAffinityFRTAdminInfo(c, pendingInfo)
+		} else {
+			setChannelAffinityFRTAdminInfo(c, frtInfo)
+		}
 		return
 	}
 	if allowRetry {

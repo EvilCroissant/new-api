@@ -138,3 +138,51 @@ func TestPersistSuccessfulChannelAffinityRefreshPreservesFRTState(t *testing.T) 
 	require.NotNil(t, stored.FRT)
 	require.Equal(t, 4200.0, stored.FRT.Scopes[0].Channels[0].Samples[0].FRTMs)
 }
+
+func TestPersistSuccessfulChannelAffinityClearsSupersededPendingFRTSwitch(t *testing.T) {
+	previousRedisEnabled := common.RedisEnabled
+	previousRedisClient := common.RDB
+	common.RedisEnabled = false
+	common.RDB = nil
+	t.Cleanup(func() {
+		common.RedisEnabled = previousRedisEnabled
+		common.RDB = previousRedisClient
+	})
+
+	cacheKey := fmt.Sprintf("test-success-write-pending-switch:%d", time.Now().UnixNano())
+	cache := getChannelAffinityCache()
+	t.Cleanup(func() { _, _ = cache.DeleteMany([]string{cacheKey}) })
+
+	initial := buildChannelAffinityStateForTest(48, time.Minute)
+	initial.FRT = &channelAffinityFRTState{Scopes: []channelAffinityFRTScopeState{{
+		channelAffinityFRTScope: channelAffinityFRTScope{Group: "default", ModelName: "gpt-5.6-terra"},
+		PendingSwitch: &channelAffinityFRTPendingSwitch{
+			Event:         "switched",
+			FromChannelID: 56,
+			ToChannelID:   48,
+		},
+		Channels: []channelAffinityFRTChannelScore{{
+			ChannelID: 48,
+			Samples:   []channelAffinityFRTSample{{FRTMs: 2800, ObservedAt: time.Now().UnixMilli()}},
+		}},
+	}}}
+	require.NoError(t, cache.SetWithTTL(cacheKey, initial, time.Minute))
+
+	updated, err := persistSuccessfulChannelAffinity(
+		cacheKey,
+		initial,
+		54,
+		time.Minute,
+		&operation_setting.ChannelAffinitySetting{UpwardProbeIntervalSeconds: 3600},
+	)
+	require.NoError(t, err)
+	require.True(t, updated)
+
+	stored, found, err := cache.Get(cacheKey)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Equal(t, 54, stored.ChannelID)
+	require.NotNil(t, stored.FRT)
+	require.Nil(t, stored.FRT.Scopes[0].PendingSwitch)
+	require.Equal(t, 2800.0, stored.FRT.Scopes[0].Channels[0].Samples[0].FRTMs)
+}

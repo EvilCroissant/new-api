@@ -81,8 +81,23 @@ type channelAffinityFRTScopeState struct {
 	StableCount           int                              `json:"stable_count"`
 	CooldownChannelID     int                              `json:"all_slow_hold_channel_id,omitempty"`
 	CooldownUntil         int64                            `json:"all_slow_hold_until,omitempty"`
+	PendingSwitch         *channelAffinityFRTPendingSwitch `json:"pending_switch,omitempty"`
 	LastObservedAt        int64                            `json:"last_observed_at"`
 	Channels              []channelAffinityFRTChannelScore `json:"channels,omitempty"`
+}
+
+// channelAffinityFRTPendingSwitch moves the visible switch event from the
+// request that decided A -> B to the first successful request that actually
+// uses B. This matches the native channel-optimization log semantics and keeps
+// the route icon attached to the destination channel.
+type channelAffinityFRTPendingSwitch struct {
+	Event           string  `json:"event"`
+	FromChannelID   int     `json:"from_channel_id"`
+	ToChannelID     int     `json:"to_channel_id"`
+	FRTMs           int64   `json:"frt_ms"`
+	ThresholdMs     float64 `json:"threshold_ms"`
+	RoutingScoreMs  float64 `json:"routing_score_ms"`
+	ConsecutiveSlow int     `json:"consecutive_slow"`
 }
 
 type channelAffinityFRTState struct {

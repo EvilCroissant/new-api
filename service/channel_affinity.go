@@ -907,8 +907,18 @@ func persistSuccessfulChannelAffinity(cacheKey string, expected channelAffinityS
 			replacement.ChannelID = channelID
 			replacement.NextProbeAt = now.Add(channelAffinityProbeInterval(setting)).UnixMilli()
 			replacement.IdleExpiresAt = idleExpiresAt
+			if replacement.FRT != nil {
+				replacement.FRT = cloneChannelAffinityFRTStateV2(replacement.FRT)
+				for i := range replacement.FRT.Scopes {
+					pending := replacement.FRT.Scopes[i].PendingSwitch
+					if pending != nil && pending.ToChannelID != channelID {
+						replacement.FRT.Scopes[i].PendingSwitch = nil
+					}
+				}
+			}
 			// The native affinity writer changes only the selected channel and
-			// expiry metadata; never clear FRT observations already persisted.
+			// expiry metadata. It preserves all FRT observations, but drops a
+			// pending UI marker when native routing selected a different target.
 			versionEpoch, versionSeq := nextChannelAffinityVersion()
 			replacement.VersionEpoch = versionEpoch
 			replacement.VersionSeq = versionSeq
