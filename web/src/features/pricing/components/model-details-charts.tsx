@@ -122,11 +122,20 @@ export function LatencyTrendChart(props: {
       line: {
         style: { lineWidth: 2 },
       },
-      legends: { visible: false },
+      legends: {
+        visible: true,
+        orient: 'bottom',
+        position: 'middle',
+        layout: 'horizontal',
+      },
       tooltip: {
         mark: {
           title: { value: (d: { time: string }) => d.time },
           content: [
+            {
+              key: t('Group'),
+              value: (d: { group: string }) => d.group,
+            },
             {
               key: t('Average TTFT'),
               value: (d: { ttft: number }) => `${Math.round(d.ttft)} ms`,
