@@ -2500,6 +2500,7 @@
     "Index": "Индекс",
     "Index request failed with HTTP {{status}}": "Запрос индекса завершился ошибкой HTTP {{status}}",
     "Index URL": "URL индекса",
+    "Infinite Canvas": "Бесконечный холст",
     "Inherit global Auto order": "Наследовать глобальный порядок Auto",
     "Initial quota given to new users": "Начальная квота, предоставляемая новым пользователям",
     "Initial quota given to new users ({{formattedQuota}})": "Начальная квота, предоставляемая новым пользователям ({{formattedQuota}})",

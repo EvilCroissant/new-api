@@ -23,6 +23,7 @@ import {
   CreditCard,
   FileText,
   FlaskConical,
+  Infinity as InfinityIcon,
   Key,
   LayoutDashboard,
   ListTodo,
@@ -64,6 +65,12 @@ export function useSidebarData(): SidebarData {
             title: t('Playground'),
             url: '/playground',
             icon: FlaskConical,
+          },
+          {
+            title: t('Infinite Canvas'),
+            url: 'https://canvas.521911.xyz/',
+            icon: InfinityIcon,
+            external: true,
           },
           {
             title: t('Chat'),

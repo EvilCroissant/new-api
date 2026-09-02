@@ -456,6 +456,7 @@ export const STATIC_I18N_KEYS = [
   'Chat Area',
   'Playground and chat functions',
   'Playground',
+  'Infinite Canvas',
   'AI model testing environment',
   'Chat session management',
   'No content to copy',
