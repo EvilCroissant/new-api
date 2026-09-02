@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 
-import { Database, RefreshCw, Trash2 } from 'lucide-react'
+import { Database, MoreHorizontal, RefreshCw, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -34,6 +34,16 @@ import {
 } from '@/components/ui/alert-dialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { Spinner } from '@/components/ui/spinner'
 import {
   Table,
@@ -50,7 +60,7 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip'
 import { formatCurrencyFromUSD } from '@/lib/currency'
-import { formatNumber, formatTimestampRelative } from '@/lib/format'
+import { formatTimestampRelative } from '@/lib/format'
 
 import type { UpstreamMonitor } from '../types'
 
@@ -61,7 +71,7 @@ type UpstreamMonitorTableProps = {
   deletingId?: number
   onSync: (id: number) => void
   onDelete: (id: number) => void
-  onViewDetails: (id: number) => void
+  onViewDetails: (id: number, section: 'groups' | 'pricing') => void
 }
 
 function providerLabel(provider: UpstreamMonitor['provider']): string {
@@ -72,6 +82,7 @@ export function UpstreamMonitorTable(props: UpstreamMonitorTableProps) {
   const { t } = useTranslation()
   const [deleteCandidate, setDeleteCandidate] =
     useState<UpstreamMonitor | null>(null)
+  const [openMenuId, setOpenMenuId] = useState<number | null>(null)
 
   if (!props.monitors.length) {
     return <EmptyState icon={Database} title={t('No upstream monitors')} />
@@ -87,10 +98,9 @@ export function UpstreamMonitorTable(props: UpstreamMonitorTableProps) {
               <TableHead className='text-right'>
                 {t('Available balance')}
               </TableHead>
-              <TableHead className='text-right'>{t('Groups')}</TableHead>
               <TableHead>{t('Last synchronized')}</TableHead>
               <TableHead>{t('Status')}</TableHead>
-              <TableHead className='w-[180px] text-right'>
+              <TableHead className='w-[120px] text-right'>
                 {t('Actions')}
               </TableHead>
             </TableRow>
@@ -155,9 +165,6 @@ export function UpstreamMonitorTable(props: UpstreamMonitorTableProps) {
                       ? formatCurrencyFromUSD(monitor.balance_usd)
                       : '-'}
                   </TableCell>
-                  <TableCell className='text-right tabular-nums'>
-                    {formatNumber(monitor.group_count)}
-                  </TableCell>
                   <TableCell className='text-muted-foreground whitespace-nowrap'>
                     {monitor.last_synced_at > 0
                       ? formatTimestampRelative(monitor.last_synced_at)
@@ -165,56 +172,77 @@ export function UpstreamMonitorTable(props: UpstreamMonitorTableProps) {
                   </TableCell>
                   <TableCell>{syncStatus}</TableCell>
                   <TableCell>
-                    <div className='flex justify-end gap-1.5'>
-                      <Button
-                        type='button'
-                        variant='outline'
-                        size='sm'
-                        onClick={() => props.onViewDetails(monitor.id)}
+                    <div className='flex justify-end'>
+                      <DropdownMenu
+                        open={openMenuId === monitor.id}
+                        onOpenChange={(open) =>
+                          setOpenMenuId(open ? monitor.id : null)
+                        }
                       >
-                        <Database
-                          data-icon='inline-start'
-                          className='size-3.5'
-                        />
-                        {t('View data')}
-                      </Button>
-                      {props.isRoot && (
-                        <>
-                          <Button
-                            type='button'
-                            variant='outline'
-                            size='icon-sm'
-                            aria-label={t('Sync now')}
-                            title={t('Sync now')}
-                            disabled={isSyncing || isDeleting}
-                            onClick={() => props.onSync(monitor.id)}
-                          >
-                            {isSyncing ? (
-                              <Spinner aria-label={t('Loading')} />
-                            ) : (
-                              <RefreshCw
-                                className='size-3.5'
-                                aria-hidden='true'
-                              />
-                            )}
-                          </Button>
-                          <Button
-                            type='button'
-                            variant='outline'
-                            size='icon-sm'
-                            aria-label={t('Delete monitor')}
-                            title={t('Delete monitor')}
-                            disabled={isSyncing || isDeleting}
-                            onClick={() => setDeleteCandidate(monitor)}
-                          >
-                            {isDeleting ? (
-                              <Spinner aria-label={t('Loading')} />
-                            ) : (
-                              <Trash2 className='size-3.5' aria-hidden='true' />
-                            )}
-                          </Button>
-                        </>
-                      )}
+                        <DropdownMenuTrigger
+                          render={
+                            <Button
+                              type='button'
+                              variant='ghost'
+                              size='icon-sm'
+                              aria-label={t('More')}
+                            />
+                          }
+                        >
+                          <MoreHorizontal aria-hidden='true' />
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align='end' className='w-40'>
+                          <DropdownMenuSub open={openMenuId === monitor.id}>
+                            <DropdownMenuSubTrigger openOnHover={false}>
+                              {t('View data')}
+                            </DropdownMenuSubTrigger>
+                            <DropdownMenuSubContent>
+                              <DropdownMenuItem
+                                onClick={() =>
+                                  props.onViewDetails(monitor.id, 'groups')
+                                }
+                              >
+                                {t('Groups')}
+                              </DropdownMenuItem>
+                              <DropdownMenuItem
+                                onClick={() =>
+                                  props.onViewDetails(monitor.id, 'pricing')
+                                }
+                              >
+                                {t('Pricing')}
+                              </DropdownMenuItem>
+                            </DropdownMenuSubContent>
+                          </DropdownMenuSub>
+                          {props.isRoot && (
+                            <>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuItem
+                                disabled={isSyncing || isDeleting}
+                                onClick={() => props.onSync(monitor.id)}
+                              >
+                                {isSyncing ? (
+                                  <Spinner aria-label={t('Loading')} />
+                                ) : (
+                                  <RefreshCw aria-hidden='true' />
+                                )}
+                                {t('Sync now')}
+                              </DropdownMenuItem>
+                              <DropdownMenuItem
+                                disabled={isSyncing || isDeleting}
+                                variant='destructive'
+                                onClick={() => setDeleteCandidate(monitor)}
+                              >
+                                {isDeleting ? (
+                                  <Spinner aria-label={t('Loading')} />
+                                ) : (
+                                  <Trash2 aria-hidden='true' />
+                                )}
+                                {t('Delete monitor')}
+                              </DropdownMenuItem>
+                            </>
+                          )}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
                     </div>
                   </TableCell>
                 </TableRow>

@@ -48,7 +48,10 @@ export function UpstreamMonitorPage() {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [isAddOpen, setIsAddOpen] = useState(false)
-  const [detailsId, setDetailsId] = useState<number | null>(null)
+  const [details, setDetails] = useState<{
+    id: number
+    section: 'groups' | 'pricing'
+  } | null>(null)
   const isRoot = useAuthStore(
     (state) => state.auth.user?.role === ROLE.SUPER_ADMIN
   )
@@ -93,7 +96,7 @@ export function UpstreamMonitorPage() {
       if (!response.success) {
         throw new Error(response.message || t('Delete failed'))
       }
-      if (detailsId === id) setDetailsId(null)
+      if (details?.id === id) setDetails(null)
       toast.success(t('Upstream monitor deleted'))
       await refreshMonitors()
     },
@@ -136,7 +139,7 @@ export function UpstreamMonitorPage() {
         deletingId={deletingId}
         onSync={(id) => syncMutation.mutate(id)}
         onDelete={(id) => deleteMutation.mutate(id)}
-        onViewDetails={setDetailsId}
+        onViewDetails={(id, section) => setDetails({ id, section })}
       />
     )
   }
@@ -195,9 +198,10 @@ export function UpstreamMonitorPage() {
             }}
           />
           <UpstreamMonitorDetailDialog
-            monitorId={detailsId}
-            open={detailsId !== null}
-            onOpenChange={(open) => !open && setDetailsId(null)}
+            monitorId={details?.id ?? null}
+            section={details?.section}
+            open={details !== null}
+            onOpenChange={(open) => !open && setDetails(null)}
           />
         </>
       </SectionPageLayout.Content>

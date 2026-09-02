@@ -25,7 +25,7 @@ import (
 
 const (
 	channelAffinityFRTUserCacheNamespace   = "new-api:channel_affinity_frt_user:v2"
-	channelAffinityFRTGlobalCacheNamespace = "new-api:channel_affinity_frt_global:v2"
+	channelAffinityFRTGlobalCacheNamespace = "new-api:channel_affinity_frt_global:v3"
 	channelAffinityFRTGlobalSampleLimit    = 64
 	channelAffinityFRTGlobalWindow         = time.Minute
 	channelAffinityFRTGlobalTTL            = 5 * time.Minute
@@ -49,6 +49,13 @@ type channelAffinityFRTUserState struct {
 	Channels []channelAffinityFRTChannelScore `json:"channels,omitempty"`
 }
 
+// channelAffinityFRTGlobalScope 只保留影响物理渠道响应速度的维度。
+// Group 和请求路径仍用于筛选候选渠道，但不再拆分同一渠道、模型和流模式的全局 FRT。
+type channelAffinityFRTGlobalScope struct {
+	ModelName string `json:"model"`
+	Stream    bool   `json:"stream"`
+}
+
 type channelAffinityFRTGlobalSample struct {
 	FRTMs             float64 `json:"frt_ms"`
 	ObservedAt        int64   `json:"observed_at"`
@@ -57,7 +64,7 @@ type channelAffinityFRTGlobalSample struct {
 }
 
 type channelAffinityFRTGlobalState struct {
-	Scope     channelAffinityFRTScope          `json:"scope"`
+	Scope     channelAffinityFRTGlobalScope    `json:"scope"`
 	ChannelID int                              `json:"channel_id"`
 	Samples   []channelAffinityFRTGlobalSample `json:"samples,omitempty"`
 }
@@ -167,11 +174,30 @@ func (scope channelAffinityFRTScope) cacheKey() string {
 	return common.Sha1([]byte(strings.Join([]string{scope.Group, scope.ModelName, scope.RequestPath, stream}, "\x00")))
 }
 
+func channelAffinityFRTGlobalScopeFrom(scope channelAffinityFRTScope) channelAffinityFRTGlobalScope {
+	return channelAffinityFRTGlobalScope{
+		ModelName: scope.ModelName,
+		Stream:    scope.Stream,
+	}
+}
+
+func (scope channelAffinityFRTGlobalScope) equal(other channelAffinityFRTGlobalScope) bool {
+	return scope.ModelName == other.ModelName && scope.Stream == other.Stream
+}
+
+func (scope channelAffinityFRTGlobalScope) cacheKey() string {
+	stream := "0"
+	if scope.Stream {
+		stream = "1"
+	}
+	return common.Sha1([]byte(strings.Join([]string{scope.ModelName, stream}, "\x00")))
+}
+
 func channelAffinityFRTUserCacheKey(userID int, scope channelAffinityFRTScope) string {
 	return strconv.Itoa(userID) + ":" + scope.cacheKey()
 }
 
-func channelAffinityFRTGlobalCacheKey(scope channelAffinityFRTScope, channelID int) string {
+func channelAffinityFRTGlobalCacheKey(scope channelAffinityFRTGlobalScope, channelID int) string {
 	return scope.cacheKey() + ":" + strconv.Itoa(channelID)
 }
 
@@ -536,13 +562,14 @@ func getPreferredChannelByFRT(c *gin.Context, modelName string, usingGroup strin
 		}
 
 		windowStart := now.Add(-channelAffinityFRTGlobalWindow)
+		globalScope := channelAffinityFRTGlobalScopeFrom(scope)
 		for _, candidate := range candidates {
 			state, found, err := getChannelAffinityFRTGlobalState(scope, candidate.Id)
 			if err != nil {
 				common.SysError(fmt.Sprintf("channel affinity global frt lookup failed: channel=%d, err=%v", candidate.Id, err))
 				continue
 			}
-			if !found || !state.Scope.equal(scope) {
+			if !found || !state.Scope.equal(globalScope) {
 				continue
 			}
 			stats, valid := channelAffinityFRTGlobalWindowScore(state, windowStart, now, userID)
@@ -845,7 +872,7 @@ func recordChannelAffinityFRTStateV2WithScope(c *gin.Context, setting *operation
 				}
 
 				if scopeState.CooldownUntil > now.UnixMilli() {
-					if target := chooseChannelAffinityFRTGlobalCooldownTarget(scope, candidates, scopeState.EpisodeVisitedChannel, channelID, currentScore, selection.Priority, c.GetInt("id"), now); target != nil {
+					if target := chooseChannelAffinityFRTGlobalTarget(scope, candidates, channelID, currentScore, selection.Priority, c.GetInt("id"), now); target != nil {
 						toChannelID = target.Id
 						event = "cooldown_global_switch"
 						scopeState.CooldownUntil = 0
@@ -857,45 +884,54 @@ func recordChannelAffinityFRTStateV2WithScope(c *gin.Context, setting *operation
 						event = "cooldown_hold"
 					}
 				} else {
-					target, allVisited := chooseChannelAffinityFRTTargetV2(candidates, scopeState, channelID, currentScore, selection.Priority, now)
-					if target != nil && !allVisited {
-						toChannelID = target.Id
+					globalTarget := chooseChannelAffinityFRTGlobalTarget(scope, candidates, channelID, currentScore, selection.Priority, c.GetInt("id"), now)
+					if globalTarget != nil {
+						toChannelID = globalTarget.Id
 						scopeState.ConsecutiveSlow = 0
 						scopeState.StableCount = 0
-						scopeState.EpisodeVisitedChannel = appendUniqueChannelID(scopeState.EpisodeVisitedChannel, target.Id)
+						scopeState.EpisodeVisitedChannel = appendUniqueChannelID(scopeState.EpisodeVisitedChannel, globalTarget.Id)
 						event = "switched"
-					} else if channelAffinityFRTUnvisitedUnknownAtCurrentPriority(candidates, scopeState, channelID, selection.Priority, now) {
-						skippedChannelIDs := make(map[int]struct{}, len(scopeState.EpisodeVisitedChannel)+1)
-						skippedChannelIDs[channelID] = struct{}{}
-						for _, visitedID := range scopeState.EpisodeVisitedChannel {
-							skippedChannelIDs[visitedID] = struct{}{}
-						}
-						target, selectErr := model.GetRandomSatisfiedChannelAtPrioritySkippingChannels(selection.Group, meta.ModelName, selection.Priority, filters, skippedChannelIDs)
-						if selectErr != nil {
-							common.SysError(fmt.Sprintf("channel affinity frt unknown candidate selection failed: group=%s, model=%s, priority=%d, err=%v", selection.Group, meta.ModelName, selection.Priority, selectErr))
+					} else {
+						target, allVisited := chooseChannelAffinityFRTTargetV2(candidates, scopeState, channelID, currentScore, selection.Priority, now)
+						if target != nil && !allVisited {
+							toChannelID = target.Id
+							scopeState.ConsecutiveSlow = 0
+							scopeState.StableCount = 0
+							scopeState.EpisodeVisitedChannel = appendUniqueChannelID(scopeState.EpisodeVisitedChannel, target.Id)
+							event = "switched"
+						} else if channelAffinityFRTUnvisitedUnknownAtCurrentPriority(candidates, scopeState, channelID, selection.Priority, now) {
+							skippedChannelIDs := make(map[int]struct{}, len(scopeState.EpisodeVisitedChannel)+1)
+							skippedChannelIDs[channelID] = struct{}{}
+							for _, visitedID := range scopeState.EpisodeVisitedChannel {
+								skippedChannelIDs[visitedID] = struct{}{}
+							}
+							target, selectErr := model.GetRandomSatisfiedChannelAtPrioritySkippingChannels(selection.Group, meta.ModelName, selection.Priority, filters, skippedChannelIDs)
+							if selectErr != nil {
+								common.SysError(fmt.Sprintf("channel affinity frt unknown candidate selection failed: group=%s, model=%s, priority=%d, err=%v", selection.Group, meta.ModelName, selection.Priority, selectErr))
+							} else if target != nil {
+								toChannelID = target.Id
+								scopeState.ConsecutiveSlow = 0
+								scopeState.StableCount = 0
+								scopeState.EpisodeVisitedChannel = appendUniqueChannelID(scopeState.EpisodeVisitedChannel, target.Id)
+								event = "switched_exploration"
+							}
 						} else if target != nil {
 							toChannelID = target.Id
 							scopeState.ConsecutiveSlow = 0
 							scopeState.StableCount = 0
 							scopeState.EpisodeVisitedChannel = appendUniqueChannelID(scopeState.EpisodeVisitedChannel, target.Id)
-							event = "switched_exploration"
-						}
-					} else if target != nil {
-						toChannelID = target.Id
-						scopeState.ConsecutiveSlow = 0
-						scopeState.StableCount = 0
-						scopeState.EpisodeVisitedChannel = appendUniqueChannelID(scopeState.EpisodeVisitedChannel, target.Id)
-						scopeState.CooldownChannelID = target.Id
-						scopeState.CooldownUntil = now.Add(time.Duration(channelAffinityFRTProbeCooldownSeconds(setting)) * time.Second).UnixMilli()
-						event = "probe_cooldown"
-					} else if channelAffinityFRTAllCurrentPriorityCandidatesVisited(candidates, scopeState, selection.Priority) {
-						if target := chooseChannelAffinityFRTObservedCurrentPriorityTarget(candidates, scopeState, selection.Priority, now); target != nil {
-							toChannelID = target.Id
-							scopeState.ConsecutiveSlow = 0
-							scopeState.StableCount = 0
 							scopeState.CooldownChannelID = target.Id
 							scopeState.CooldownUntil = now.Add(time.Duration(channelAffinityFRTProbeCooldownSeconds(setting)) * time.Second).UnixMilli()
 							event = "probe_cooldown"
+						} else if channelAffinityFRTAllCurrentPriorityCandidatesVisited(candidates, scopeState, selection.Priority) {
+							if target := chooseChannelAffinityFRTObservedCurrentPriorityTarget(candidates, scopeState, selection.Priority, now); target != nil {
+								toChannelID = target.Id
+								scopeState.ConsecutiveSlow = 0
+								scopeState.StableCount = 0
+								scopeState.CooldownChannelID = target.Id
+								scopeState.CooldownUntil = now.Add(time.Duration(channelAffinityFRTProbeCooldownSeconds(setting)) * time.Second).UnixMilli()
+								event = "probe_cooldown"
+							}
 						}
 					}
 				}
@@ -1072,11 +1108,12 @@ func recordChannelAffinityFRTGlobalObservation(userID int, affinityKey string, s
 	if userID <= 0 || channelID <= 0 {
 		return nil
 	}
-	cacheKey := channelAffinityFRTGlobalCacheKey(scope, channelID)
+	globalScope := channelAffinityFRTGlobalScopeFrom(scope)
+	cacheKey := channelAffinityFRTGlobalCacheKey(globalScope, channelID)
 	cache := getChannelAffinityFRTGlobalCache()
 	update := func(state *channelAffinityFRTGlobalState) {
-		if !state.Scope.equal(scope) || state.ChannelID != channelID {
-			*state = channelAffinityFRTGlobalState{Scope: scope, ChannelID: channelID}
+		if !state.Scope.equal(globalScope) || state.ChannelID != channelID {
+			*state = channelAffinityFRTGlobalState{Scope: globalScope, ChannelID: channelID}
 		}
 		state.Samples = channelAffinityFRTRecentGlobalSamples(state.Samples, now)
 		state.Samples = append(state.Samples, channelAffinityFRTGlobalSample{
@@ -1133,7 +1170,7 @@ func recordChannelAffinityFRTGlobalObservation(userID int, affinityKey string, s
 		return err
 	}
 	if !found {
-		state = channelAffinityFRTGlobalState{Scope: scope, ChannelID: channelID}
+		state = channelAffinityFRTGlobalState{Scope: globalScope, ChannelID: channelID}
 	}
 	update(&state)
 	return cache.SetWithTTL(cacheKey, state, channelAffinityFRTGlobalTTL)
@@ -1186,15 +1223,15 @@ func channelAffinityFRTGlobalWindowScore(state channelAffinityFRTGlobalState, fr
 }
 
 func getChannelAffinityFRTGlobalState(scope channelAffinityFRTScope, channelID int) (channelAffinityFRTGlobalState, bool, error) {
-	return getChannelAffinityFRTGlobalCache().Get(channelAffinityFRTGlobalCacheKey(scope, channelID))
+	return getChannelAffinityFRTGlobalCache().Get(channelAffinityFRTGlobalCacheKey(channelAffinityFRTGlobalScopeFrom(scope), channelID))
 }
 
-func chooseChannelAffinityFRTGlobalCooldownTarget(scope channelAffinityFRTScope, candidates []*model.Channel, episodeVisited []int, currentID int, currentScore float64, currentPriority int64, currentUserID int, now time.Time) *model.Channel {
+func chooseChannelAffinityFRTGlobalTarget(scope channelAffinityFRTScope, candidates []*model.Channel, currentID int, currentScore float64, currentPriority int64, currentUserID int, now time.Time) *model.Channel {
 	currentWindowStart := now.Add(-channelAffinityFRTGlobalWindow)
-	previousWindowStart := now.Add(-2 * channelAffinityFRTGlobalWindow)
+	globalScope := channelAffinityFRTGlobalScopeFrom(scope)
 	eligible := make([]channelAffinityFRTCandidate, 0, len(candidates))
 	for _, candidate := range candidates {
-		if candidate == nil || candidate.Id == currentID || channelAffinityFRTVisited(episodeVisited, candidate.Id) {
+		if candidate == nil || candidate.Id == currentID {
 			continue
 		}
 		state, found, err := getChannelAffinityFRTGlobalState(scope, candidate.Id)
@@ -1202,15 +1239,14 @@ func chooseChannelAffinityFRTGlobalCooldownTarget(scope channelAffinityFRTScope,
 			common.SysError(fmt.Sprintf("channel affinity global frt lookup failed: channel=%d, err=%v", candidate.Id, err))
 			continue
 		}
-		if !found || !state.Scope.equal(scope) {
+		if !found || !state.Scope.equal(globalScope) {
 			continue
 		}
 		currentWindow, currentOK := channelAffinityFRTGlobalWindowScore(state, currentWindowStart, now, currentUserID)
-		previousWindow, previousOK := channelAffinityFRTGlobalWindowScore(state, previousWindowStart, currentWindowStart, currentUserID)
-		if !currentOK || !previousOK {
+		if !currentOK {
 			continue
 		}
-		score := math.Max(currentWindow.ScoreMs, previousWindow.ScoreMs)
+		score := currentWindow.ScoreMs
 		if !channelAffinityFRTHasAdvantage(score, currentScore, candidate.GetPriority() == currentPriority) {
 			continue
 		}

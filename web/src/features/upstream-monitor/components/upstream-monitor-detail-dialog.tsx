@@ -44,6 +44,7 @@ import { getUpstreamMonitor } from '../api'
 
 type UpstreamMonitorDetailDialogProps = {
   monitorId: number | null
+  section?: 'groups' | 'pricing'
   open: boolean
   onOpenChange: (open: boolean) => void
 }
@@ -116,6 +117,15 @@ function formatMultiplier(group: GroupMultiplier): string {
   return group.multiplierLabel || '-'
 }
 
+function formatSnapshot(value: unknown): string {
+  if (value === undefined || value === null) return ''
+  try {
+    return JSON.stringify(value, null, 2)
+  } catch {
+    return ''
+  }
+}
+
 export function UpstreamMonitorDetailDialog(
   props: UpstreamMonitorDetailDialogProps
 ) {
@@ -132,6 +142,11 @@ export function UpstreamMonitorDetailDialog(
     () => getGroupMultipliers(monitor?.groups),
     [monitor?.groups]
   )
+  const pricingJSON = useMemo(
+    () => formatSnapshot(monitor?.pricing),
+    [monitor?.pricing]
+  )
+  const section = props.section ?? 'groups'
   let detailContent: ReactNode
   if (detailQuery.isLoading) {
     detailContent = (
@@ -147,39 +162,55 @@ export function UpstreamMonitorDetailDialog(
       </p>
     )
   } else {
-    detailContent = (
-      <section>
-        <h3 className='mb-2 text-sm font-medium'>{t('Groups')}</h3>
-        {groupMultipliers.length > 0 ? (
-          <div className='max-h-72 overflow-auto rounded-lg border'>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>{t('Group')}</TableHead>
-                  <TableHead className='text-right'>
-                    {t('Multiplier')}
-                  </TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {groupMultipliers.map((group) => (
-                  <TableRow key={group.id}>
-                    <TableCell className='font-medium'>{group.name}</TableCell>
-                    <TableCell className='text-right font-medium tabular-nums'>
-                      {formatMultiplier(group)}
-                    </TableCell>
+    detailContent =
+      section === 'groups' ? (
+        <section>
+          <h3 className='mb-2 text-sm font-medium'>{t('Groups')}</h3>
+          {groupMultipliers.length > 0 ? (
+            <div className='max-h-72 overflow-auto rounded-lg border'>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>{t('Group')}</TableHead>
+                    <TableHead className='text-right'>
+                      {t('Multiplier')}
+                    </TableHead>
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
-        ) : (
-          <p className='text-muted-foreground text-sm'>
-            {t('No group snapshot available.')}
-          </p>
-        )}
-      </section>
-    )
+                </TableHeader>
+                <TableBody>
+                  {groupMultipliers.map((group) => (
+                    <TableRow key={group.id}>
+                      <TableCell className='font-medium'>
+                        {group.name}
+                      </TableCell>
+                      <TableCell className='text-right font-medium tabular-nums'>
+                        {formatMultiplier(group)}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          ) : (
+            <p className='text-muted-foreground text-sm'>
+              {t('No group snapshot available.')}
+            </p>
+          )}
+        </section>
+      ) : (
+        <section>
+          <h3 className='mb-2 text-sm font-medium'>{t('Pricing')}</h3>
+          {pricingJSON ? (
+            <pre className='bg-muted max-h-72 overflow-auto rounded-lg border p-3 font-mono text-xs wrap-break-word whitespace-pre-wrap'>
+              {pricingJSON}
+            </pre>
+          ) : (
+            <p className='text-muted-foreground text-sm'>
+              {t('No pricing snapshot available.')}
+            </p>
+          )}
+        </section>
+      )
   }
 
   return (
