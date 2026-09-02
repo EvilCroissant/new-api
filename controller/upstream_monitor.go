@@ -42,6 +42,12 @@ type upstreamMonitorCreateRequest struct {
 	RefreshToken string `json:"refresh_token"`
 }
 
+type upstreamMonitorUpdateRequest struct {
+	NewAPIUserID *int    `json:"new_api_user_id"`
+	AccessToken  *string `json:"access_token"`
+	RefreshToken *string `json:"refresh_token"`
+}
+
 func ListUpstreamMonitors(c *gin.Context) {
 	monitors, err := service.ListUpstreamMonitorDetails()
 	if err != nil {
@@ -105,13 +111,42 @@ func CreateUpstreamMonitor(c *gin.Context) {
 	common.ApiSuccess(c, monitor)
 }
 
+func UpdateUpstreamMonitor(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil || id <= 0 {
+		common.ApiError(c, errors.New("invalid upstream monitor ID"))
+		return
+	}
+	request := upstreamMonitorUpdateRequest{}
+	if err := c.ShouldBindJSON(&request); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	monitor, err := service.UpdateUpstreamMonitorCredentials(c.Request.Context(), id, service.UpstreamMonitorUpdateInput{
+		NewAPIUserID: request.NewAPIUserID,
+		AccessToken:  request.AccessToken,
+		RefreshToken: request.RefreshToken,
+	})
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	recordManageAudit(c, "upstream_monitor.update_credentials", map[string]interface{}{
+		"id":                    id,
+		"new_api_user_changed":  request.NewAPIUserID != nil,
+		"access_token_changed":  request.AccessToken != nil,
+		"refresh_token_changed": request.RefreshToken != nil,
+	})
+	common.ApiSuccess(c, monitor)
+}
+
 func SyncUpstreamMonitor(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil || id <= 0 {
 		common.ApiError(c, errors.New("invalid upstream monitor ID"))
 		return
 	}
-	monitor, err := service.SyncUpstreamMonitorByID(id)
+	monitor, err := service.SyncUpstreamMonitorByIDWithContext(c.Request.Context(), id)
 	if err != nil {
 		common.ApiError(c, err)
 		return

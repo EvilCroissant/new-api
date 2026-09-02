@@ -83,6 +83,7 @@ const TYPE_LABEL: Record<string, string> = {
   channel_test: 'Batch channel test',
   model_update: 'Batch upstream model update',
   channel_profit_sync: 'Profit synchronization',
+  upstream_monitor_sync: 'Upstream monitor synchronization',
   midjourney_poll: 'Drawing task polling',
   async_task_poll: 'Async task polling',
 }

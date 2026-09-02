@@ -19,7 +19,13 @@ For commercial licensing, please contact support@quantumnous.com
 
 package model
 
-import "gorm.io/gorm"
+import (
+	"errors"
+
+	"gorm.io/gorm"
+)
+
+var ErrUpstreamMonitorCredentialsChanged = errors.New("upstream monitor credentials changed during synchronization")
 
 // UpstreamMonitor stores an independently configured upstream account monitor.
 // It deliberately has no relation to local channels or their API keys.
@@ -49,6 +55,12 @@ func ListUpstreamMonitors() ([]*UpstreamMonitor, error) {
 	return monitors, err
 }
 
+func CountUpstreamMonitors() (int64, error) {
+	var count int64
+	err := DB.Model(&UpstreamMonitor{}).Count(&count).Error
+	return count, err
+}
+
 func GetUpstreamMonitorByID(id int) (*UpstreamMonitor, error) {
 	monitor := &UpstreamMonitor{}
 	err := DB.First(monitor, id).Error
@@ -67,6 +79,60 @@ func CreateUpstreamMonitor(monitor *UpstreamMonitor) error {
 
 func SaveUpstreamMonitor(monitor *UpstreamMonitor) error {
 	return DB.Save(monitor).Error
+}
+
+type UpstreamMonitorCredentialUpdate struct {
+	NewAPIUserID *int
+	AccessToken  *string
+	RefreshToken *string
+}
+
+func UpdateUpstreamMonitorCredentials(id int, update UpstreamMonitorCredentialUpdate) error {
+	updates := map[string]any{}
+	if update.NewAPIUserID != nil {
+		updates["new_api_user_id"] = *update.NewAPIUserID
+	}
+	if update.AccessToken != nil {
+		updates["access_token"] = *update.AccessToken
+	}
+	if update.RefreshToken != nil {
+		updates["refresh_token"] = *update.RefreshToken
+	}
+	if len(updates) == 0 {
+		return nil
+	}
+	return DB.Model(&UpstreamMonitor{}).Where("id = ?", id).Updates(updates).Error
+}
+
+func SaveUpstreamMonitorSyncResult(monitor *UpstreamMonitor, previousNewAPIUserID int, previousAccessToken string, previousRefreshToken string) error {
+	result := DB.Model(&UpstreamMonitor{}).
+		Where("id = ? AND new_api_user_id = ? AND access_token = ? AND refresh_token = ?", monitor.Id, previousNewAPIUserID, previousAccessToken, previousRefreshToken).
+		Updates(map[string]any{
+			"access_token":      monitor.AccessToken,
+			"refresh_token":     monitor.RefreshToken,
+			"balance_usd":       monitor.BalanceUSD,
+			"balance_available": monitor.BalanceAvailable,
+			"group_count":       monitor.GroupCount,
+			"pricing_count":     monitor.PricingCount,
+			"groups_json":       monitor.GroupsJSON,
+			"pricing_json":      monitor.PricingJSON,
+			"last_synced_at":    monitor.LastSyncedAt,
+			"last_error":        monitor.LastError,
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		current, err := GetUpstreamMonitorByID(monitor.Id)
+		if err != nil {
+			return err
+		}
+		if current.NewAPIUserID == previousNewAPIUserID && current.AccessToken == previousAccessToken && current.RefreshToken == previousRefreshToken {
+			return nil
+		}
+		return ErrUpstreamMonitorCredentialsChanged
+	}
+	return nil
 }
 
 func DeleteUpstreamMonitor(id int) error {

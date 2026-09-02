@@ -267,6 +267,7 @@ func SetApiRouter(router *gin.Engine) {
 			upstreamMonitorRoute.GET("/:id", controller.GetUpstreamMonitor)
 			upstreamMonitorRoute.POST("/detect", middleware.RootAuth(), controller.DetectUpstreamMonitor)
 			upstreamMonitorRoute.POST("/", middleware.RootAuth(), controller.CreateUpstreamMonitor)
+			upstreamMonitorRoute.PUT("/:id", middleware.RootAuth(), controller.UpdateUpstreamMonitor)
 			upstreamMonitorRoute.POST("/:id/sync", middleware.RootAuth(), controller.SyncUpstreamMonitor)
 			upstreamMonitorRoute.DELETE("/:id", middleware.RootAuth(), controller.DeleteUpstreamMonitor)
 		}

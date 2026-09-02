@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 )
 
@@ -42,8 +43,9 @@ const (
 	UpstreamMonitorProviderNewAPI  = "newapi"
 	UpstreamMonitorProviderSub2API = "sub2api"
 
-	upstreamMonitorHTTPTimeout = 12 * time.Second
-	upstreamMonitorMaxBodySize = 1 << 20
+	upstreamMonitorHTTPTimeout           = 12 * time.Second
+	upstreamMonitorMaxBodySize           = 1 << 20
+	upstreamMonitorAutomaticSyncInterval = time.Hour
 )
 
 type UpstreamMonitorCreateInput struct {
@@ -55,6 +57,12 @@ type UpstreamMonitorCreateInput struct {
 	RefreshToken string
 }
 
+type UpstreamMonitorUpdateInput struct {
+	NewAPIUserID *int
+	AccessToken  *string
+	RefreshToken *string
+}
+
 type UpstreamMonitorDetectResult struct {
 	BaseURL  string `json:"base_url"`
 	Provider string `json:"provider,omitempty"`
@@ -64,21 +72,23 @@ type UpstreamMonitorDetectResult struct {
 // UpstreamMonitorDetail is the safe response used by the admin UI. Credentials
 // are never included; snapshots are decoded only for rendering the monitored data.
 type UpstreamMonitorDetail struct {
-	Id               int     `json:"id"`
-	Name             string  `json:"name"`
-	BaseURL          string  `json:"base_url"`
-	Provider         string  `json:"provider"`
-	NewAPIUserID     int     `json:"new_api_user_id"`
-	BalanceUSD       float64 `json:"balance_usd"`
-	BalanceAvailable bool    `json:"balance_available"`
-	GroupCount       int     `json:"group_count"`
-	PricingCount     int     `json:"pricing_count"`
-	Groups           any     `json:"groups,omitempty"`
-	Pricing          any     `json:"pricing,omitempty"`
-	LastSyncedAt     int64   `json:"last_synced_at"`
-	LastError        string  `json:"last_error"`
-	CreatedAt        int64   `json:"created_at"`
-	UpdatedAt        int64   `json:"updated_at"`
+	Id                     int     `json:"id"`
+	Name                   string  `json:"name"`
+	BaseURL                string  `json:"base_url"`
+	Provider               string  `json:"provider"`
+	NewAPIUserID           int     `json:"new_api_user_id"`
+	AccessTokenConfigured  bool    `json:"access_token_configured"`
+	RefreshTokenConfigured bool    `json:"refresh_token_configured"`
+	BalanceUSD             float64 `json:"balance_usd"`
+	BalanceAvailable       bool    `json:"balance_available"`
+	GroupCount             int     `json:"group_count"`
+	PricingCount           int     `json:"pricing_count"`
+	Groups                 any     `json:"groups,omitempty"`
+	Pricing                any     `json:"pricing,omitempty"`
+	LastSyncedAt           int64   `json:"last_synced_at"`
+	LastError              string  `json:"last_error"`
+	CreatedAt              int64   `json:"created_at"`
+	UpdatedAt              int64   `json:"updated_at"`
 }
 
 // upstreamMonitorGroupSnapshot is the provider-neutral format persisted for
@@ -96,6 +106,42 @@ type upstreamMonitorGroup struct {
 
 type upstreamMonitorHTTPError struct {
 	StatusCode int
+}
+
+type UpstreamMonitorAutomaticSyncResult struct {
+	Total  int `json:"total"`
+	Synced int `json:"synced"`
+	Failed int `json:"failed"`
+}
+
+type upstreamMonitorSyncHandler struct{}
+
+func (upstreamMonitorSyncHandler) Type() string { return model.SystemTaskTypeUpstreamMonitor }
+
+func (upstreamMonitorSyncHandler) Enabled() bool {
+	count, err := model.CountUpstreamMonitors()
+	return err == nil && count > 0
+}
+
+func (upstreamMonitorSyncHandler) Interval() time.Duration {
+	return upstreamMonitorAutomaticSyncInterval
+}
+
+func (upstreamMonitorSyncHandler) NewPayload() any { return struct{}{} }
+
+func (upstreamMonitorSyncHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
+	result, err := SyncAllUpstreamMonitors(ctx, NewSystemTaskProgressReporter(task, runnerID))
+	if err != nil {
+		failSystemTask(task, runnerID, err)
+		return
+	}
+	if err := model.FinishSystemTask(task.TaskID, runnerID, model.SystemTaskStatusSucceeded, result, ""); err != nil {
+		logSystemTaskLockError(ctx, task, err)
+	}
+}
+
+func init() {
+	RegisterSystemTaskHandler(upstreamMonitorSyncHandler{})
 }
 
 func (err *upstreamMonitorHTTPError) Error() string {
@@ -246,13 +292,83 @@ func ListUpstreamMonitorDetails() ([]UpstreamMonitorDetail, error) {
 	}
 	details := make([]UpstreamMonitorDetail, 0, len(monitors))
 	for _, monitor := range monitors {
-		detail, err := upstreamMonitorDetail(monitor, false)
+		detail, err := upstreamMonitorDetail(monitor, true)
 		if err != nil {
 			return nil, err
 		}
 		details = append(details, *detail)
 	}
 	return details, nil
+}
+
+func UpdateUpstreamMonitorCredentials(ctx context.Context, id int, input UpstreamMonitorUpdateInput) (*UpstreamMonitorDetail, error) {
+	return updateUpstreamMonitorCredentialsWithClient(ctx, id, input, upstreamMonitorHTTPClient())
+}
+
+func updateUpstreamMonitorCredentialsWithClient(ctx context.Context, id int, input UpstreamMonitorUpdateInput, client *http.Client) (*UpstreamMonitorDetail, error) {
+	if input.NewAPIUserID == nil && input.AccessToken == nil && input.RefreshToken == nil {
+		return nil, errors.New("at least one credential field is required")
+	}
+	monitor, err := model.GetUpstreamMonitorByID(id)
+	if err != nil {
+		return nil, err
+	}
+
+	switch monitor.Provider {
+	case UpstreamMonitorProviderNewAPI:
+		if input.RefreshToken != nil {
+			return nil, errors.New("New API monitors do not use a refresh token")
+		}
+	case UpstreamMonitorProviderSub2API:
+		if input.NewAPIUserID != nil {
+			return nil, errors.New("Sub2API monitors do not use a New API user ID")
+		}
+	default:
+		return nil, errors.New("unsupported upstream monitor provider")
+	}
+
+	credentialUpdate := model.UpstreamMonitorCredentialUpdate{}
+	if input.NewAPIUserID != nil {
+		if *input.NewAPIUserID <= 0 {
+			return nil, errors.New("New API user ID is required")
+		}
+		monitor.NewAPIUserID = *input.NewAPIUserID
+		credentialUpdate.NewAPIUserID = &monitor.NewAPIUserID
+	}
+	if input.AccessToken != nil {
+		accessToken := strings.TrimSpace(*input.AccessToken)
+		if accessToken == "" {
+			return nil, errors.New("upstream access token must not be empty")
+		}
+		monitor.AccessToken = accessToken
+		credentialUpdate.AccessToken = &monitor.AccessToken
+	}
+	if input.RefreshToken != nil {
+		refreshToken := strings.TrimSpace(*input.RefreshToken)
+		if refreshToken == "" {
+			return nil, errors.New("Sub2API refresh token must not be empty")
+		}
+		monitor.RefreshToken = refreshToken
+		credentialUpdate.RefreshToken = &monitor.RefreshToken
+	}
+
+	if err := validateUpstreamMonitorCreateInput(UpstreamMonitorCreateInput{
+		Provider:     monitor.Provider,
+		NewAPIUserID: monitor.NewAPIUserID,
+		AccessToken:  monitor.AccessToken,
+		RefreshToken: monitor.RefreshToken,
+	}); err != nil {
+		return nil, err
+	}
+	if err := model.UpdateUpstreamMonitorCredentials(id, credentialUpdate); err != nil {
+		return nil, err
+	}
+
+	_, saveErr := syncAndSaveUpstreamMonitorWithClient(ctx, monitor, client)
+	if saveErr != nil {
+		return nil, saveErr
+	}
+	return upstreamMonitorDetail(monitor, true)
 }
 
 func GetUpstreamMonitorDetail(id int) (*UpstreamMonitorDetail, error) {
@@ -264,14 +380,53 @@ func GetUpstreamMonitorDetail(id int) (*UpstreamMonitorDetail, error) {
 }
 
 func SyncUpstreamMonitorByID(id int) (*UpstreamMonitorDetail, error) {
+	return SyncUpstreamMonitorByIDWithContext(context.Background(), id)
+}
+
+func SyncUpstreamMonitorByIDWithContext(ctx context.Context, id int) (*UpstreamMonitorDetail, error) {
 	monitor, err := model.GetUpstreamMonitorByID(id)
 	if err != nil {
 		return nil, err
 	}
-	if err := SyncUpstreamMonitor(monitor); err != nil {
+	if err := SyncUpstreamMonitorWithContext(ctx, monitor); err != nil {
 		return nil, err
 	}
 	return upstreamMonitorDetail(monitor, true)
+}
+
+func SyncAllUpstreamMonitors(ctx context.Context, reportProgress func(processed, total int)) (UpstreamMonitorAutomaticSyncResult, error) {
+	return syncAllUpstreamMonitorsWithClient(ctx, reportProgress, upstreamMonitorHTTPClient())
+}
+
+func syncAllUpstreamMonitorsWithClient(ctx context.Context, reportProgress func(processed, total int), client *http.Client) (UpstreamMonitorAutomaticSyncResult, error) {
+	monitors, err := model.ListUpstreamMonitors()
+	if err != nil {
+		return UpstreamMonitorAutomaticSyncResult{}, err
+	}
+	result := UpstreamMonitorAutomaticSyncResult{Total: len(monitors)}
+	if reportProgress != nil {
+		reportProgress(0, result.Total)
+	}
+	for index, monitor := range monitors {
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
+		syncErr, saveErr := syncAndSaveUpstreamMonitorWithClient(ctx, monitor, client)
+		monitorErr := syncErr
+		if saveErr != nil {
+			monitorErr = saveErr
+		}
+		if monitorErr != nil {
+			result.Failed++
+			logger.LogWarn(ctx, fmt.Sprintf("automatic upstream monitor sync failed: id=%d name=%s err=%v", monitor.Id, monitor.Name, monitorErr))
+		} else {
+			result.Synced++
+		}
+		if reportProgress != nil {
+			reportProgress(index+1, result.Total)
+		}
+	}
+	return result, nil
 }
 
 func DeleteUpstreamMonitor(id int) error {
@@ -282,28 +437,44 @@ func DeleteUpstreamMonitor(id int) error {
 }
 
 func SyncUpstreamMonitor(monitor *model.UpstreamMonitor) error {
-	if monitor == nil {
-		return errors.New("upstream monitor is required")
+	return SyncUpstreamMonitorWithContext(context.Background(), monitor)
+}
+
+func SyncUpstreamMonitorWithContext(ctx context.Context, monitor *model.UpstreamMonitor) error {
+	syncErr, saveErr := syncAndSaveUpstreamMonitorWithClient(ctx, monitor, upstreamMonitorHTTPClient())
+	if saveErr != nil {
+		return saveErr
 	}
+	return syncErr
+}
+
+func syncAndSaveUpstreamMonitorWithClient(ctx context.Context, monitor *model.UpstreamMonitor, client *http.Client) (error, error) {
+	if monitor == nil {
+		return errors.New("upstream monitor is required"), nil
+	}
+	if client == nil {
+		return errors.New("upstream monitor HTTP client is required"), nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	previousAccessToken := monitor.AccessToken
+	previousRefreshToken := monitor.RefreshToken
+	previousNewAPIUserID := monitor.NewAPIUserID
 	var err error
 	switch monitor.Provider {
 	case UpstreamMonitorProviderNewAPI:
-		err = syncNewAPIUpstreamMonitor(monitor)
+		err = syncNewAPIUpstreamMonitorWithContext(ctx, monitor, client)
 	case UpstreamMonitorProviderSub2API:
-		err = syncSub2APIUpstreamMonitor(monitor)
+		err = syncSub2APIUpstreamMonitorWithContext(ctx, monitor, client)
 	default:
 		err = errors.New("unsupported upstream monitor provider")
 	}
 
 	monitor.LastSyncedAt = time.Now().Unix()
 	monitor.LastError = upstreamMonitorErrorText(err)
-	if err != nil {
-		if saveErr := model.SaveUpstreamMonitor(monitor); saveErr != nil {
-			return saveErr
-		}
-		return err
-	}
-	return model.SaveUpstreamMonitor(monitor)
+	saveErr := model.SaveUpstreamMonitorSyncResult(monitor, previousNewAPIUserID, previousAccessToken, previousRefreshToken)
+	return err, saveErr
 }
 
 func syncNewAPIUpstreamMonitor(monitor *model.UpstreamMonitor) error {
@@ -311,6 +482,10 @@ func syncNewAPIUpstreamMonitor(monitor *model.UpstreamMonitor) error {
 }
 
 func syncNewAPIUpstreamMonitorWithClient(monitor *model.UpstreamMonitor, client *http.Client) error {
+	return syncNewAPIUpstreamMonitorWithContext(context.Background(), monitor, client)
+}
+
+func syncNewAPIUpstreamMonitorWithContext(ctx context.Context, monitor *model.UpstreamMonitor, client *http.Client) error {
 	if err := validateUpstreamMonitorInput(monitor.Provider, monitor.NewAPIUserID, monitor.AccessToken); err != nil {
 		return err
 	}
@@ -339,7 +514,7 @@ func syncNewAPIUpstreamMonitorWithClient(monitor *model.UpstreamMonitor, client 
 		wg.Add(1)
 		go func(endpointName string, endpointPath string) {
 			defer wg.Done()
-			body, fetchErr := fetchUpstreamMonitorJSON(context.Background(), client, http.MethodGet, monitor.BaseURL+endpointPath, headers, nil)
+			body, fetchErr := fetchUpstreamMonitorJSON(ctx, client, http.MethodGet, monitor.BaseURL+endpointPath, headers, nil)
 			results <- result{name: endpointName, body: body, err: fetchErr}
 		}(endpoint.name, endpoint.path)
 	}
@@ -380,6 +555,10 @@ func syncSub2APIUpstreamMonitor(monitor *model.UpstreamMonitor) error {
 }
 
 func syncSub2APIUpstreamMonitorWithClient(monitor *model.UpstreamMonitor, client *http.Client) error {
+	return syncSub2APIUpstreamMonitorWithContext(context.Background(), monitor, client)
+}
+
+func syncSub2APIUpstreamMonitorWithContext(ctx context.Context, monitor *model.UpstreamMonitor, client *http.Client) error {
 	if err := validateUpstreamMonitorInput(monitor.Provider, monitor.NewAPIUserID, monitor.AccessToken); err != nil {
 		return err
 	}
@@ -387,24 +566,24 @@ func syncSub2APIUpstreamMonitorWithClient(monitor *model.UpstreamMonitor, client
 		return errors.New("upstream monitor HTTP client is required")
 	}
 
-	err := syncSub2APIUpstreamMonitorWithAccessToken(monitor, client, monitor.AccessToken)
+	err := syncSub2APIUpstreamMonitorWithAccessToken(ctx, monitor, client, monitor.AccessToken)
 	if !isUpstreamMonitorUnauthorized(err) {
 		return err
 	}
 	if strings.TrimSpace(monitor.RefreshToken) == "" {
 		return errors.New("Sub2API refresh token is not configured")
 	}
-	if err := refreshSub2APIUpstreamMonitorAccessToken(monitor, client); err != nil {
+	if err := refreshSub2APIUpstreamMonitorAccessToken(ctx, monitor, client); err != nil {
 		return err
 	}
-	return syncSub2APIUpstreamMonitorWithAccessToken(monitor, client, monitor.AccessToken)
+	return syncSub2APIUpstreamMonitorWithAccessToken(ctx, monitor, client, monitor.AccessToken)
 }
 
-func syncSub2APIUpstreamMonitorWithAccessToken(monitor *model.UpstreamMonitor, client *http.Client, accessToken string) error {
+func syncSub2APIUpstreamMonitorWithAccessToken(ctx context.Context, monitor *model.UpstreamMonitor, client *http.Client, accessToken string) error {
 	headers := http.Header{}
 	headers.Set("Authorization", "Bearer "+accessToken)
 
-	selfBody, err := fetchUpstreamMonitorJSON(context.Background(), client, http.MethodGet, monitor.BaseURL+"/api/v1/auth/me", headers, nil)
+	selfBody, err := fetchUpstreamMonitorJSON(ctx, client, http.MethodGet, monitor.BaseURL+"/api/v1/auth/me", headers, nil)
 	if err != nil {
 		return fmt.Errorf("fetch upstream account: %w", err)
 	}
@@ -413,11 +592,11 @@ func syncSub2APIUpstreamMonitorWithAccessToken(monitor *model.UpstreamMonitor, c
 		return err
 	}
 
-	groupsBody, err := fetchUpstreamMonitorJSON(context.Background(), client, http.MethodGet, monitor.BaseURL+"/api/v1/groups/available", headers, nil)
+	groupsBody, err := fetchUpstreamMonitorJSON(ctx, client, http.MethodGet, monitor.BaseURL+"/api/v1/groups/available", headers, nil)
 	if err != nil {
 		return fmt.Errorf("fetch upstream groups: %w", err)
 	}
-	ratesBody, err := fetchUpstreamMonitorJSON(context.Background(), client, http.MethodGet, monitor.BaseURL+"/api/v1/groups/rates", headers, nil)
+	ratesBody, err := fetchUpstreamMonitorJSON(ctx, client, http.MethodGet, monitor.BaseURL+"/api/v1/groups/rates", headers, nil)
 	if err != nil {
 		return fmt.Errorf("fetch upstream group rates: %w", err)
 	}
@@ -435,7 +614,7 @@ func syncSub2APIUpstreamMonitorWithAccessToken(monitor *model.UpstreamMonitor, c
 	return nil
 }
 
-func refreshSub2APIUpstreamMonitorAccessToken(monitor *model.UpstreamMonitor, client *http.Client) error {
+func refreshSub2APIUpstreamMonitorAccessToken(ctx context.Context, monitor *model.UpstreamMonitor, client *http.Client) error {
 	payload, err := common.Marshal(struct {
 		RefreshToken string `json:"refresh_token"`
 	}{
@@ -445,7 +624,7 @@ func refreshSub2APIUpstreamMonitorAccessToken(monitor *model.UpstreamMonitor, cl
 		return fmt.Errorf("encode Sub2API refresh request: %w", err)
 	}
 	body, err := fetchUpstreamMonitorJSON(
-		context.Background(),
+		ctx,
 		client,
 		http.MethodPost,
 		monitor.BaseURL+"/api/v1/auth/refresh",
@@ -480,19 +659,21 @@ func upstreamMonitorDetail(monitor *model.UpstreamMonitor, includeSnapshots bool
 		return nil, errors.New("upstream monitor is required")
 	}
 	detail := &UpstreamMonitorDetail{
-		Id:               monitor.Id,
-		Name:             monitor.Name,
-		BaseURL:          monitor.BaseURL,
-		Provider:         monitor.Provider,
-		NewAPIUserID:     monitor.NewAPIUserID,
-		BalanceUSD:       monitor.BalanceUSD,
-		BalanceAvailable: monitor.BalanceAvailable,
-		GroupCount:       monitor.GroupCount,
-		PricingCount:     monitor.PricingCount,
-		LastSyncedAt:     monitor.LastSyncedAt,
-		LastError:        monitor.LastError,
-		CreatedAt:        monitor.CreatedAt,
-		UpdatedAt:        monitor.UpdatedAt,
+		Id:                     monitor.Id,
+		Name:                   monitor.Name,
+		BaseURL:                monitor.BaseURL,
+		Provider:               monitor.Provider,
+		NewAPIUserID:           monitor.NewAPIUserID,
+		AccessTokenConfigured:  strings.TrimSpace(monitor.AccessToken) != "",
+		RefreshTokenConfigured: strings.TrimSpace(monitor.RefreshToken) != "",
+		BalanceUSD:             monitor.BalanceUSD,
+		BalanceAvailable:       monitor.BalanceAvailable,
+		GroupCount:             monitor.GroupCount,
+		PricingCount:           monitor.PricingCount,
+		LastSyncedAt:           monitor.LastSyncedAt,
+		LastError:              monitor.LastError,
+		CreatedAt:              monitor.CreatedAt,
+		UpdatedAt:              monitor.UpdatedAt,
 	}
 	if includeSnapshots && monitor.GroupsJSON != "" {
 		if err := common.UnmarshalJsonStr(monitor.GroupsJSON, &detail.Groups); err != nil {

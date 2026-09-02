@@ -17,8 +17,9 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 
+import { Add01Icon, RefreshIcon } from '@hugeicons/core-free-icons'
+import { HugeiconsIcon } from '@hugeicons/react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Plus, RefreshCw } from 'lucide-react'
 import { type ReactNode, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -34,11 +35,11 @@ import {
   deleteUpstreamMonitor,
   listUpstreamMonitors,
   syncUpstreamMonitor,
+  updateUpstreamMonitor,
 } from './api'
 import { UpstreamMonitorAddDialog } from './components/upstream-monitor-add-dialog'
-import { UpstreamMonitorDetailDialog } from './components/upstream-monitor-detail-dialog'
 import { UpstreamMonitorTable } from './components/upstream-monitor-table'
-import type { UpstreamMonitor } from './types'
+import type { UpstreamMonitor, UpstreamMonitorUpdateInput } from './types'
 
 function getErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback
@@ -48,10 +49,6 @@ export function UpstreamMonitorPage() {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [isAddOpen, setIsAddOpen] = useState(false)
-  const [details, setDetails] = useState<{
-    id: number
-    section: 'groups' | 'pricing'
-  } | null>(null)
   const isRoot = useAuthStore(
     (state) => state.auth.user?.role === ROLE.SUPER_ADMIN
   )
@@ -92,11 +89,10 @@ export function UpstreamMonitorPage() {
 
   const deleteMutation = useMutation({
     mutationFn: deleteUpstreamMonitor,
-    onSuccess: async (response, id) => {
+    onSuccess: async (response) => {
       if (!response.success) {
         throw new Error(response.message || t('Delete failed'))
       }
-      if (details?.id === id) setDetails(null)
       toast.success(t('Upstream monitor deleted'))
       await refreshMonitors()
     },
@@ -105,10 +101,40 @@ export function UpstreamMonitorPage() {
     },
   })
 
+  const updateMutation = useMutation({
+    mutationFn: async ({
+      id,
+      input,
+    }: {
+      id: number
+      input: UpstreamMonitorUpdateInput
+    }) => {
+      const response = await updateUpstreamMonitor(id, input)
+      if (!response.success || !response.data) {
+        throw new Error(response.message || t('Credential update failed'))
+      }
+      return response.data
+    },
+    onSuccess: async (monitor) => {
+      if (monitor.last_error) {
+        toast.warning(t('Credentials saved, but synchronization failed'))
+      } else {
+        toast.success(t('Credentials updated'))
+      }
+      await refreshMonitors()
+    },
+    onError: (error) => {
+      toast.error(getErrorMessage(error, t('Credential update failed')))
+    },
+  })
+
   const monitors = monitorQuery.data ?? []
   const syncingId = syncMutation.isPending ? syncMutation.variables : undefined
   const deletingId = deleteMutation.isPending
     ? deleteMutation.variables
+    : undefined
+  const updatingId = updateMutation.isPending
+    ? updateMutation.variables.id
     : undefined
   let monitorContent: ReactNode
   if (monitorQuery.isLoading) {
@@ -137,9 +163,12 @@ export function UpstreamMonitorPage() {
         isRoot={isRoot}
         syncingId={syncingId}
         deletingId={deletingId}
+        updatingId={updatingId}
         onSync={(id) => syncMutation.mutate(id)}
         onDelete={(id) => deleteMutation.mutate(id)}
-        onViewDetails={(id, section) => setDetails({ id, section })}
+        onUpdateCredentials={async (id, input) => {
+          await updateMutation.mutateAsync({ id, input })
+        }}
       />
     )
   }
@@ -158,20 +187,21 @@ export function UpstreamMonitorPage() {
             onClick={() => monitorQuery.refetch()}
             disabled={monitorQuery.isFetching}
           >
-            <RefreshCw
+            <HugeiconsIcon
+              icon={RefreshIcon}
+              strokeWidth={2}
               data-icon='inline-start'
-              className={
-                monitorQuery.isFetching ? 'size-3.5 animate-spin' : 'size-3.5'
-              }
+              className={monitorQuery.isFetching ? 'animate-spin' : undefined}
               aria-hidden='true'
             />
             {t('Refresh')}
           </Button>
           {isRoot && (
             <Button type='button' size='sm' onClick={() => setIsAddOpen(true)}>
-              <Plus
+              <HugeiconsIcon
+                icon={Add01Icon}
+                strokeWidth={2}
                 data-icon='inline-start'
-                className='size-3.5'
                 aria-hidden='true'
               />
               {t('Add monitor')}
@@ -184,7 +214,7 @@ export function UpstreamMonitorPage() {
           <div className='space-y-4'>
             <p className='text-muted-foreground text-sm'>
               {t(
-                'Monitor independent upstream account balances, groups, and pricing.'
+                'Monitor independent upstream account balances and group pricing. Data refreshes automatically every hour.'
               )}
             </p>
             {monitorContent}
@@ -196,12 +226,6 @@ export function UpstreamMonitorPage() {
             onCreated={async (_monitor: UpstreamMonitor) => {
               await refreshMonitors()
             }}
-          />
-          <UpstreamMonitorDetailDialog
-            monitorId={details?.id ?? null}
-            section={details?.section}
-            open={details !== null}
-            onOpenChange={(open) => !open && setDetails(null)}
           />
         </>
       </SectionPageLayout.Content>

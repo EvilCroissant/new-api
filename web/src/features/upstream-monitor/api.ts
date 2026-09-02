@@ -24,19 +24,12 @@ import type {
   UpstreamMonitorCreateInput,
   UpstreamMonitorDetectResult,
   UpstreamMonitorResponse,
+  UpstreamMonitorUpdateInput,
 } from './types'
 
 export async function listUpstreamMonitors() {
   const response = await api.get<UpstreamMonitorResponse<UpstreamMonitor[]>>(
     '/api/upstream-monitors/'
-  )
-  return response.data
-}
-
-export async function getUpstreamMonitor(id: number) {
-  const response = await api.get<UpstreamMonitorResponse<UpstreamMonitor>>(
-    `/api/upstream-monitors/${id}`,
-    { skipErrorHandler: true }
   )
   return response.data
 }
@@ -55,6 +48,18 @@ export async function detectUpstreamMonitor(baseURL: string) {
 export async function createUpstreamMonitor(input: UpstreamMonitorCreateInput) {
   const response = await api.post<UpstreamMonitorResponse<UpstreamMonitor>>(
     '/api/upstream-monitors/',
+    input,
+    { skipErrorHandler: true }
+  )
+  return response.data
+}
+
+export async function updateUpstreamMonitor(
+  id: number,
+  input: UpstreamMonitorUpdateInput
+) {
+  const response = await api.put<UpstreamMonitorResponse<UpstreamMonitor>>(
+    `/api/upstream-monitors/${id}`,
     input,
     { skipErrorHandler: true }
   )

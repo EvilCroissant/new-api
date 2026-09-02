@@ -60,3 +60,38 @@ export type UpstreamMonitorFormInput = z.input<typeof upstreamMonitorFormSchema>
 export type UpstreamMonitorFormValues = z.output<
   typeof upstreamMonitorFormSchema
 >
+
+export const upstreamMonitorCredentialFormSchema = z
+  .object({
+    provider: z.enum(['newapi', 'sub2api']),
+    new_api_user_id: z.coerce.number().int().positive().optional(),
+    access_token: z.string().trim().optional(),
+    refresh_token: z.string().trim().optional(),
+  })
+  .superRefine((value, context) => {
+    if (value.provider === 'newapi' && !value.new_api_user_id) {
+      context.addIssue({
+        code: 'custom',
+        path: ['new_api_user_id'],
+        message: 'New API user ID is required',
+      })
+    }
+    if (
+      value.provider === 'sub2api' &&
+      !value.access_token &&
+      !value.refresh_token
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['access_token'],
+        message: 'Enter a new JWT or refresh token',
+      })
+    }
+  })
+
+export type UpstreamMonitorCredentialFormInput = z.input<
+  typeof upstreamMonitorCredentialFormSchema
+>
+export type UpstreamMonitorCredentialFormValues = z.output<
+  typeof upstreamMonitorCredentialFormSchema
+>
