@@ -789,8 +789,8 @@ func TryClaimHigherPriorityAffinityProbe(c *gin.Context, selectedGroup string, p
 	return next
 }
 
-func AppendChannelAffinityAdminInfo(c *gin.Context, adminInfo map[string]interface{}, requestSucceeded bool) {
-	if c == nil || adminInfo == nil {
+func appendChannelAffinityAdminInfo(c *gin.Context, other *model.LogOther, requestSucceeded bool) {
+	if c == nil || other == nil {
 		return
 	}
 	anyInfo, ok := c.Get(ginKeyChannelAffinityLogInfo)
@@ -799,7 +799,7 @@ func AppendChannelAffinityAdminInfo(c *gin.Context, adminInfo map[string]interfa
 	}
 	info, ok := anyInfo.(map[string]interface{})
 	if !ok {
-		adminInfo["channel_affinity"] = anyInfo
+		other.SetAdmin("channel_affinity", anyInfo)
 		return
 	}
 	probeChannelID := c.GetInt(ginKeyChannelAffinityProbeID)
@@ -812,7 +812,20 @@ func AppendChannelAffinityAdminInfo(c *gin.Context, adminInfo map[string]interfa
 			info["probe_succeeded"] = requestSucceeded && c.GetInt("channel_id") == probeChannelID
 		}
 	}
-	adminInfo["channel_affinity"] = info
+	other.SetAdmin("channel_affinity", info)
+}
+
+// AppendChannelAffinityAdminInfo records affinity metadata on a successful
+// request log. The metadata is kept in LogOther.admin_info so it is not
+// exposed to regular users.
+func AppendChannelAffinityAdminInfo(c *gin.Context, other *model.LogOther) {
+	appendChannelAffinityAdminInfo(c, other, true)
+}
+
+// AppendChannelAffinityErrorAdminInfo records affinity metadata on an error
+// request log and marks any claimed probe as unsuccessful.
+func AppendChannelAffinityErrorAdminInfo(c *gin.Context, other *model.LogOther) {
+	appendChannelAffinityAdminInfo(c, other, false)
 }
 
 func RecordChannelAffinity(c *gin.Context, channelID int) {
