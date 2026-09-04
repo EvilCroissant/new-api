@@ -29,19 +29,14 @@ func RecordRelaySample(info *relaycommon.RelayInfo, success bool, outputTokens i
 		return
 	}
 	now := time.Now()
-	hasFRT := info.HasSendResponse()
-	frtMs := int64(0)
-	if hasFRT {
-		frtMs, _ = info.FRTMilliseconds()
+	hasTtft := info.IsStream && info.HasSendResponse()
+	ttftMs := int64(0)
+	if hasTtft {
+		ttftMs, _ = info.FRTMilliseconds()
 	}
 	latencyMs := now.Sub(info.StartTime).Milliseconds()
-	if hasFRT {
-		// The model square's latency is the time until the first upstream
-		// response, regardless of whether the request is streamed.
-		latencyMs = frtMs
-	}
 	generationMs := latencyMs
-	if hasFRT {
+	if hasTtft {
 		generationMs = now.Sub(info.FirstResponseTime).Milliseconds()
 	}
 	if generationMs <= 0 {
@@ -51,8 +46,8 @@ func RecordRelaySample(info *relaycommon.RelayInfo, success bool, outputTokens i
 		Model:        info.OriginModelName,
 		Group:        info.UsingGroup,
 		LatencyMs:    latencyMs,
-		TtftMs:       frtMs,
-		HasTtft:      hasFRT,
+		TtftMs:       ttftMs,
+		HasTtft:      hasTtft,
 		Success:      success,
 		OutputTokens: outputTokens,
 		GenerationMs: generationMs,
@@ -339,7 +334,7 @@ func buildQueryResult(modelName string, merged map[bucketKey]counters) QueryResu
 		results = append(results, GroupResult{
 			Group:        group,
 			AvgTtftMs:    avg(total.ttftSumMs, total.ttftCount),
-			AvgLatencyMs: effectiveLatency(total),
+			AvgLatencyMs: avg(total.totalLatencyMs, total.requestCount),
 			SuccessRate:  successRate(total),
 			AvgTps:       avgTps(total),
 			Series:       series,
@@ -357,7 +352,7 @@ func bucketPoint(ts int64, value counters) BucketPoint {
 	return BucketPoint{
 		Ts:           ts,
 		AvgTtftMs:    avg(value.ttftSumMs, value.ttftCount),
-		AvgLatencyMs: effectiveLatency(value),
+		AvgLatencyMs: avg(value.totalLatencyMs, value.requestCount),
 		SuccessRate:  successRate(value),
 		AvgTps:       avgTps(value),
 	}
