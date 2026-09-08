@@ -110,6 +110,10 @@ export function SidebarModulesSection({
         title: t('Usage logs'),
         description: t('Detailed request logs for investigations.'),
       },
+      audit: {
+        title: t('Audit Logs'),
+        description: t('Login, security and access records'),
+      },
       midjourney: {
         title: t('Drawing logs'),
         description: t('History of MjProxy-style image tasks.'),
@@ -131,6 +135,10 @@ export function SidebarModulesSection({
       referral: {
         title: t('Referral Program'),
         description: t('Referral link, rewards, and reward activity.'),
+      },
+      security: {
+        title: t('Security & Access'),
+        description: t('Manage your security settings and account access'),
       },
     },
     admin: {
