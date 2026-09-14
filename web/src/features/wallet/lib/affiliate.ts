@@ -17,10 +17,13 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 // ============================================================================
-// Wallet Library Exports
+// Affiliate Functions
 // ============================================================================
 
-export * from './affiliate'
-export * from './format'
-export * from './payment'
-export * from './ui'
+/**
+ * Generate affiliate registration link
+ */
+export function generateAffiliateLink(affCode: string): string {
+  if (typeof window === 'undefined') return ''
+  return `${window.location.origin}/sign-up?aff=${affCode}`
+}
