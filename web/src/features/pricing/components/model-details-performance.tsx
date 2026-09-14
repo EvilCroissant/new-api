@@ -34,10 +34,10 @@ import {
   getSuccessRateTextClass,
 } from '@/features/performance-metrics/lib/format'
 import type { PerformanceGroup } from '@/features/performance-metrics/types'
+import { requireServerSuccess } from '@/lib/server-error-message'
 import { cn } from '@/lib/utils'
 
 import type { UptimeDayPoint } from '../lib/mock-stats'
-import { toLatencySeries } from '../lib/performance-series'
 import type { PricingModel } from '../types'
 import { LatencyTrendChart, UptimeTrendChart } from './model-details-charts'
 import { UptimeSparkline } from './model-details-uptime-sparkline'
@@ -85,6 +85,28 @@ function toUptimePct(value: number): number {
   if (!Number.isFinite(value)) return 0
   const clamped = Math.min(100, Math.max(0, value))
   return Math.round(clamped * 100) / 100
+}
+
+function toLatencySeries(groups: PerformanceGroup[]) {
+  const byTs = new Map<number, number[]>()
+  for (const group of groups) {
+    for (const point of group.series) {
+      if (point.avg_ttft_ms <= 0) continue
+      const current = byTs.get(point.ts) ?? []
+      current.push(point.avg_ttft_ms)
+      byTs.set(point.ts, current)
+    }
+  }
+
+  return [...byTs.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([ts, values]) => ({
+      timestamp: new Date(ts * 1000).toISOString(),
+      group: 'latency',
+      ttft_ms: Math.round(
+        values.reduce((sum, value) => sum + value, 0) / values.length
+      ),
+    }))
 }
 
 function toUptimeSeries(groups: PerformanceGroup[]): UptimeDayPoint[] {
@@ -144,7 +166,8 @@ export function ModelDetailsPerformance(props: { model: PricingModel }) {
   const { t } = useTranslation()
   const metricsQuery = useQuery({
     queryKey: ['perf-metrics', props.model.model_name],
-    queryFn: () => getPerfMetrics(props.model.model_name, 24),
+    queryFn: async () =>
+      requireServerSuccess(await getPerfMetrics(props.model.model_name, 24)),
     staleTime: 60 * 1000,
   })
   const groups = useMemo(
