@@ -869,7 +869,7 @@ func selectResponsesWSChannel(c *gin.Context, modelName string, retryParam *serv
 					for _, g := range service.GetRequestAutoGroups(c, userGroup) {
 						if appmodel.IsChannelEnabledForGroupModel(g, modelName, preferred.Id) {
 							common.SetContextKey(c, appconstant.ContextKeyAutoGroup, g)
-							service.MarkChannelAffinityUsed(c, g, preferred.Id)
+							service.MarkChannelAffinityUsed(c, g, preferred.Id, preferred.GetPriority())
 							if err := middleware.SetupContextForSelectedChannel(c, preferred, modelName); err != nil {
 								return nil, err
 							}
@@ -877,7 +877,7 @@ func selectResponsesWSChannel(c *gin.Context, modelName string, retryParam *serv
 						}
 					}
 				} else if appmodel.IsChannelEnabledForGroupModel(usingGroup, modelName, preferred.Id) {
-					service.MarkChannelAffinityUsed(c, usingGroup, preferred.Id)
+					service.MarkChannelAffinityUsed(c, usingGroup, preferred.Id, preferred.GetPriority())
 					if err := middleware.SetupContextForSelectedChannel(c, preferred, modelName); err != nil {
 						return nil, err
 					}
