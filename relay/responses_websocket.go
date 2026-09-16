@@ -297,6 +297,7 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 				info.LastError = apiErr
 				service.ProcessChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, info.ApiKey, channel.GetAutoBan()), apiErr, info)
 				if service.ShouldRetryRelayError(c, apiErr, common.RetryTimes-retry.GetRetry()) {
+					retry.MarkChannelFailed(channel)
 					continue
 				}
 				return apiErr

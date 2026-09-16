@@ -192,6 +192,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		if !shouldRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry()) {
 			break
 		}
+		markFailedChannelForRetry(c, retryParam, channel, false)
 	}
 
 	useChannel := c.GetStringSlice("use_channel")
@@ -549,6 +550,7 @@ func executeTaskSubmissionWith(
 		if !willRetry {
 			break
 		}
+		markFailedChannelForRetry(c, retryParam, channel, relayInfo.LockedChannel != nil)
 	}
 
 	useChannel := c.GetStringSlice("use_channel")
@@ -761,4 +763,14 @@ func shouldRetryTaskRelay(c *gin.Context, channelId int, taskErr *taskdto.TaskEr
 		return false
 	}
 	return true
+}
+
+func markFailedChannelForRetry(c *gin.Context, retryParam *service.RetryParam, channel *model.Channel, locked bool) {
+	if locked {
+		return
+	}
+	if _, pinned, _ := service.GetChannelConstraints(c).ResolvedPin(); pinned {
+		return
+	}
+	retryParam.MarkChannelFailed(channel)
 }

@@ -150,6 +150,58 @@ func TestResponsesWSChannelRoutingRequiresExplicitOptIn(t *testing.T) {
 	assert.Nil(t, channel)
 }
 
+func TestResponsesWSRetrySkipsFailedChannel(t *testing.T) {
+	database := setupRelayChannelDB(t)
+	require.NoError(t, database.AutoMigrate(&model.Ability{}))
+	priority := int64(10)
+	channels := []*model.Channel{
+		{Name: "responses-ws-retry-a", Key: "sk-a", Type: constant.ChannelTypeCodex, Status: common.ChannelStatusEnabled, Group: "default", Models: "ws-retry-model", Priority: &priority},
+		{Name: "responses-ws-retry-b", Key: "sk-b", Type: constant.ChannelTypeCodex, Status: common.ChannelStatusEnabled, Group: "default", Models: "ws-retry-model", Priority: &priority},
+	}
+	for _, channel := range channels {
+		channel.SetSetting(dto.ChannelSettings{ResponsesWebSocketEnabled: true})
+		require.NoError(t, database.Create(channel).Error)
+		require.NoError(t, database.Create(&model.Ability{
+			ChannelId: channel.Id,
+			Model:     "ws-retry-model",
+			Group:     "default",
+			Enabled:   true,
+			Priority:  &priority,
+		}).Error)
+	}
+	previousRetryTimes := common.RetryTimes
+	previousCache := common.MemoryCacheEnabled
+	t.Cleanup(func() {
+		common.RetryTimes = previousRetryTimes
+		common.MemoryCacheEnabled = previousCache
+		model.InitChannelCache()
+	})
+	common.RetryTimes = 1
+	common.MemoryCacheEnabled = true
+	model.InitChannelCache()
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+	retry := 0
+	param := &service.RetryParam{
+		Ctx:         c,
+		TokenGroup:  "default",
+		ModelName:   "ws-retry-model",
+		RequestPath: c.Request.URL.Path,
+		Retry:       &retry,
+	}
+	first, apiErr := selectResponsesWSChannel(c, "ws-retry-model", param)
+	require.Nil(t, apiErr)
+	require.NotNil(t, first)
+	param.MarkChannelFailed(first)
+	param.IncreaseRetry()
+
+	second, apiErr := selectResponsesWSChannel(c, "ws-retry-model", param)
+	require.Nil(t, apiErr)
+	require.NotNil(t, second)
+	assert.NotEqual(t, first.Id, second.Id)
+}
+
 func TestNormalizeResponsesWSCreateEventWrapper(t *testing.T) {
 	message := []byte(`{
 		"type": "response.create",
