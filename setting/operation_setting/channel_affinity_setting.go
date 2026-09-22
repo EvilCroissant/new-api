@@ -21,6 +21,9 @@ type ChannelAffinityRule struct {
 	ParamOverrideTemplate map[string]any `json:"param_override_template,omitempty"`
 
 	SkipRetryOnFailure bool `json:"skip_retry_on_failure"`
+	// "inherit" uses the global default; off/prefer/strict override it.
+	// Empty preserves the legacy SkipRetryOnFailure behavior.
+	SessionMode string `json:"session_mode,omitempty"`
 
 	IncludeUsingGroup bool `json:"include_using_group"`
 	IncludeModelName  bool `json:"include_model_name"`
@@ -31,6 +34,8 @@ type ChannelAffinitySetting struct {
 	Enabled                bool `json:"enabled"`
 	OptimizationEnabled    bool `json:"optimization_enabled"`
 	FRTOptimizationEnabled bool `json:"frt_optimization_enabled"`
+	// Default for rules with SessionMode "inherit". Empty defaults to "prefer".
+	SessionMode string `json:"session_mode"`
 	// Keep the persisted keys stable so existing deployments retain their FRT tuning.
 	// FRTProbeCount is the administrator-configurable number of consecutive
 	// slow real requests required before FRT evaluates a channel switch.
@@ -119,6 +124,7 @@ func buildCodexPassHeaderTemplate() map[string]any {
 
 var channelAffinitySetting = ChannelAffinitySetting{
 	Enabled:                    true,
+	SessionMode:                "prefer",
 	OptimizationEnabled:        true,
 	FRTOptimizationEnabled:     false,
 	FRTProbeCount:              2,

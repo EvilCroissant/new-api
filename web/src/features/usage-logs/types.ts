@@ -20,6 +20,7 @@ For commercial licensing, please contact support@quantumnous.com
  * Type definitions for usage logs
  */
 import type { RequestRuleTrace } from '@/features/pricing/lib/billing-expr'
+import type { PolicyEvent } from '@/features/system-settings/request-policies/api'
 
 import type { UsageLog } from './data/schema'
 // ============================================================================
@@ -126,8 +127,15 @@ export interface ToolSurchargeItem {
   price: number
 }
 
+export interface ResponseModelData {
+  requested_model: string
+  upstream_model: string
+  returned_model: string
+}
+
 export interface LogOtherData {
   admin_info?: {
+    request_policy?: PolicyEvent[]
     is_multi_key?: boolean
     multi_key_index?: number
     use_channel?: number[]
@@ -157,6 +165,12 @@ export interface LogOtherData {
     }
     // Reject / intercept reason (admin only)
     reject_reason?: string
+    // Upstream model diagnostics are operator-only. Legacy logs may still
+    // store these keys at the top level; the UI only reads that shape for
+    // administrators as a migration fallback.
+    is_model_mapped?: boolean
+    upstream_model_name?: string
+    response_model?: ResponseModelData
     task_plugin?: TaskPluginInfo
   }
   root_info?: {
@@ -206,8 +220,6 @@ export interface LogOtherData {
   cache_creation_ratio?: number
   cache_creation_ratio_5m?: number
   cache_creation_ratio_1h?: number
-  is_model_mapped?: boolean
-  upstream_model_name?: string
   audio_ratio?: number
   audio_completion_ratio?: number
   frt?: number
@@ -258,6 +270,11 @@ export interface LogOtherData {
   fee_quota?: number
   // Task-related fields (for refund logs, type=6)
   is_task?: boolean
+  // The submitting request returned the task result itself (an immediate
+  // result, or an OpenAI Images request the gateway waited on).
+  task_sync?: boolean
+  // The inline result was not persisted, so no artifact can be retrieved.
+  result_discarded?: boolean
   task_id?: string
   reason?: string
   // Subscription billing fields
@@ -334,6 +351,9 @@ export interface TaskLog {
     origin_model_name?: string
   }
   legacy_video_available?: boolean
+  // A synchronous result returned inline and never persisted; artifact
+  // retrieval is not offered for it.
+  result_discarded?: boolean
   fail_reason?: string
   status: string // NOT_START, SUBMITTED, IN_PROGRESS, SUCCESS, FAILURE, QUEUED, UNKNOWN
   admin_info?: {
@@ -378,9 +398,25 @@ export interface TaskArtifact {
   content_url: string
 }
 
+export interface AudioClip {
+  clip_id?: string
+  id?: string
+  title?: string
+  tags?: string
+  duration?: number
+  audio_url?: string
+  image_url?: string
+  image_large_url?: string
+  metadata?: {
+    tags?: string
+    duration?: number
+  }
+}
+
 export interface TaskArtifactProjection {
   artifacts: TaskArtifact[]
   legacyContentUrl?: string
+  legacyAudioClips?: AudioClip[]
 }
 
 export interface TaskArtifactsResponse {
@@ -390,6 +426,7 @@ export interface TaskArtifactsResponse {
   data?: {
     artifacts?: unknown
     legacy_content_url?: unknown
+    legacy_audio_clips?: unknown
   }
 }
 

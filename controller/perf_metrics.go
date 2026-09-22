@@ -1,7 +1,9 @@
 package controller
 
 import (
+	"maps"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 
@@ -53,9 +55,10 @@ func GetPerfMetrics(c *gin.Context) {
 	}
 
 	result, err := perfmetrics.Query(perfmetrics.QueryParams{
-		Model: modelName,
-		Group: c.Query("group"),
-		Hours: hours,
+		Model:         modelName,
+		Group:         c.Query("group"),
+		Hours:         hours,
+		AllowedGroups: append(slices.Collect(maps.Keys(ratio_setting.GetGroupRatioCopy())), "auto"),
 	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -66,7 +69,6 @@ func GetPerfMetrics(c *gin.Context) {
 	}
 
 	result.Groups = filterActiveGroups(result.Groups, visiblePerfGroupSet(c))
-
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"data":    result,

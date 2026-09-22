@@ -64,7 +64,11 @@ function makeLog(other: LogOtherData): UsageLog {
   }
 }
 
-function renderDetails(other: LogOtherData, promptTokens = 0): QueryClient {
+function renderDetails(
+  other: LogOtherData,
+  promptTokens = 0,
+  isAdmin = false
+): QueryClient {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
@@ -78,9 +82,9 @@ function renderDetails(other: LogOtherData, promptTokens = 0): QueryClient {
 
   render(
     <QueryClientProvider client={queryClient}>
-      <DetailsDialog
-        log={{ ...makeLog(other), prompt_tokens: promptTokens }}
-        isAdmin={false}
+        <DetailsDialog
+          log={{ ...makeLog(other), prompt_tokens: promptTokens }}
+          isAdmin={isAdmin}
         isRoot={false}
         open
         onOpenChange={() => undefined}
@@ -93,6 +97,42 @@ function renderDetails(other: LogOtherData, promptTokens = 0): QueryClient {
 function rowValue(label: string): string | null {
   return screen.getByText(label).nextElementSibling?.textContent ?? null
 }
+
+test('shows the recorded request and response models in log details', () => {
+  const queryClient = renderDetails(
+    {
+      admin_info: {
+        response_model: {
+          requested_model: 'requested-model',
+          upstream_model: 'mapped-model',
+          returned_model: 'unexpected-model',
+        },
+      },
+    },
+    0,
+    true
+  )
+  expect(screen.getByText('Response model: unexpected-model')).toBeVisible()
+  expect(rowValue('Request Model')).toBe('requested-model')
+  expect(rowValue('Upstream Model')).toBe('mapped-model')
+  expect(screen.getByText('unexpected-model')).toBeVisible()
+  queryClient.clear()
+})
+
+test('does not show recorded response models in non-admin log details', () => {
+  const queryClient = renderDetails({
+    admin_info: {
+      response_model: {
+        requested_model: 'requested-model',
+        upstream_model: 'private-upstream-model',
+        returned_model: 'private-returned-model',
+      },
+    },
+  })
+  expect(screen.queryByText('private-upstream-model')).not.toBeInTheDocument()
+  expect(screen.queryByText('private-returned-model')).not.toBeInTheDocument()
+  queryClient.clear()
+})
 
 describe('usage facts billing details', () => {
   test('shows the settled image count and a per-image price', () => {

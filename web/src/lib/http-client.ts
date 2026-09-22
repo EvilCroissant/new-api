@@ -44,7 +44,10 @@ declare module 'axios' {
   }
 }
 
-export type ApiRequestConfig = AxiosRequestConfig
+export type ApiRequestConfig<D = unknown, P = unknown> = AxiosRequestConfig<
+  D,
+  P
+>
 
 export const api = axios.create({
   baseURL: '',

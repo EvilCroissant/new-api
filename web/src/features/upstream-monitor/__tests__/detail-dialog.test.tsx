@@ -16,15 +16,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 */
 
 import { render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, test } from 'vitest'
+import { describe, expect, test } from 'vitest'
 
 const { createInstance } = await import('i18next')
 const { I18nextProvider, initReactI18next } = await import('react-i18next')
-const { QueryClient, QueryClientProvider } =
-  await import('@tanstack/react-query')
-const { api } = await import('@/lib/api')
-const { UpstreamMonitorDetailDialog } =
-  await import('../components/upstream-monitor-detail-dialog')
+const { UpstreamMonitorGroupPanel } =
+  await import('../components/upstream-monitor-group-panel')
 
 const i18n = createInstance()
 await i18n.use(initReactI18next).init({
@@ -32,54 +29,37 @@ await i18n.use(initReactI18next).init({
   resources: { en: { translation: {} } },
 })
 
-type ApiMethod = (url: string) => Promise<{ data: unknown }>
-type MockableApi = { get: ApiMethod }
-
-const apiClient = api as unknown as MockableApi
-const originalGet = apiClient.get
-const queryClients: InstanceType<typeof QueryClient>[] = []
-
-function renderDialog(groups: unknown): void {
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  })
-  queryClients.push(queryClient)
-  apiClient.get = async (url) => {
-    expect(url).toBe('/api/upstream-monitors/1')
-    return {
-      data: {
-        success: true,
-        data: {
-          id: 1,
-          base_url: 'https://monitor.example.com',
-          groups,
-        },
-      },
-    }
-  }
-
+function renderGroupPanel(groups: unknown): void {
   render(
-    <QueryClientProvider client={queryClient}>
-      <I18nextProvider i18n={i18n}>
-        <UpstreamMonitorDetailDialog
-          monitorId={1}
-          open
-          onOpenChange={() => undefined}
-        />
-      </I18nextProvider>
-    </QueryClientProvider>
+    <I18nextProvider i18n={i18n}>
+      <UpstreamMonitorGroupPanel
+        id='upstream-monitor-panel-1'
+        monitor={{
+          id: 1,
+          name: 'monitor.example.com',
+          base_url: 'https://monitor.example.com',
+          provider: 'newapi',
+          new_api_user_id: 1,
+          access_token_configured: true,
+          refresh_token_configured: false,
+          balance_usd: 0,
+          balance_available: false,
+          group_count: 0,
+          pricing_count: 0,
+          groups,
+          last_synced_at: 0,
+          last_error: '',
+          created_at: 0,
+          updated_at: 0,
+        }}
+      />
+    </I18nextProvider>
   )
 }
 
-afterEach(() => {
-  apiClient.get = originalGet
-  for (const queryClient of queryClients) queryClient.clear()
-  queryClients.length = 0
-})
-
-describe('UpstreamMonitorDetailDialog', () => {
+describe('UpstreamMonitorGroupPanel', () => {
   test('shows every available group with the current user multiplier', async () => {
-    renderDialog({
+    renderGroupPanel({
       groups: [
         {
           id: 1,
@@ -97,12 +77,8 @@ describe('UpstreamMonitorDetailDialog', () => {
       rates: { '1': 0.045 },
     })
 
-    expect(
-      await screen.findByRole('columnheader', { name: 'Group' })
-    ).toBeInTheDocument()
-    expect(
-      screen.getByRole('columnheader', { name: 'Multiplier' })
-    ).toBeInTheDocument()
+    expect(await screen.findByText('Group')).toBeInTheDocument()
+    expect(screen.getByText('Multiplier')).toBeInTheDocument()
     expect(screen.getByText('ChatGPT-Plus 【稳定通道】')).toBeInTheDocument()
     expect(screen.getByText('0.045x')).toBeInTheDocument()
     expect(screen.getByText('ChatGPT-Pro 【高并发通道】')).toBeInTheDocument()
@@ -111,7 +87,7 @@ describe('UpstreamMonitorDetailDialog', () => {
   })
 
   test('shows New API groups and multipliers', async () => {
-    renderDialog({
+    renderGroupPanel({
       success: true,
       data: {
         'gpt-pro': {

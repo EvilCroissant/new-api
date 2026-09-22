@@ -545,6 +545,7 @@ func ApplyChannelAffinityOverrideTemplate(c *gin.Context, paramOverride map[stri
 
 func GetPreferredChannelByAffinity(c *gin.Context, modelName string, usingGroup string) (int, bool) {
 	setting := operation_setting.GetChannelAffinitySetting()
+	state := RequestPolicy(c)
 	if setting == nil || !setting.Enabled {
 		return 0, false
 	}
@@ -589,11 +590,13 @@ func GetPreferredChannelByAffinity(c *gin.Context, modelName string, usingGroup 
 		}
 		cacheKeySuffix := buildChannelAffinityCacheKeySuffix(rule, modelName, usingGroup, affinityValue)
 		cacheKeyFull := channelAffinityCacheNamespace + ":" + cacheKeySuffix
+		state.SessionMode, state.SessionModeSource = EffectiveSessionMode(setting, rule)
+		state.RuleName = rule.Name
 		setChannelAffinityContext(c, channelAffinityMeta{
 			CacheKey:       cacheKeyFull,
 			TTLSeconds:     ttlSeconds,
 			RuleName:       rule.Name,
-			SkipRetry:      rule.SkipRetryOnFailure,
+			SkipRetry:      state.SessionMode == "strict",
 			ParamTemplate:  cloneStringAnyMap(rule.ParamOverrideTemplate),
 			KeySourceType:  strings.TrimSpace(usedSource.Type),
 			KeySourceKey:   strings.TrimSpace(usedSource.Key),
@@ -605,6 +608,13 @@ func GetPreferredChannelByAffinity(c *gin.Context, modelName string, usingGroup 
 			RequestPath:    path,
 		})
 
+		policyState := RequestPolicy(c)
+		policyState.SessionMode, policyState.SessionModeSource = EffectiveSessionMode(setting, rule)
+		policyState.RuleName = rule.Name
+		policyState.AddEvent(PolicyEvent{Decision: PolicyDecision{Action: "match", Reason: "session_rule_matched", Source: "session_rule"}})
+		if policyState.SessionMode == "off" {
+			return 0, false
+		}
 		state, found, err := getChannelAffinityCache().Get(cacheKeySuffix)
 		if err != nil {
 			common.SysError(fmt.Sprintf("channel affinity cache get failed: key=%s, err=%v", cacheKeyFull, err))
@@ -796,22 +806,24 @@ func appendChannelAffinityAdminInfo(c *gin.Context, other *model.LogOther, reque
 	if !ok || anyInfo == nil {
 		return
 	}
-	info, ok := anyInfo.(map[string]interface{})
-	if !ok {
-		other.SetAdmin("channel_affinity", anyInfo)
-		return
-	}
-	probeChannelID := c.GetInt(ginKeyChannelAffinityProbeID)
-	if probeChannelID > 0 {
-		requestState, hasState := getChannelAffinityRequestState(c)
-		if hasState && requestState.Found {
-			info["event"] = "upward_probe"
-			info["from_channel_id"] = requestState.State.ChannelID
-			info["to_channel_id"] = probeChannelID
-			info["probe_succeeded"] = requestSucceeded && c.GetInt("channel_id") == probeChannelID
+	// The hint can be the whole session value for short keys; logs keep only
+	// the fingerprint.
+	if info, ok := anyInfo.(map[string]any); ok {
+		sanitized := cloneStringAnyMap(info)
+		delete(sanitized, "key_hint")
+		probeChannelID := c.GetInt(ginKeyChannelAffinityProbeID)
+		if probeChannelID > 0 {
+			requestState, hasState := getChannelAffinityRequestState(c)
+			if hasState && requestState.Found {
+				sanitized["event"] = "upward_probe"
+				sanitized["from_channel_id"] = requestState.State.ChannelID
+				sanitized["to_channel_id"] = probeChannelID
+				sanitized["probe_succeeded"] = requestSucceeded && c.GetInt("channel_id") == probeChannelID
+			}
 		}
+		anyInfo = sanitized
 	}
-	other.SetAdmin("channel_affinity", info)
+	other.SetAdmin("channel_affinity", anyInfo)
 }
 
 // AppendChannelAffinityAdminInfo records affinity metadata on a successful
@@ -832,6 +844,9 @@ func RecordChannelAffinity(c *gin.Context, channelID int) {
 		return
 	}
 	setting := operation_setting.GetChannelAffinitySetting()
+	if RequestPolicy(c).SessionMode == "off" {
+		return
+	}
 	if setting == nil || !setting.Enabled {
 		return
 	}

@@ -21,6 +21,9 @@ var legacySensitiveLogOtherKeys = []string{
 	"channel_name",
 	"channel_type",
 	"reject_reason",
+	"is_model_mapped",
+	"upstream_model_name",
+	"response_model",
 }
 
 type logOtherVisibility int

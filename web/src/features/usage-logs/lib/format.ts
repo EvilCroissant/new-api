@@ -26,7 +26,7 @@ import {
 } from '@/features/pricing/lib/billing-expr'
 
 import type { UsageLog } from '../data/schema'
-import type { LogOtherData } from '../types'
+import type { LogOtherData, ResponseModelData } from '../types'
 import { buildQuotaAuditOperation } from './quota-audit-operation'
 
 export { normalizeTierLabel }
@@ -235,22 +235,52 @@ export function getResponseTimeColor(
 /**
  * Format model name with mapping indicator
  */
-export function formatModelName(log: UsageLog): {
-  name: string
+type LegacyModelLogOtherData = LogOtherData & {
+  is_model_mapped?: boolean
+  upstream_model_name?: string
+  response_model?: ResponseModelData
+}
+
+export function getModelLogInfo(
+  other: LogOtherData | null,
+  isAdmin: boolean
+): {
   isMapped: boolean
   actualModel?: string
+  responseModel?: ResponseModelData
 } {
-  const other = parseLogOther(log.other)
+  if (!isAdmin || !other) {
+    return { isMapped: false }
+  }
+
+  const legacy = other as LegacyModelLogOtherData
   const isMapped = !!(
-    other?.is_model_mapped &&
-    other?.upstream_model_name &&
-    other.upstream_model_name !== ''
+    (other.admin_info?.is_model_mapped &&
+      other.admin_info.upstream_model_name) ||
+    (legacy.is_model_mapped && legacy.upstream_model_name)
   )
 
   return {
-    name: log.model_name,
     isMapped,
-    actualModel: isMapped ? other.upstream_model_name : undefined,
+    actualModel: isMapped
+      ? (other.admin_info?.upstream_model_name ?? legacy.upstream_model_name)
+      : undefined,
+    responseModel:
+      other.admin_info?.response_model ?? legacy.response_model,
+  }
+}
+
+export function formatModelName(log: UsageLog, isAdmin: boolean): {
+  name: string
+  isMapped: boolean
+  actualModel?: string
+  responseModel?: ResponseModelData
+} {
+  const other = parseLogOther(log.other)
+
+  return {
+    name: log.model_name,
+    ...getModelLogInfo(other, isAdmin),
   }
 }
 

@@ -14,7 +14,14 @@ import (
 // log views, since formatUserLogs strips the whole admin_info object.
 func TestFormatUserLogsStripsQuotaSaturation(t *testing.T) {
 	other := common.MapToJsonStr(map[string]any{
-		"model_price": 0.004,
+		"model_price":         0.004,
+		"is_model_mapped":     true,
+		"upstream_model_name": "legacy-upstream-model",
+		"response_model": map[string]any{
+			"requested_model": "requested",
+			"upstream_model":  "legacy-upstream-model",
+			"returned_model":  "returned",
+		},
 		"admin_info": map[string]any{
 			"quota_saturation": map[string]any{
 				"op":      "QuotaFromDecimal",
@@ -31,6 +38,9 @@ func TestFormatUserLogsStripsQuotaSaturation(t *testing.T) {
 	require.NoError(t, err)
 	_, hasAdminInfo := parsed["admin_info"]
 	require.False(t, hasAdminInfo, "admin_info (and nested quota_saturation) must be stripped for non-admin views")
+	assert.NotContains(t, parsed, "is_model_mapped")
+	assert.NotContains(t, parsed, "upstream_model_name")
+	assert.NotContains(t, parsed, "response_model")
 	// Non-admin billing fields remain visible.
 	require.Contains(t, parsed, "model_price")
 }

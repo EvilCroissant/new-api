@@ -35,6 +35,18 @@ import { useAuthStore } from '@/stores/auth-store'
 import type { AccessTokenStatus } from '../../api'
 import { AccessTokenCard } from '../access-token-card'
 
+function getScope(
+  config: { params?: unknown } | undefined
+): string | undefined {
+  const params = config?.params
+  return typeof params === 'object' &&
+    params !== null &&
+    'scope' in params &&
+    typeof params.scope === 'string'
+    ? params.scope
+    : undefined
+}
+
 let status: AccessTokenStatus
 let proofCount: number
 
@@ -85,7 +97,7 @@ beforeEach(() => {
         data: {
           success: true,
           data: {
-            scope: config?.params?.scope,
+            scope: getScope(config),
             methods: [{ method: 'password', available: true }],
             oauth_providers: [],
             password_encryption_enabled: false,

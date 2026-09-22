@@ -259,7 +259,15 @@ describe('vendor management', () => {
     const get = vi
       .spyOn(api, 'get')
       .mockImplementation(async (_url, config) => {
-        if (config?.params?.p === 2) {
+        const params = config?.params
+        const page =
+          typeof params === 'object' &&
+          params !== null &&
+          'p' in params &&
+          typeof params.p === 'number'
+            ? params.p
+            : undefined
+        if (page === 2) {
           return new Promise((resolve) => {
             finishPage = resolve
           })

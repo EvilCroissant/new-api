@@ -22,7 +22,10 @@ export interface KeySource {
   path?: string
 }
 
+export type SessionMode = 'off' | 'prefer' | 'strict'
+
 export interface AffinityRule {
+  session_mode?: SessionMode | 'inherit'
   id?: number
   name: string
   model_regex: string[]
@@ -51,6 +54,7 @@ export interface ChannelAffinitySettings {
   'channel_affinity_setting.enabled': boolean
   'channel_affinity_setting.optimization_enabled': boolean
   'channel_affinity_setting.frt_optimization_enabled': boolean
+  'channel_affinity_setting.session_mode'?: '' | SessionMode
   'channel_affinity_setting.frt_consecutive_slow_limit': number
   'channel_affinity_setting.frt_all_slow_hold_seconds': number
   'channel_affinity_setting.switch_on_success': boolean
