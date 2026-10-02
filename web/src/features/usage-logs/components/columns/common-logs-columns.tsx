@@ -83,6 +83,13 @@ interface DetailSegment {
   danger?: boolean
 }
 
+const FRT_CHANNEL_SWITCH_EVENTS = new Set([
+  'switched',
+  'switched_exploration',
+  'probe_cooldown',
+  'cooldown_global_switch',
+])
+
 function formatRatioCompact(ratio: number | undefined): string {
   if (ratio == null || !Number.isFinite(ratio)) return '-'
   return ratio % 1 === 0
@@ -406,6 +413,30 @@ export function useCommonLogsColumns(
             const channelChain = hasRetryChain
               ? useChannel.join(' → ')
               : undefined
+            const hasSuccessfulUpwardProbe =
+              affinity?.event === 'upward_probe' &&
+              affinity.probe_succeeded === true &&
+              typeof affinity.from_channel_id === 'number' &&
+              typeof affinity.to_channel_id === 'number'
+            const frtOptimization = affinity?.frt_optimization
+            const hasFRTChannelSwitch =
+              frtOptimization != null &&
+              FRT_CHANNEL_SWITCH_EVENTS.has(frtOptimization.event || '') &&
+              typeof frtOptimization.from_channel_id === 'number' &&
+              Number.isInteger(frtOptimization.from_channel_id) &&
+              frtOptimization.from_channel_id > 0 &&
+              typeof frtOptimization.to_channel_id === 'number' &&
+              Number.isInteger(frtOptimization.to_channel_id) &&
+              frtOptimization.to_channel_id > 0 &&
+              frtOptimization.from_channel_id !== frtOptimization.to_channel_id
+            const showChannelRoute =
+              hasRetryChain || hasSuccessfulUpwardProbe || hasFRTChannelSwitch
+            let channelRouteLabel = 'Channel Optimization'
+            if (hasRetryChain) {
+              channelRouteLabel = 'Retry Chain'
+            } else if (hasFRTChannelSwitch) {
+              channelRouteLabel = 'FRT Optimization'
+            }
             const channelDisplay = log.channel_name
               ? `${log.channel_name} #${log.channel}`
               : `#${log.channel}`
@@ -445,14 +476,14 @@ export function useCommonLogsColumns(
                           aria-label={`${t('Key')} ${multiKeyIndex}`}
                         />
                       )}
-                      {hasRetryChain && (
+                      {showChannelRoute && (
                         <Popover>
                           <PopoverTrigger
                             render={
                               <button
                                 type='button'
                                 className='text-muted-foreground hover:text-foreground focus-visible:ring-ring inline-flex size-5 shrink-0 items-center justify-center rounded-full transition-colors focus-visible:ring-2 focus-visible:outline-none'
-                                aria-label={t('Retry Chain')}
+                                aria-label={t(channelRouteLabel)}
                                 onClick={(e) => e.stopPropagation()}
                               />
                             }
@@ -468,10 +499,38 @@ export function useCommonLogsColumns(
                             className='w-64 text-xs'
                           >
                             <div className='flex flex-col gap-1'>
-                              <p className='font-medium'>{t('Retry Chain')}</p>
-                              <p className='text-muted-foreground font-mono break-all'>
-                                {channelChain}
-                              </p>
+                              {hasRetryChain && (
+                                <div>
+                                  <p className='font-medium'>
+                                    {t('Retry Chain')}
+                                  </p>
+                                  <p className='text-muted-foreground font-mono break-all'>
+                                    {channelChain}
+                                  </p>
+                                </div>
+                              )}
+                              {hasSuccessfulUpwardProbe && (
+                                <div>
+                                  <p className='font-medium'>
+                                    {t('Channel Optimization')}
+                                  </p>
+                                  <p className='text-muted-foreground font-mono break-all'>
+                                    #{affinity.from_channel_id} → #
+                                    {affinity.to_channel_id}
+                                  </p>
+                                </div>
+                              )}
+                              {hasFRTChannelSwitch && (
+                                <div>
+                                  <p className='font-medium'>
+                                    {t('FRT Optimization')}
+                                  </p>
+                                  <p className='text-muted-foreground font-mono break-all'>
+                                    #{frtOptimization.from_channel_id} → #
+                                    {frtOptimization.to_channel_id}
+                                  </p>
+                                </div>
+                              )}
                             </div>
                           </PopoverContent>
                         </Popover>
@@ -518,6 +577,26 @@ export function useCommonLogsColumns(
                         <p className='text-muted-foreground text-xs'>
                           {t('Key')}: {multiKeyIndex}
                         </p>
+                      )}
+                      {hasSuccessfulUpwardProbe && (
+                        <div className='border-t pt-1 text-xs'>
+                          <p className='font-medium'>
+                            {t('Channel Optimization')}
+                          </p>
+                          <p className='text-muted-foreground font-mono break-all'>
+                            #{affinity.from_channel_id} → #
+                            {affinity.to_channel_id}
+                          </p>
+                        </div>
+                      )}
+                      {hasFRTChannelSwitch && (
+                        <div className='border-t pt-1 text-xs'>
+                          <p className='font-medium'>{t('FRT Optimization')}</p>
+                          <p className='text-muted-foreground font-mono break-all'>
+                            #{frtOptimization.from_channel_id} → #
+                            {frtOptimization.to_channel_id}
+                          </p>
+                        </div>
                       )}
                       {affinity && (
                         <div className='border-t pt-1 text-xs'>

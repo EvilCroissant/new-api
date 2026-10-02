@@ -36,6 +36,7 @@ import {
 import type { UsageLog } from '../../data/schema'
 import type { LogOtherData } from '../../types'
 import { useCommonLogsColumns } from '../columns/common-logs-columns'
+import { UsageLogsProvider } from '../usage-logs-provider'
 
 vi.mock('@lobehub/icons', () => ({}))
 vi.hoisted(() => {
@@ -74,6 +75,7 @@ function makeLog(other: LogOtherData): UsageLog {
 }
 
 function DetailPreview(props: { other: LogOtherData; isAdmin: boolean }) {
+  // oxlint-disable-next-line react/incompatible-library
   const table = useReactTable({
     data: [makeLog(props.other)],
     columns: useCommonLogsColumns(props.isAdmin, false),
@@ -84,6 +86,21 @@ function DetailPreview(props: { other: LogOtherData; isAdmin: boolean }) {
     .rows[0].getAllCells()
     .find((item) => item.column.id === 'content')
   if (!cell) throw new Error('The log must have a content column')
+  return flexRender(cell.column.columnDef.cell, cell.getContext())
+}
+
+function ChannelPreview(props: { other: LogOtherData }) {
+  // oxlint-disable-next-line react/incompatible-library
+  const table = useReactTable({
+    data: [makeLog(props.other)],
+    columns: useCommonLogsColumns(true, false),
+    getCoreRowModel: getCoreRowModel(),
+  })
+  const cell = table
+    .getRowModel()
+    .rows[0].getAllCells()
+    .find((item) => item.column.id === 'channel')
+  if (!cell) throw new Error('The log must have a channel column')
   return flexRender(cell.column.columnDef.cell, cell.getContext())
 }
 const plugin = {
@@ -127,6 +144,19 @@ function renderPreview(other: LogOtherData, isAdmin = true) {
   return screen.getByRole('button', { name: /./ })
 }
 
+function renderChannelPreview(other: LogOtherData) {
+  render(
+    <I18nextProvider i18n={i18n}>
+      <QueryClientProvider client={client}>
+        <UsageLogsProvider>
+          <ChannelPreview other={other} />
+        </UsageLogsProvider>
+      </QueryClientProvider>
+    </I18nextProvider>
+  )
+  return screen.getByRole('button', { name: 'FRT Optimization' })
+}
+
 test('keeps log details open when the parent refreshes with unchanged data', async () => {
   const other = { model_price: 0.25 }
   const wrapper = ({ children }: { children: React.ReactNode }) => (
@@ -141,6 +171,25 @@ test('keeps log details open when the parent refreshes with unchanged data', asy
   expect(await screen.findByRole('dialog')).toBeVisible()
   rerender(<DetailPreview other={other} isAdmin />)
   expect(screen.getByRole('dialog')).toBeVisible()
+})
+
+test('shows the FRT channel switch route in the channel marker', async () => {
+  const marker = renderChannelPreview({
+    admin_info: {
+      channel_affinity: {
+        frt_optimization: {
+          event: 'switched',
+          from_channel_id: 1,
+          to_channel_id: 2,
+        },
+      },
+    },
+  })
+
+  fireEvent.click(marker)
+
+  expect(await screen.findByText('FRT Optimization')).toBeVisible()
+  expect(screen.getAllByText('#1 → #2').length).toBeGreaterThan(0)
 })
 
 test.each([

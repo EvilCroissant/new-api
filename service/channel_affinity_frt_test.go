@@ -307,7 +307,41 @@ func TestChannelAffinityFRTGlobalWindowRejectsSingleUserDominance(t *testing.T) 
 	assert.False(t, valid)
 }
 
-func TestChannelAffinityFRTGlobalObservationsShareAcrossGroupAndRequestPath(t *testing.T) {
+func TestChannelAffinityFRTGlobalObservationKeepsAnonymousSourcesDistinct(t *testing.T) {
+	previousRedisEnabled := common.RedisEnabled
+	previousRedisClient := common.RDB
+	common.RedisEnabled = false
+	common.RDB = nil
+	t.Cleanup(func() {
+		common.RedisEnabled = previousRedisEnabled
+		common.RDB = previousRedisClient
+	})
+
+	scope := channelAffinityFRTScope{
+		ModelName:   fmt.Sprintf("test-anonymous-global-%d", time.Now().UnixNano()),
+		RequestPath: "/v1/responses",
+		Stream:      true,
+	}
+	channelID := 54
+	cacheKey := channelAffinityFRTGlobalCacheKey(channelAffinityFRTGlobalScopeFrom(scope), channelID)
+	cache := getChannelAffinityFRTGlobalCache()
+	t.Cleanup(func() { _, _ = cache.DeleteMany([]string{cacheKey}) })
+
+	now := time.Now()
+	keys := []string{"anonymous-key-a", "anonymous-key-a", "anonymous-key-a", "anonymous-key-b", "anonymous-key-b", "anonymous-key-b", "anonymous-key-c", "anonymous-key-c"}
+	for _, key := range keys {
+		require.NoError(t, recordChannelAffinityFRTGlobalObservation(0, key, scope, channelID, 1_500, now))
+	}
+
+	state, found, err := getChannelAffinityFRTGlobalState(scope, channelID)
+	require.NoError(t, err)
+	require.True(t, found)
+	stats, valid := channelAffinityFRTGlobalWindowScore(state, now.Add(-channelAffinityFRTGlobalWindow), now, 0)
+	require.True(t, valid)
+	assert.Equal(t, 3, stats.Users)
+}
+
+func TestChannelAffinityFRTGlobalObservationsKeepRequestPathSeparate(t *testing.T) {
 	previousRedisEnabled := common.RedisEnabled
 	previousRedisClient := common.RDB
 	common.RedisEnabled = false
@@ -331,9 +365,10 @@ func TestChannelAffinityFRTGlobalObservationsShareAcrossGroupAndRequestPath(t *t
 		Stream:      true,
 	}
 	channelID := 54
-	cacheKey := channelAffinityFRTGlobalCacheKey(channelAffinityFRTGlobalScopeFrom(sourceScope), channelID)
+	sourceCacheKey := channelAffinityFRTGlobalCacheKey(channelAffinityFRTGlobalScopeFrom(sourceScope), channelID)
+	targetCacheKey := channelAffinityFRTGlobalCacheKey(channelAffinityFRTGlobalScopeFrom(targetScope), channelID)
 	cache := getChannelAffinityFRTGlobalCache()
-	t.Cleanup(func() { _, _ = cache.DeleteMany([]string{cacheKey}) })
+	t.Cleanup(func() { _, _ = cache.DeleteMany([]string{sourceCacheKey, targetCacheKey}) })
 
 	now := time.Now()
 	require.NoError(t, recordChannelAffinityFRTGlobalObservation(2, "source-key", sourceScope, channelID, 1_500, now))
@@ -342,10 +377,15 @@ func TestChannelAffinityFRTGlobalObservationsShareAcrossGroupAndRequestPath(t *t
 	state, found, err := getChannelAffinityFRTGlobalState(targetScope, channelID)
 	require.NoError(t, err)
 	require.True(t, found)
-	assert.Equal(t, channelAffinityFRTGlobalScope{ModelName: modelName, Stream: true}, state.Scope)
-	require.Len(t, state.Samples, 2)
-	assert.Equal(t, 1_500.0, state.Samples[0].FRTMs)
-	assert.Equal(t, 1_700.0, state.Samples[1].FRTMs)
+	assert.Equal(t, channelAffinityFRTGlobalScope{ModelName: modelName, RequestPath: "/v1/responses", Stream: true}, state.Scope)
+	require.Len(t, state.Samples, 1)
+	assert.Equal(t, 1_700.0, state.Samples[0].FRTMs)
+
+	sourceState, found, err := getChannelAffinityFRTGlobalState(sourceScope, channelID)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.Len(t, sourceState.Samples, 1)
+	assert.Equal(t, 1_500.0, sourceState.Samples[0].FRTMs)
 
 	nonStreamScope := targetScope
 	nonStreamScope.Stream = false
@@ -374,7 +414,7 @@ func TestChooseChannelAffinityFRTGlobalTargetUsesFreshEvidenceDespitePriorVisit(
 	selectionScope := channelAffinityFRTScope{
 		Group:       "selection-group",
 		ModelName:   modelName,
-		RequestPath: "/v1/responses",
+		RequestPath: "/v1/chat/completions",
 		Stream:      true,
 	}
 	fastChannelID := 54
@@ -396,15 +436,17 @@ func TestChooseChannelAffinityFRTGlobalTargetUsesFreshEvidenceDespitePriorVisit(
 		))
 	}
 
-	// 全局证据不受本轮历史访问记录限制：其他用户的新鲜数据确认恢复后，
-	// 先前曾经慢过的渠道仍可被重新选择。
-	target := chooseChannelAffinityFRTGlobalTarget(
+	// 本轮已经访问过 fastChannelID，但本轮开始后出现了新鲜全局证据，
+	// 因此它可以重新进入 probation。
+	target := chooseChannelAffinityFRTGlobalTargetSince(
 		selectionScope,
 		[]*model.Channel{{Id: fastChannelID}, {Id: currentChannelID}},
 		currentChannelID,
 		30_000,
 		0,
 		1,
+		[]int{fastChannelID},
+		now.Add(-time.Second).UnixMilli(),
 		now,
 	)
 	require.NotNil(t, target)
