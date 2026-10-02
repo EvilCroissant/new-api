@@ -158,6 +158,10 @@ func Distribute() func(c *gin.Context) {
 					if !affinityUsable && !service.ShouldKeepChannelAffinityOnChannelDisabled() {
 						service.ClearCurrentChannelAffinityCache(c)
 					}
+					if !affinityUsable && service.RequestPolicy(c).SessionMode == "strict" {
+						abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "strict_session_binding_unavailable", types.ErrorCodeModelNotFound)
+						return
+					}
 				}
 
 				if channel == nil {
@@ -250,6 +254,9 @@ func channelMatchesExpectedTaskPlugin(c *gin.Context, channel *model.Channel, ex
 	if expected == "" {
 		return true
 	}
+	if channel.Type == constant.ChannelTypeNewAPI {
+		return channel.GetSetting().BindsTaskPlugin(expected)
+	}
 
 	if c == nil {
 		return false
@@ -286,7 +293,13 @@ func pinnedEndpointCandidateForChannel(c *gin.Context, channel *model.Channel, e
 			expectedOwned = true
 		}
 		if channel.Type == constant.ChannelTypeTaskPlugin {
-			if channel.GetSetting().TaskPluginKey == candidate.Plugin.Meta.Key {
+			if selected.Plugin == nil && channel.GetSetting().TaskPluginKey == candidate.Plugin.Meta.Key {
+				selected = candidate
+			}
+			continue
+		}
+		if channel.Type == constant.ChannelTypeNewAPI {
+			if selected.Plugin == nil && channel.GetSetting().BindsTaskPlugin(candidate.Plugin.Meta.Key) {
 				selected = candidate
 			}
 			continue
@@ -597,6 +610,12 @@ func tokenModelLimitAllows(limit map[string]bool, model string) bool {
 		return true
 	}
 	return limit[ratio_setting.RoutingMatchModelName(model)]
+}
+
+// TokenModelLimitAllows exposes model-limit matching for callers that need to
+// apply the same normalization as the distributor.
+func TokenModelLimitAllows(limit map[string]bool, model string) bool {
+	return tokenModelLimitAllows(limit, model)
 }
 
 // 修复 #4834: GET /v1/video/generations/:task_id && /v1/video/:task_id 此前不解析 model，

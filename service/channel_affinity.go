@@ -545,6 +545,7 @@ func ApplyChannelAffinityOverrideTemplate(c *gin.Context, paramOverride map[stri
 
 func GetPreferredChannelByAffinity(c *gin.Context, modelName string, usingGroup string) (int, bool) {
 	setting := operation_setting.GetChannelAffinitySetting()
+	state := RequestPolicy(c)
 	if setting == nil || !setting.Enabled {
 		return 0, false
 	}
@@ -589,11 +590,13 @@ func GetPreferredChannelByAffinity(c *gin.Context, modelName string, usingGroup 
 		}
 		cacheKeySuffix := buildChannelAffinityCacheKeySuffix(rule, modelName, usingGroup, affinityValue)
 		cacheKeyFull := channelAffinityCacheNamespace + ":" + cacheKeySuffix
+		state.SessionMode, state.SessionModeSource = EffectiveSessionMode(setting, rule)
+		state.RuleName = rule.Name
 		setChannelAffinityContext(c, channelAffinityMeta{
 			CacheKey:       cacheKeyFull,
 			TTLSeconds:     ttlSeconds,
 			RuleName:       rule.Name,
-			SkipRetry:      rule.SkipRetryOnFailure,
+			SkipRetry:      state.SessionMode == "strict",
 			ParamTemplate:  cloneStringAnyMap(rule.ParamOverrideTemplate),
 			KeySourceType:  strings.TrimSpace(usedSource.Type),
 			KeySourceKey:   strings.TrimSpace(usedSource.Key),
@@ -604,18 +607,22 @@ func GetPreferredChannelByAffinity(c *gin.Context, modelName string, usingGroup 
 			ModelName:      modelName,
 			RequestPath:    path,
 		})
+		state.AddEvent(PolicyEvent{Decision: PolicyDecision{Action: "match", Reason: "session_rule_matched", Source: "session_rule"}})
+		if state.SessionMode == "off" {
+			return 0, false
+		}
 
-		state, found, err := getChannelAffinityCache().Get(cacheKeySuffix)
+		affinityState, found, err := getChannelAffinityCache().Get(cacheKeySuffix)
 		if err != nil {
 			common.SysError(fmt.Sprintf("channel affinity cache get failed: key=%s, err=%v", cacheKeyFull, err))
 			return 0, false
 		}
 		c.Set(ginKeyChannelAffinityState, channelAffinityRequestState{
-			State: state,
+			State: affinityState,
 			Found: found,
 		})
 		if found {
-			return state.ChannelID, true
+			return affinityState.ChannelID, true
 		}
 		if setting.FRTOptimizationEnabled {
 			if channelID, selected := getPreferredChannelByFRT(c, modelName, usingGroup); selected {
@@ -678,9 +685,13 @@ func ShouldKeepChannelAffinityOnChannelDisabled() bool {
 	return setting.KeepOnChannelDisabled
 }
 
-func MarkChannelAffinityUsed(c *gin.Context, selectedGroup string, channelID int, priority int64) {
+func MarkChannelAffinityUsed(c *gin.Context, selectedGroup string, channelID int, priorities ...int64) {
 	if c == nil || channelID <= 0 {
 		return
+	}
+	priority := int64(0)
+	if len(priorities) > 0 {
+		priority = priorities[0]
 	}
 	meta, ok := getChannelAffinityMeta(c)
 	if !ok {
@@ -832,6 +843,9 @@ func RecordChannelAffinity(c *gin.Context, channelID int) {
 		return
 	}
 	setting := operation_setting.GetChannelAffinitySetting()
+	if RequestPolicy(c).SessionMode == "off" {
+		return
+	}
 	if setting == nil || !setting.Enabled {
 		return
 	}
