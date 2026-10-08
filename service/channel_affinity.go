@@ -37,10 +37,11 @@ const (
 
 const (
 	channelAffinityFRTSlowCountThreshold      = 2
-	channelAffinityFRTColdStartBaselineMs     = 7_500.0
-	channelAffinityFRTReferenceMinMs          = 5_000.0
-	channelAffinityFRTReferenceMaxMs          = 10_000.0
+	channelAffinityFRTColdStartBaselineMs     = 15_000.0
+	channelAffinityFRTReferenceMinMs          = 10_000.0
+	channelAffinityFRTReferenceMaxMs          = 20_000.0
 	channelAffinityFRTExplosionMs             = 20_000.0
+	channelAffinityFRTInitialFastMs           = 5_000.0
 	channelAffinityFRTMinimumDispersionMs     = 500.0
 	channelAffinityFRTMADMultiplier           = 1.4826
 	channelAffinityFRTDynamicDispersionFactor = 1.5

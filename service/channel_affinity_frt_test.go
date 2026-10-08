@@ -27,15 +27,23 @@ func testFRTScore(channelID int, values []float64, now time.Time) channelAffinit
 
 func TestChannelAffinityFRTDynamicThresholdV2(t *testing.T) {
 	now := time.Now()
-	coldThreshold, coldStats := channelAffinityFRTDynamicThresholdV2(channelAffinityFRTChannelScore{}, now)
-	require.Equal(t, channelAffinityFRTReferenceMaxMs, coldThreshold)
-	require.Zero(t, coldStats.Samples)
-
-	threshold, stats := channelAffinityFRTDynamicThresholdV2(testFRTScore(1, []float64{4_000, 5_000, 6_000}, now), now)
-	require.Equal(t, 3, stats.Samples)
-	assert.InDelta(t, 5_000, stats.MedianMs, 0.001)
-	assert.InDelta(t, 1_000, stats.MADMs, 0.001)
-	assert.InDelta(t, 7_223.9, threshold, 0.01)
+	for _, tc := range []struct {
+		name      string
+		values    []float64
+		threshold float64
+	}{
+		{name: "cold start", threshold: 20_000},
+		{name: "insufficient samples", values: []float64{2_000, 3_000}, threshold: 20_000},
+		{name: "lower bound", values: []float64{4_000, 5_000, 6_000}, threshold: 10_000},
+		{name: "dynamic threshold", values: []float64{12_000, 13_000, 14_000}, threshold: 15_223.9},
+		{name: "upper bound", values: []float64{22_000, 23_000, 24_000}, threshold: 20_000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			threshold, stats := channelAffinityFRTDynamicThresholdV2(testFRTScore(1, tc.values, now), now)
+			assert.InDelta(t, tc.threshold, threshold, 0.01)
+			assert.Equal(t, len(tc.values), stats.Samples)
+		})
+	}
 }
 
 func TestChannelAffinityFRTShouldEvaluate(t *testing.T) {
