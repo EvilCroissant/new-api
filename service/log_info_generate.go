@@ -99,6 +99,7 @@ func appendRelayLogAdminInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo,
 	if events := RequestPolicy(ctx).Events(); len(events) > 0 {
 		other.SetAdmin("request_policy", events)
 	}
+	appendStreamStatus(relayInfo, other)
 }
 
 func AppendRelayLogAdminInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other *model.LogOther) {
@@ -142,7 +143,6 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 	appendFinalRequestFormat(relayInfo, other)
 	appendBillingInfo(relayInfo, other)
 	appendParamOverrideInfo(relayInfo, other)
-	appendStreamStatus(relayInfo, other)
 	return other
 }
 
@@ -173,12 +173,16 @@ func appendStreamStatus(relayInfo *relaycommon.RelayInfo, other *model.LogOther)
 	ss := relayInfo.StreamStatus
 	status := "ok"
 	outcome := ss.OutcomeSnapshot()
-	if !ss.IsNormalEnd() || ss.HasErrors() || outcome.Response == relaycommon.ResponseOutcomeFailed {
+	upstreamError := ss.UpstreamErrorMessage()
+	if !ss.IsNormalEnd() || ss.HasErrors() || outcome.Response == relaycommon.ResponseOutcomeFailed || upstreamError != "" {
 		status = "error"
 	}
 	streamInfo := map[string]any{
 		"status":     status,
 		"end_reason": string(ss.EndReason),
+	}
+	if upstreamError != "" {
+		streamInfo["upstream_error"] = upstreamError
 	}
 	if outcome.Response != relaycommon.ResponseOutcomeUnknown {
 		streamInfo["response_status"] = string(outcome.Response)

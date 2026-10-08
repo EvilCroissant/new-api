@@ -7049,6 +7049,7 @@
     "Wallet pre-consume bypass threshold (USD)": "Wallet pre-consume bypass threshold (USD)",
     "What do you want to change?": "What do you want to change?",
     "With these settings, automatic disabling is off for all channels.": "With these settings, automatic disabling is off for all channels.",
-    "You can create up to {{count}} access tokens": "You can create up to {{count}} access tokens"
+    "You can create up to {{count}} access tokens": "You can create up to {{count}} access tokens",
+    "Upstream Error": "Upstream Error"
   }
 }

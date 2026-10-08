@@ -1234,6 +1234,12 @@ export function DetailsDialog(props: DetailsDialogProps) {
                 value={other.stream_status.end_error}
               />
             )}
+            {other.stream_status.upstream_error && (
+              <DetailRow
+                label={t('Upstream Error')}
+                value={other.stream_status.upstream_error}
+              />
+            )}
             {Array.isArray(other.stream_status.errors) &&
               other.stream_status.errors.length > 0 && (
                 <pre className='bg-background/60 mt-1 max-h-32 overflow-y-auto rounded border p-2 font-mono text-[11px] leading-relaxed wrap-break-word whitespace-pre-wrap'>

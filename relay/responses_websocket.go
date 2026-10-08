@@ -416,6 +416,7 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 						}
 						continue
 					}
+					info.StreamStatus.CaptureUpstreamError(string(incoming.body), info.ApiKey)
 					if accepted {
 						if rejection.Error != nil {
 							code := ""
@@ -442,6 +443,7 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 					}
 					return rejected
 				}
+				info.StreamStatus.CaptureUpstreamError(string(incoming.body), info.ApiKey)
 				if strings.HasPrefix(event.Type, "response.") {
 					if !accepted {
 						// Like HTTP, bind the session only once upstream accepted the request.

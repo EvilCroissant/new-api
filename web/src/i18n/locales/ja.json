@@ -7049,6 +7049,7 @@
     "Wallet pre-consume bypass threshold (USD)": "ウォレットの事前引き落とし省略額（USD）",
     "What do you want to change?": "何を変更しますか？",
     "With these settings, automatic disabling is off for all channels.": "現在の設定では、すべてのチャネルで自動無効化が無効です。",
-    "You can create up to {{count}} access tokens": "アクセストークンは最大 {{count}} 個まで作成できます"
+    "You can create up to {{count}} access tokens": "アクセストークンは最大 {{count}} 個まで作成できます",
+    "Upstream Error": "上流エラー"
   }
 }

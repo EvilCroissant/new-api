@@ -7049,6 +7049,7 @@
     "Wallet pre-consume bypass threshold (USD)": "錢包免預扣門檻（美元）",
     "What do you want to change?": "你想修改什麼？",
     "With these settings, automatic disabling is off for all channels.": "依目前設定，所有渠道的自動停用均不生效。",
-    "You can create up to {{count}} access tokens": "最多可建立 {{count}} 個存取令牌"
+    "You can create up to {{count}} access tokens": "最多可建立 {{count}} 個存取令牌",
+    "Upstream Error": "上游報錯"
   }
 }

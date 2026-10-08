@@ -5,6 +5,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+
+	"github.com/QuantumNous/new-api/common"
+	"github.com/tidwall/gjson"
 )
 
 type StreamEndReason string
@@ -49,12 +53,13 @@ type StreamStatus struct {
 	Errors     []StreamErrorEntry
 	ErrorCount int
 
-	response         ResponseOutcome
-	errorCode        string
-	errorType        string
-	errorStatus      int
-	incompleteReason string
-	expectsTerminal  bool
+	response             ResponseOutcome
+	errorCode            string
+	errorType            string
+	errorStatus          int
+	incompleteReason     string
+	expectsTerminal      bool
+	upstreamErrorMessage string
 }
 
 // StreamOutcome holds classification facts only; upstream messages never
@@ -97,6 +102,69 @@ func (s *StreamStatus) RecordError(msg string) {
 			Timestamp: time.Now(),
 		})
 	}
+}
+
+// CaptureUpstreamError saves the first actual upstream error before downstream
+// writes can cancel the request. It is diagnostic only, not a routing signal.
+func (s *StreamStatus) CaptureUpstreamError(data string, secrets ...string) {
+	if s == nil || s.UpstreamErrorMessage() != "" {
+		return
+	}
+	event := gjson.Parse(data)
+	message := event.Get("error.message")
+	if message.Type != gjson.String {
+		message = event.Get("error")
+	}
+	if message.Type != gjson.String {
+		switch event.Get("type").String() {
+		case "error":
+			message = event.Get("message")
+		case "response.failed", "response.done", "response.completed":
+			if event.Get("type").String() == "response.failed" || event.Get("response.status").String() == "failed" {
+				message = event.Get("response.error.message")
+				if message.Type != gjson.String {
+					message = event.Get("response.error")
+				}
+			}
+		}
+	}
+	if message.Type != gjson.String || !gjson.Valid(data) {
+		return
+	}
+	text := message.String()
+	for _, secret := range secrets {
+		if secret != "" {
+			text = strings.ReplaceAll(text, secret, "***")
+		}
+	}
+	text = strings.TrimSpace(strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, common.MaskSensitiveInfo(text)))
+	if text == "" {
+		return
+	}
+	if runes := []rune(text); len(runes) > 2048 {
+		text = string(runes[:2048]) + "…"
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.upstreamErrorMessage == "" {
+		s.upstreamErrorMessage = text
+	}
+}
+
+// UpstreamErrorMessage returns the bounded, masked diagnostic separately from
+// StreamOutcome so it does not influence routing or billing classification.
+func (s *StreamStatus) UpstreamErrorMessage() string {
+	if s == nil {
+		return ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.upstreamErrorMessage
 }
 
 // RequireTerminal declares that the protocol always ends with an explicit

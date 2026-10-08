@@ -110,6 +110,10 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 		})
 	}
 
+	upstreamKey := ""
+	if info.ChannelMeta != nil {
+		upstreamKey = info.ApiKey
+	}
 	generalSettings := operation_setting.GetGeneralSetting()
 	pingEnabled := generalSettings.PingIntervalEnabled && !info.DisablePing
 	pingInterval := time.Duration(generalSettings.PingIntervalSeconds) * time.Second
@@ -273,6 +277,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 				continue
 			}
 			if !strings.HasPrefix(data, "[DONE]") {
+				info.StreamStatus.CaptureUpstreamError(data, upstreamKey)
 				info.SetFirstResponseTime()
 				info.ReceivedResponseCount++
 

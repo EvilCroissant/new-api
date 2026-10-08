@@ -7049,6 +7049,7 @@
     "Wallet pre-consume bypass threshold (USD)": "Ngưỡng ví được miễn khấu trừ trước (USD)",
     "What do you want to change?": "Bạn muốn thay đổi gì?",
     "With these settings, automatic disabling is off for all channels.": "Với cài đặt này, tự động vô hiệu hóa không có hiệu lực với bất kỳ kênh nào.",
-    "You can create up to {{count}} access tokens": "Bạn có thể tạo tối đa {{count}} token truy cập"
+    "You can create up to {{count}} access tokens": "Bạn có thể tạo tối đa {{count}} token truy cập",
+    "Upstream Error": "Lỗi nhà cung cấp"
   }
 }

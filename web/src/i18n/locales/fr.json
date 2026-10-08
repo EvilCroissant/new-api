@@ -7049,6 +7049,7 @@
     "Wallet pre-consume bypass threshold (USD)": "Seuil sans pré-débit du portefeuille (USD)",
     "What do you want to change?": "Que souhaitez-vous modifier ?",
     "With these settings, automatic disabling is off for all channels.": "Avec ces paramètres, la désactivation automatique est inactive pour tous les canaux.",
-    "You can create up to {{count}} access tokens": "Vous pouvez créer jusqu’à {{count}} jetons d’accès"
+    "You can create up to {{count}} access tokens": "Vous pouvez créer jusqu’à {{count}} jetons d’accès",
+    "Upstream Error": "Erreur en amont"
   }
 }

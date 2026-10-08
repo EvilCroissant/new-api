@@ -7049,6 +7049,7 @@
     "Wallet pre-consume bypass threshold (USD)": "Порог кошелька без предсписания (USD)",
     "What do you want to change?": "Что вы хотите изменить?",
     "With these settings, automatic disabling is off for all channels.": "При этих настройках автоотключение не действует ни для одного канала.",
-    "You can create up to {{count}} access tokens": "Можно создать не более {{count}} токенов доступа"
+    "You can create up to {{count}} access tokens": "Можно создать не более {{count}} токенов доступа",
+    "Upstream Error": "Ошибка провайдера"
   }
 }

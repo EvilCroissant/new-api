@@ -254,6 +254,7 @@ export interface LogOtherData {
   billing_source?: string
   group?: string
   stream_status?: {
+    upstream_error?: string
     status?: string
     end_reason?: string
     error_count?: number
