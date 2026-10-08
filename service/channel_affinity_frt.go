@@ -510,7 +510,7 @@ func channelAffinityFRTHasAdvantage(candidateScore, currentScore float64, samePr
 // real, fresh FRT evidence is strong enough to justify bypassing the normal
 // priority-to-weight selection for this first request.
 func getPreferredChannelByFRT(c *gin.Context, modelName string, usingGroup string) (int, bool) {
-	if c == nil || c.GetInt("id") <= 0 {
+	if c == nil {
 		return 0, false
 	}
 
@@ -550,15 +550,17 @@ func getPreferredChannelByFRT(c *gin.Context, modelName string, usingGroup strin
 		userCandidates := make([]channelAffinityFRTInitialCandidate, 0, len(candidates))
 		globalCandidates := make([]channelAffinityFRTInitialCandidate, 0, len(candidates))
 		scope := channelAffinityFRTScopeForSelection(c, group, modelName)
-		state, found, err := getChannelAffinityFRTUserCache().Get(channelAffinityFRTUserCacheKey(userID, scope))
-		if err != nil {
-			common.SysError(fmt.Sprintf("channel affinity user frt lookup failed: user=%d, group=%s, model=%s, err=%v", userID, group, modelName, err))
-		} else if found && state.Scope.equal(scope) {
-			for _, candidate := range channelAffinityFRTScoredCandidates(candidates, state.Channels, now, channelAffinityFRTMinimumSamples) {
-				userCandidates = append(userCandidates, channelAffinityFRTInitialCandidate{
-					channel: candidate.channel,
-					score:   candidate.stats.ScoreMs,
-				})
+		if userID > 0 {
+			state, found, err := getChannelAffinityFRTUserCache().Get(channelAffinityFRTUserCacheKey(userID, scope))
+			if err != nil {
+				common.SysError(fmt.Sprintf("channel affinity user frt lookup failed: user=%d, group=%s, model=%s, err=%v", userID, group, modelName, err))
+			} else if found && state.Scope.equal(scope) {
+				for _, candidate := range channelAffinityFRTScoredCandidates(candidates, state.Channels, now, channelAffinityFRTMinimumSamples) {
+					userCandidates = append(userCandidates, channelAffinityFRTInitialCandidate{
+						channel: candidate.channel,
+						score:   candidate.stats.ScoreMs,
+					})
+				}
 			}
 		}
 

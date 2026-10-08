@@ -991,9 +991,6 @@ func RecordChannelAffinityFRT(c *gin.Context, relayInfo *relaycommon.RelayInfo, 
 	if c == nil || relayInfo == nil || setting == nil || !setting.Enabled || !setting.FRTOptimizationEnabled || channelID <= 0 {
 		return
 	}
-	if c.GetInt("id") <= 0 {
-		return
-	}
 	selection, ok := getChannelAffinitySelection(c)
 	if !ok || selection.Group == "" {
 		return
