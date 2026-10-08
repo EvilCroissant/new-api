@@ -285,34 +285,32 @@ func TestChooseChannelAffinityFRTInitialTarget(t *testing.T) {
 	}}))
 }
 
-func TestChannelAffinityFRTGlobalWindowRejectsSingleUserDominance(t *testing.T) {
+func TestChannelAffinityFRTGlobalWindowAcceptsSingleUser(t *testing.T) {
 	now := time.Now()
-	state := channelAffinityFRTGlobalState{Samples: []channelAffinityFRTGlobalSample{
-		{FRTMs: 500, ObservedAt: now.UnixMilli(), SourceUserID: 2},
-		{FRTMs: 500, ObservedAt: now.UnixMilli(), SourceUserID: 2},
-		{FRTMs: 500, ObservedAt: now.UnixMilli(), SourceUserID: 2},
-		{FRTMs: 500, ObservedAt: now.UnixMilli(), SourceUserID: 3},
-		{FRTMs: 500, ObservedAt: now.UnixMilli(), SourceUserID: 3},
-		{FRTMs: 500, ObservedAt: now.UnixMilli(), SourceUserID: 3},
-		{FRTMs: 500, ObservedAt: now.UnixMilli(), SourceUserID: 4},
-		{FRTMs: 500, ObservedAt: now.UnixMilli(), SourceUserID: 4},
-	}}
-	stats, valid := channelAffinityFRTGlobalWindowScore(state, now.Add(-time.Minute), now, 1)
+	legacySamples := make([]map[string]any, 0, 8)
+	for range 8 {
+		legacySamples = append(legacySamples, map[string]any{
+			"frt_ms": 2_000, "observed_at": now.UnixMilli(), "source_user_id": 1, "source_affinity_key": "same-session",
+		})
+	}
+	payload, err := common.Marshal(map[string]any{"samples": legacySamples})
+	require.NoError(t, err)
+	state, err := (channelAffinityFRTGlobalStateCodec{}).Decode(string(payload))
+	require.NoError(t, err)
+	stats, valid := channelAffinityFRTGlobalWindowScore(state, now.Add(-time.Minute), now)
 	require.True(t, valid)
 	assert.Equal(t, 8, stats.Samples)
-	assert.Equal(t, 3, stats.Users)
-	assert.InDelta(t, 0.375, stats.DominantShare, 0.001)
+	assert.Equal(t, 2_000.0, stats.ScoreMs)
+	state.Samples = state.Samples[:7]
+	_, valid = channelAffinityFRTGlobalWindowScore(state, now.Add(-time.Minute), now)
+	assert.False(t, valid, "insufficient samples must still be rejected")
+	state.Samples = append(state.Samples, channelAffinityFRTGlobalSample{FRTMs: 500, ObservedAt: now.Add(-time.Minute).UnixMilli()})
+	_, valid = channelAffinityFRTGlobalWindowScore(state, now.Add(-time.Minute), now)
+	assert.False(t, valid, "expired samples must not satisfy the minimum")
+	state.Samples[7].ObservedAt = now.Add(time.Second).UnixMilli()
+	_, valid = channelAffinityFRTGlobalWindowScore(state, now.Add(-time.Minute), now)
+	assert.False(t, valid, "future samples must not satisfy the minimum")
 
-	state.Samples[0].SourceUserID = 2
-	state.Samples[1].SourceUserID = 2
-	state.Samples[2].SourceUserID = 2
-	state.Samples[3].SourceUserID = 2
-	state.Samples[4].SourceUserID = 2
-	state.Samples[5].SourceUserID = 3
-	state.Samples[6].SourceUserID = 3
-	state.Samples[7].SourceUserID = 4
-	_, valid = channelAffinityFRTGlobalWindowScore(state, now.Add(-time.Minute), now, 1)
-	assert.False(t, valid)
 }
 
 func TestChannelAffinityFRTGlobalObservationsShareAcrossGroupAndRequestPath(t *testing.T) {
@@ -344,8 +342,8 @@ func TestChannelAffinityFRTGlobalObservationsShareAcrossGroupAndRequestPath(t *t
 	t.Cleanup(func() { _, _ = cache.DeleteMany([]string{cacheKey}) })
 
 	now := time.Now()
-	require.NoError(t, recordChannelAffinityFRTGlobalObservation(2, "source-key", sourceScope, channelID, 1_500, now))
-	require.NoError(t, recordChannelAffinityFRTGlobalObservation(3, "target-key", targetScope, channelID, 1_700, now))
+	require.NoError(t, recordChannelAffinityFRTGlobalObservation(sourceScope, channelID, 1_500, now))
+	require.NoError(t, recordChannelAffinityFRTGlobalObservation(targetScope, channelID, 1_700, now))
 
 	state, found, err := getChannelAffinityFRTGlobalState(targetScope, channelID)
 	require.NoError(t, err)
@@ -362,7 +360,7 @@ func TestChannelAffinityFRTGlobalObservationsShareAcrossGroupAndRequestPath(t *t
 	assert.False(t, found)
 }
 
-func TestChooseChannelAffinityFRTGlobalTargetUsesFreshEvidenceDespitePriorVisit(t *testing.T) {
+func TestChooseChannelAffinityFRTGlobalTargetUsesSharedEvidence(t *testing.T) {
 	previousRedisEnabled := common.RedisEnabled
 	previousRedisClient := common.RDB
 	common.RedisEnabled = false
@@ -392,11 +390,8 @@ func TestChooseChannelAffinityFRTGlobalTargetUsesFreshEvidenceDespitePriorVisit(
 	t.Cleanup(func() { _, _ = cache.DeleteMany([]string{cacheKey}) })
 
 	now := time.Now()
-	users := []int{2, 2, 2, 3, 3, 3, 4, 4}
-	for i, userID := range users {
+	for range 8 {
 		require.NoError(t, recordChannelAffinityFRTGlobalObservation(
-			userID,
-			fmt.Sprintf("affinity-%d", i),
 			sourceScope,
 			fastChannelID,
 			2_000,
@@ -404,15 +399,13 @@ func TestChooseChannelAffinityFRTGlobalTargetUsesFreshEvidenceDespitePriorVisit(
 		))
 	}
 
-	// 全局证据不受本轮历史访问记录限制：其他用户的新鲜数据确认恢复后，
-	// 先前曾经慢过的渠道仍可被重新选择。
+	// Shared evidence is eligible regardless of which user supplied it.
 	target := chooseChannelAffinityFRTGlobalTarget(
 		selectionScope,
 		[]*model.Channel{{Id: fastChannelID}, {Id: currentChannelID}},
 		currentChannelID,
 		30_000,
 		0,
-		1,
 		now,
 	)
 	require.NotNil(t, target)

@@ -30,7 +30,6 @@ const (
 	channelAffinityFRTGlobalWindow         = time.Minute
 	channelAffinityFRTGlobalTTL            = 5 * time.Minute
 	channelAffinityFRTGlobalMinSamples     = 8
-	channelAffinityFRTGlobalMinUsers       = 2
 	channelAffinityFRTCacheLockShards      = 256
 )
 
@@ -57,10 +56,8 @@ type channelAffinityFRTGlobalScope struct {
 }
 
 type channelAffinityFRTGlobalSample struct {
-	FRTMs             float64 `json:"frt_ms"`
-	ObservedAt        int64   `json:"observed_at"`
-	SourceUserID      int     `json:"source_user_id"`
-	SourceAffinityKey string  `json:"source_affinity_key,omitempty"`
+	FRTMs      float64 `json:"frt_ms"`
+	ObservedAt int64   `json:"observed_at"`
 }
 
 type channelAffinityFRTGlobalState struct {
@@ -572,7 +569,7 @@ func getPreferredChannelByFRT(c *gin.Context, modelName string, usingGroup strin
 			if !found || !state.Scope.equal(globalScope) {
 				continue
 			}
-			stats, valid := channelAffinityFRTGlobalWindowScore(state, windowStart, now, userID)
+			stats, valid := channelAffinityFRTGlobalWindowScore(state, windowStart, now)
 			if !valid {
 				continue
 			}
@@ -872,7 +869,7 @@ func recordChannelAffinityFRTStateV2WithScope(c *gin.Context, setting *operation
 				}
 
 				if scopeState.CooldownUntil > now.UnixMilli() {
-					if target := chooseChannelAffinityFRTGlobalTarget(scope, candidates, channelID, currentScore, selection.Priority, c.GetInt("id"), now); target != nil {
+					if target := chooseChannelAffinityFRTGlobalTarget(scope, candidates, channelID, currentScore, selection.Priority, now); target != nil {
 						toChannelID = target.Id
 						event = "cooldown_global_switch"
 						scopeState.CooldownUntil = 0
@@ -884,7 +881,7 @@ func recordChannelAffinityFRTStateV2WithScope(c *gin.Context, setting *operation
 						event = "cooldown_hold"
 					}
 				} else {
-					globalTarget := chooseChannelAffinityFRTGlobalTarget(scope, candidates, channelID, currentScore, selection.Priority, c.GetInt("id"), now)
+					globalTarget := chooseChannelAffinityFRTGlobalTarget(scope, candidates, channelID, currentScore, selection.Priority, now)
 					if globalTarget != nil {
 						toChannelID = globalTarget.Id
 						scopeState.ConsecutiveSlow = 0
@@ -1104,8 +1101,8 @@ func channelAffinityFRTRecentGlobalSamples(samples []channelAffinityFRTGlobalSam
 	return result
 }
 
-func recordChannelAffinityFRTGlobalObservation(userID int, affinityKey string, scope channelAffinityFRTScope, channelID int, frtMs float64, now time.Time) error {
-	if userID <= 0 || channelID <= 0 {
+func recordChannelAffinityFRTGlobalObservation(scope channelAffinityFRTScope, channelID int, frtMs float64, now time.Time) error {
+	if channelID <= 0 {
 		return nil
 	}
 	globalScope := channelAffinityFRTGlobalScopeFrom(scope)
@@ -1117,10 +1114,8 @@ func recordChannelAffinityFRTGlobalObservation(userID int, affinityKey string, s
 		}
 		state.Samples = channelAffinityFRTRecentGlobalSamples(state.Samples, now)
 		state.Samples = append(state.Samples, channelAffinityFRTGlobalSample{
-			FRTMs:             frtMs,
-			ObservedAt:        now.UnixMilli(),
-			SourceUserID:      userID,
-			SourceAffinityKey: affinityKey,
+			FRTMs:      frtMs,
+			ObservedAt: now.UnixMilli(),
 		})
 		if len(state.Samples) > channelAffinityFRTGlobalSampleLimit {
 			state.Samples = state.Samples[len(state.Samples)-channelAffinityFRTGlobalSampleLimit:]
@@ -1177,48 +1172,32 @@ func recordChannelAffinityFRTGlobalObservation(userID int, affinityKey string, s
 }
 
 type channelAffinityFRTGlobalWindowStats struct {
-	Samples       int
-	Users         int
-	DominantShare float64
-	P50Ms         float64
-	P75Ms         float64
-	ScoreMs       float64
+	Samples int
+	P50Ms   float64
+	P75Ms   float64
+	ScoreMs float64
 }
 
-func channelAffinityFRTGlobalWindowScore(state channelAffinityFRTGlobalState, from, to time.Time, excludedUserID int) (channelAffinityFRTGlobalWindowStats, bool) {
+func channelAffinityFRTGlobalWindowScore(state channelAffinityFRTGlobalState, from, to time.Time) (channelAffinityFRTGlobalWindowStats, bool) {
 	values := make([]float64, 0, len(state.Samples))
-	byUser := make(map[int]int)
 	fromMs := from.UnixMilli()
 	toMs := to.UnixMilli()
 	for _, sample := range state.Samples {
-		if sample.ObservedAt <= fromMs || sample.ObservedAt > toMs || sample.SourceUserID == excludedUserID {
+		if sample.ObservedAt <= fromMs || sample.ObservedAt > toMs {
 			continue
 		}
 		values = append(values, sample.FRTMs)
-		byUser[sample.SourceUserID]++
 	}
-	if len(values) < channelAffinityFRTGlobalMinSamples || len(byUser) < channelAffinityFRTGlobalMinUsers {
-		return channelAffinityFRTGlobalWindowStats{}, false
-	}
-	dominant := 0
-	for _, count := range byUser {
-		if count > dominant {
-			dominant = count
-		}
-	}
-	dominantShare := float64(dominant) / float64(len(values))
-	if dominantShare >= 0.5 {
+	if len(values) < channelAffinityFRTGlobalMinSamples {
 		return channelAffinityFRTGlobalWindowStats{}, false
 	}
 	p50 := channelAffinityFRTMedian(values)
 	p75 := channelAffinityFRTP75(values)
 	return channelAffinityFRTGlobalWindowStats{
-		Samples:       len(values),
-		Users:         len(byUser),
-		DominantShare: dominantShare,
-		P50Ms:         p50,
-		P75Ms:         p75,
-		ScoreMs:       p50 + 0.5*(p75-p50),
+		Samples: len(values),
+		P50Ms:   p50,
+		P75Ms:   p75,
+		ScoreMs: p50 + 0.5*(p75-p50),
 	}, true
 }
 
@@ -1226,7 +1205,7 @@ func getChannelAffinityFRTGlobalState(scope channelAffinityFRTScope, channelID i
 	return getChannelAffinityFRTGlobalCache().Get(channelAffinityFRTGlobalCacheKey(channelAffinityFRTGlobalScopeFrom(scope), channelID))
 }
 
-func chooseChannelAffinityFRTGlobalTarget(scope channelAffinityFRTScope, candidates []*model.Channel, currentID int, currentScore float64, currentPriority int64, currentUserID int, now time.Time) *model.Channel {
+func chooseChannelAffinityFRTGlobalTarget(scope channelAffinityFRTScope, candidates []*model.Channel, currentID int, currentScore float64, currentPriority int64, now time.Time) *model.Channel {
 	currentWindowStart := now.Add(-channelAffinityFRTGlobalWindow)
 	globalScope := channelAffinityFRTGlobalScopeFrom(scope)
 	eligible := make([]channelAffinityFRTCandidate, 0, len(candidates))
@@ -1242,7 +1221,7 @@ func chooseChannelAffinityFRTGlobalTarget(scope channelAffinityFRTScope, candida
 		if !found || !state.Scope.equal(globalScope) {
 			continue
 		}
-		currentWindow, currentOK := channelAffinityFRTGlobalWindowScore(state, currentWindowStart, now, currentUserID)
+		currentWindow, currentOK := channelAffinityFRTGlobalWindowScore(state, currentWindowStart, now)
 		if !currentOK {
 			continue
 		}

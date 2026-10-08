@@ -1021,7 +1021,7 @@ func RecordChannelAffinityFRT(c *gin.Context, relayInfo *relaycommon.RelayInfo, 
 	if err := recordChannelAffinityFRTUserObservation(userID, scope, channelID, float64(frtMs), now); err != nil {
 		common.SysError(fmt.Sprintf("channel affinity user frt observation failed: user=%d, channel=%d, err=%v", userID, channelID, err))
 	}
-	if err := recordChannelAffinityFRTGlobalObservation(userID, meta.KeyFingerprint, scope, channelID, float64(frtMs), now); err != nil {
+	if err := recordChannelAffinityFRTGlobalObservation(scope, channelID, float64(frtMs), now); err != nil {
 		common.SysError(fmt.Sprintf("channel affinity global frt observation failed: user=%d, channel=%d, err=%v", userID, channelID, err))
 	}
 
