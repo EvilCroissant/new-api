@@ -280,6 +280,77 @@ function AffinitySettings() {
           />
         )}
       />
+      {(
+        [
+          {
+            name: 'channel_affinity_setting.optimization_enabled',
+            label: t('Channel Optimization'),
+          },
+          {
+            name: 'channel_affinity_setting.frt_optimization_enabled',
+            label: t('FRT Optimization'),
+          },
+        ] as const
+      ).map((item) => (
+        <FormField
+          key={item.name}
+          control={form.control}
+          name={item.name}
+          render={({ field }) => (
+            <SettingsSwitchField
+              controlId={item.name}
+              className='mt-4'
+              disabled={!enabled}
+              checked={field.value}
+              onCheckedChange={field.onChange}
+              label={item.label}
+            />
+          )}
+        />
+      ))}
+      <div className='mt-4 grid gap-4 sm:grid-cols-3'>
+        {(
+          [
+            {
+              name: 'channel_affinity_setting.frt_consecutive_slow_limit',
+              label: t('FRT consecutive slow limit'),
+              max: 10,
+            },
+            {
+              name: 'channel_affinity_setting.frt_all_slow_hold_seconds',
+              label: t('FRT all-slow hold (seconds)'),
+              max: 3600,
+            },
+            {
+              name: 'channel_affinity_setting.upward_probe_interval_seconds',
+              label: t('Channel optimization interval (seconds)'),
+              max: undefined,
+            },
+          ] as const
+        ).map((item) => (
+          <FormField
+            key={item.name}
+            control={form.control}
+            name={item.name}
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>{item.label}</FormLabel>
+                <FormControl>
+                  <Input
+                    type='number'
+                    min={1}
+                    max={item.max}
+                    step={1}
+                    disabled={!enabled}
+                    {...safeNumberFieldProps(field)}
+                  />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+        ))}
+      </div>
       <Accordion className='mt-4'>
         <SettingsAccordion
           value='session-advanced'

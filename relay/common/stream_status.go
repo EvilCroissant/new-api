@@ -117,8 +117,14 @@ func (s *StreamStatus) CaptureUpstreamError(data string, secrets ...string) {
 	}
 	if message.Type != gjson.String {
 		switch event.Get("type").String() {
-		case "error":
+		case "error", "response.error":
 			message = event.Get("message")
+			if message.Type != gjson.String {
+				message = event.Get("response.error.message")
+			}
+			if message.Type != gjson.String {
+				message = event.Get("response.error")
+			}
 		case "response.failed", "response.done", "response.completed":
 			if event.Get("type").String() == "response.failed" || event.Get("response.status").String() == "failed" {
 				message = event.Get("response.error.message")

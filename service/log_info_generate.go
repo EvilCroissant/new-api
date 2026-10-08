@@ -112,6 +112,7 @@ func AppendRelayErrorLogAdminInfo(ctx *gin.Context, relayInfo *relaycommon.Relay
 
 func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, modelRatio, groupRatio, completionRatio float64,
 	cacheTokens int, cacheRatio float64, modelPrice float64, userGroupRatio float64) *model.LogOther {
+	MarkRequestPolicySuccess(ctx, relayInfo.StreamStatus)
 	other := model.NewLogOther()
 	other.SetPublic("model_ratio", modelRatio)
 	other.SetPublic("group_ratio", groupRatio)
@@ -136,7 +137,7 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 		other.SetPublic("is_system_prompt_overwritten", true)
 	}
 
-	AppendRelayLogAdminInfo(ctx, relayInfo, other)
+	appendRelayLogAdminInfo(ctx, relayInfo, other, RequestPolicy(ctx).Successful)
 	AppendResponseModelLogInfo(relayInfo, other)
 	appendRequestPath(ctx, relayInfo, other)
 	appendRequestConversionChain(relayInfo, other)

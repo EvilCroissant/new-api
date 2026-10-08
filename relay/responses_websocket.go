@@ -256,10 +256,12 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 		return apiErr
 	}
 	common.SetContextKey(c, appconstant.ContextKeyOriginalModel, modelName)
+	common.SetContextKey(c, appconstant.ContextKeyIsStream, true)
 	common.SetContextKey(c, appconstant.ContextKeyRequestStartTime, time.Now())
 	service.GetChannelConstraints(c).AddFilter(appdto.ChannelFilter{Kind: appdto.FilterRequestPath, RequestPath: c.Request.URL.Path})
 
-	if s.lockedChannelID != 0 {
+	reusedConnection := s.lockedChannelID != 0
+	if reusedConnection {
 		if apiErr = s.restoreConnectionContext(c, modelName); apiErr != nil {
 			return apiErr
 		}
@@ -275,6 +277,7 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 		if apiErr != nil {
 			return apiErr
 		}
+		info.BeginAttempt()
 		if err := s.writeTarget(websocket.TextMessage, payload); err != nil {
 			state.closeAfter = true
 			return types.NewError(err, types.ErrorCodeBadResponse, types.ErrOptionWithSkipRetry())
@@ -311,6 +314,7 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 			}
 			adaptor := GetAdaptor(info.ApiType)
 			adaptor.Init(info)
+			info.BeginAttempt()
 			target, dialErr := relaychannel.DoWssRequest(adaptor, c, info, nil)
 			if dialErr != nil {
 				apiErr = service.NormalizeViolationFeeError(types.NewError(dialErr, types.ErrorCodeDoRequestFailed))
@@ -318,6 +322,7 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 				info.LastError = apiErr
 				decision := service.DecideRelayRetry(c, apiErr, common.RetryTimes-retry.GetRetry())
 				service.RecordPolicyFailure(c, channel.Id, apiErr, decision)
+				retry.MarkChannelFailed(channel)
 				service.ProcessChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, info.ApiKey, channel.GetAutoBan()), apiErr, info)
 				if decision.Action == "retry" {
 					continue
@@ -446,8 +451,12 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 				info.StreamStatus.CaptureUpstreamError(string(incoming.body), info.ApiKey)
 				if strings.HasPrefix(event.Type, "response.") {
 					if !accepted {
-						// Like HTTP, bind the session only once upstream accepted the request.
-						service.RecordChannelAffinity(c, s.lockedChannelID)
+						// Refresh a reused connection without undoing a newer FRT selection.
+						if reusedConnection {
+							service.RefreshChannelAffinityForConnection(c, s.lockedChannelID)
+						} else {
+							service.RecordChannelAffinity(c, s.lockedChannelID)
+						}
 					}
 					accepted = true
 					if event.Response != nil && event.Response.ID != "" {
@@ -593,6 +602,10 @@ func (s *responsesWSSession) restoreConnectionContext(c *gin.Context, model stri
 	common.SetContextKey(c, appconstant.ContextKeyChannelParamOverride, channel.GetParamOverride())
 	common.SetContextKey(c, appconstant.ContextKeyChannelModelMapping, channel.GetModelMapping())
 	common.SetContextKey(c, appconstant.ContextKeyChannelStatusCodeMapping, channel.GetStatusCodeMapping())
+	if _, pinned, _ := service.GetChannelConstraints(c).ResolvedPin(); !pinned {
+		service.GetPreferredChannelByAffinity(c, model, common.GetContextKeyString(c, appconstant.ContextKeyUsingGroup))
+		service.MarkChannelAffinityUsed(c, s.lockedGroup, channel.Id, channel.GetPriority())
+	}
 	policy := service.RequestPolicy(c)
 	policy.BeginAttempt(channel, s.lockedGroup)
 	policy.AddEvent(service.PolicyEvent{ChannelID: channel.Id, Decision: service.PolicyDecision{Action: "select", Reason: "pinned_channel", Source: "channel_constraint"}})

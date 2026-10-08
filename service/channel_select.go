@@ -115,6 +115,10 @@ func (p *RetryParam) MarkChannelFailed(channel *model.Channel) {
 	if channel == nil {
 		return
 	}
+	// Origin-task pins deliberately retry the same channel.
+	if _, pinned, _ := GetChannelConstraints(p.Ctx).ResolvedPin(); pinned {
+		return
+	}
 	if p.failedChannelIDs == nil {
 		p.failedChannelIDs = make(map[int]struct{})
 	}
@@ -351,7 +355,9 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 							common.SetContextKey(c, constant.ContextKeyAutoGroup, g)
 							channel = preferred
 							affinityUsable = true
-							MarkChannelAffinityUsed(c, g, preferred.Id)
+							if probe := TryClaimHigherPriorityAffinityProbe(c, g, preferred); probe != nil {
+								channel = probe
+							}
 							break
 						}
 					}
@@ -359,7 +365,9 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 					channel = preferred
 					selectGroup = usingGroup
 					affinityUsable = true
-					MarkChannelAffinityUsed(c, usingGroup, preferred.Id)
+					if probe := TryClaimHigherPriorityAffinityProbe(c, usingGroup, preferred); probe != nil {
+						channel = probe
+					}
 				}
 			}
 			if !affinityUsable && !ShouldKeepChannelAffinityOnChannelDisabled() {
@@ -397,6 +405,9 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 			Params:     map[string]any{"Group": common.GetContextKeyString(c, constant.ContextKeyUsingGroup), "Model": modelName},
 			FilterKind: kind, Channel: channel, NoAvailableChannel: true,
 		}
+	}
+	if retry.GetRetry() == 0 {
+		MarkChannelAffinityUsed(c, selectGroup, channel.Id, channel.GetPriority())
 	}
 	return channel, selectGroup, nil
 }

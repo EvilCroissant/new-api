@@ -14,6 +14,11 @@ export function createRoutingPolicySchema(t: TFunction) {
       ),
     channel_affinity_setting: z.object({
       enabled: z.boolean(),
+      optimization_enabled: z.boolean(),
+      frt_optimization_enabled: z.boolean(),
+      frt_consecutive_slow_limit: z.number().int().min(1).max(10),
+      frt_all_slow_hold_seconds: z.number().int().min(1).max(3600),
+      upward_probe_interval_seconds: z.number().int().min(1),
       session_mode: z.enum(['', 'off', 'prefer', 'strict']),
       switch_on_success: z.boolean(),
       keep_on_channel_disabled: z.boolean(),
@@ -51,6 +56,20 @@ export function routingPolicyFormValues(
     AutomaticRetryStatusCodes: options.AutomaticRetryStatusCodes,
     channel_affinity_setting: {
       enabled: options['channel_affinity_setting.enabled'] === 'true',
+      optimization_enabled:
+        options['channel_affinity_setting.optimization_enabled'] !== 'false',
+      frt_optimization_enabled:
+        options['channel_affinity_setting.frt_optimization_enabled'] === 'true',
+      frt_consecutive_slow_limit: Number(
+        options['channel_affinity_setting.frt_consecutive_slow_limit'] || 2
+      ),
+      frt_all_slow_hold_seconds: Number(
+        options['channel_affinity_setting.frt_all_slow_hold_seconds'] || 300
+      ),
+      upward_probe_interval_seconds: Number(
+        options['channel_affinity_setting.upward_probe_interval_seconds'] ||
+          3600
+      ),
       session_mode: (options['channel_affinity_setting.session_mode'] ||
         '') as RoutingPolicyFormValues['channel_affinity_setting']['session_mode'],
       switch_on_success:

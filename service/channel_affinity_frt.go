@@ -225,6 +225,10 @@ func channelAffinityFRTStreamFromRequest(c *gin.Context) bool {
 	if c == nil {
 		return false
 	}
+	// WebSocket create bodies omit stream, but the transport is streaming.
+	if common.GetContextKeyBool(c, constant.ContextKeyIsStream) {
+		return true
+	}
 	storage, err := common.GetBodyStorage(c)
 	if err != nil {
 		return false

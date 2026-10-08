@@ -680,6 +680,7 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 		}
 	}
 	common.SetContextKey(c, constant.ContextKeyChannelId, channel.Id)
+	common.SetContextKey(c, constant.ContextKeyChannelPriority, channel.GetPriority())
 	common.SetContextKey(c, constant.ContextKeyChannelName, channel.Name)
 	common.SetContextKey(c, constant.ContextKeyChannelType, channel.Type)
 	common.SetContextKey(c, constant.ContextKeyChannelCreateTime, channel.CreatedTime)

@@ -252,6 +252,16 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 		}()
 
 		for scanner.Scan() {
+			data := scanner.Text()
+			// Preserve an error frame already read even when cancellation wins
+			// the race with downstream forwarding. Do not read any extra frames.
+			if payload, ok := strings.CutPrefix(data, "data:"); ok {
+				info.StreamStatus.CaptureUpstreamError(strings.TrimSpace(payload), upstreamKey)
+			}
+			if err := c.Request.Context().Err(); err != nil {
+				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, err)
+				return
+			}
 			// 检查是否需要停止
 			select {
 			case <-stopChan:
@@ -262,7 +272,6 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 			}
 
 			ticker.Reset(streamingTimeout)
-			data := scanner.Text()
 			logger.LogDebug(c, "stream scanner data: %s", data)
 
 			if len(data) < 6 {
@@ -277,7 +286,6 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 				continue
 			}
 			if !strings.HasPrefix(data, "[DONE]") {
-				info.StreamStatus.CaptureUpstreamError(data, upstreamKey)
 				info.SetFirstResponseTime()
 				info.ReceivedResponseCount++
 

@@ -183,6 +183,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			break
 		}
 		c.Request.Body = io.NopCloser(bodyStorage)
+		relayInfo.BeginAttempt()
 
 		switch relayFormat {
 		case types.RelayFormatOpenAIRealtime:
@@ -206,6 +207,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 		decision := service.DecideRelayRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry())
 		service.RecordPolicyFailure(c, channel.Id, newAPIError, decision)
+		retryParam.MarkChannelFailed(channel)
 		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError, relayInfo)
 
 		if decision.Action != "retry" {
@@ -267,10 +269,11 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 			autoBanInt = 0
 		}
 		channel := &model.Channel{
-			Id:      c.GetInt("channel_id"),
-			Type:    c.GetInt("channel_type"),
-			Name:    c.GetString("channel_name"),
-			AutoBan: &autoBanInt,
+			Id:       c.GetInt("channel_id"),
+			Type:     c.GetInt("channel_type"),
+			Name:     c.GetString("channel_name"),
+			AutoBan:  &autoBanInt,
+			Priority: common.GetPointer(c.GetInt64(string(constant.ContextKeyChannelPriority))),
 		}
 		service.RequestPolicy(c).BeginAttempt(channel, info.UsingGroup)
 		return channel, nil
@@ -542,6 +545,7 @@ func executeTaskSubmissionWith(
 			break
 		}
 		c.Request.Body = io.NopCloser(bodyStorage)
+		relayInfo.BeginAttempt()
 
 		stage = "submit"
 		result, taskErr = submit(c, relayInfo)
@@ -559,6 +563,9 @@ func executeTaskSubmissionWith(
 		relayInfo.LastError = taskAPIError
 		decision := decideTaskRetry(c, taskErr, common.RetryTimes-retryParam.GetRetry())
 		service.RecordPolicyFailure(c, channel.Id, taskAPIError, decision)
+		if relayInfo.LockedChannel == nil {
+			retryParam.MarkChannelFailed(channel)
+		}
 		if !taskErr.LocalError {
 			processChannelError(c,
 				*types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey,

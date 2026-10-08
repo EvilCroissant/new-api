@@ -839,6 +839,15 @@ func AppendChannelAffinityErrorAdminInfo(c *gin.Context, other *model.LogOther) 
 	appendChannelAffinityAdminInfo(c, other, false)
 }
 
+// RefreshChannelAffinityForConnection keeps an active connection's binding alive
+// without reverting a channel switch scheduled for the next connection.
+func RefreshChannelAffinityForConnection(c *gin.Context, channelID int) {
+	if state, ok := getChannelAffinityRequestState(c); ok && state.Found && state.State.ChannelID != channelID {
+		return
+	}
+	RecordChannelAffinity(c, channelID)
+}
+
 func RecordChannelAffinity(c *gin.Context, channelID int) {
 	if channelID <= 0 {
 		return
@@ -1012,7 +1021,9 @@ func RecordChannelAffinityFRT(c *gin.Context, relayInfo *relaycommon.RelayInfo, 
 		}
 		observeOnly = true
 	} else if hasState && requestState.Found && requestState.State.ChannelID != channelID {
-		return
+		// A persistent connection can still use the previous affinity channel.
+		// Keep its real latency samples without undoing the newer selection.
+		observeOnly = true
 	}
 
 	scope := channelAffinityFRTScopeForObservation(meta, selection, relayInfo)
