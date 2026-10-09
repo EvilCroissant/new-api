@@ -2,6 +2,7 @@ package helper
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -52,6 +53,18 @@ func NewStreamScanner(reader io.Reader, maxBytes ...int) *bufio.Scanner {
 	return scanner
 }
 
+type clientCancelReader struct {
+	io.Reader
+	ctx context.Context
+}
+
+func (r *clientCancelReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.Reader.Read(p)
+}
+
 func copyCodexSSEHeaders(c *gin.Context, resp *http.Response) {
 	if c == nil || c.Writer == nil || resp == nil {
 		return
@@ -95,7 +108,7 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 
 	var (
 		stopChan    = make(chan bool, 3) // 增加缓冲区避免阻塞
-		scanner     = NewStreamScanner(resp.Body)
+		scanner     = NewStreamScanner(&clientCancelReader{Reader: resp.Body, ctx: c.Request.Context()})
 		ticker      = time.NewTicker(streamingTimeout)
 		pingTicker  *time.Ticker
 		writeMutex  sync.Mutex     // Mutex to protect concurrent writes
@@ -150,7 +163,13 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	// Ensure gin.Context is not returned to Gin's pool while any stream goroutine can still use it.
 	defer cleanup()
 
-	scanner.Split(bufio.ScanLines)
+	scanner.Split(func(data []byte, atEOF bool) (int, []byte, error) {
+		// A canceled read is not an upstream EOF: discard an unfinished line.
+		if atEOF && c.Request.Context().Err() != nil && bytes.IndexByte(data, '\n') < 0 {
+			return len(data), nil, nil
+		}
+		return bufio.ScanLines(data, atEOF)
+	})
 	copyCodexSSEHeaders(c, resp)
 	SetEventStreamHeaders(c)
 
@@ -221,10 +240,17 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 		sr := newStreamResult(info.StreamStatus)
 		firstEventCompleted := false
 		for data := range dataChan {
+			if err := c.Request.Context().Err(); err != nil {
+				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, err)
+				return
+			}
 			sr.reset()
 			func() {
 				writeMutex.Lock()
 				defer writeMutex.Unlock()
+				if c.Request.Context().Err() != nil {
+					return
+				}
 				ExtendWriteDeadline(c)
 				dataHandler(data, sr)
 			}()
@@ -252,27 +278,45 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 		}()
 
 		eventType := ""
+		var eventData strings.Builder
 		for scanner.Scan() {
 			data := scanner.Text()
 			if data == "" {
+				info.StreamStatus.CaptureUpstreamSSEError(eventData.String(), eventType, upstreamKey)
+				eventData.Reset()
 				eventType = ""
 			} else if event, ok := strings.CutPrefix(data, "event:"); ok {
 				eventType = strings.TrimSpace(event)
 			}
-			// Preserve an error frame already read even when cancellation wins
-			// the race with downstream forwarding. Do not read any extra frames.
+			// Parse buffered event/data lines before honoring cancellation. The
+			// reader prevents any further upstream reads after the client leaves.
 			if payload, ok := strings.CutPrefix(data, "data:"); ok {
 				info.StreamStatus.CaptureUpstreamSSEError(strings.TrimSpace(payload), eventType, upstreamKey)
+				// SSE joins multiple data fields with newlines. Keep diagnostics
+				// bounded by the same limit as the scanner and stop after capture.
+				if info.StreamStatus.UpstreamErrorMessage() == "" && eventData.Len() < getScannerBufferSize() {
+					payload, _ = strings.CutPrefix(payload, " ")
+					eventData.WriteString(payload[:min(len(payload), getScannerBufferSize()-eventData.Len())])
+					if eventData.Len() < getScannerBufferSize() {
+						eventData.WriteByte('\n')
+					}
+				}
 			}
 			if err := c.Request.Context().Err(); err != nil {
 				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, err)
-				return
+				continue
 			}
 			// 检查是否需要停止
 			select {
 			case <-stopChan:
+				if c.Request.Context().Err() != nil {
+					continue
+				}
 				return
 			case <-ctx.Done():
+				if c.Request.Context().Err() != nil {
+					continue
+				}
 				return
 			default:
 			}
@@ -299,9 +343,17 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 
 				select {
 				case dataChan <- data:
+				case <-c.Request.Context().Done():
+					info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, c.Request.Context().Err())
 				case <-ctx.Done():
+					if c.Request.Context().Err() != nil {
+						continue
+					}
 					return
 				case <-stopChan:
+					if c.Request.Context().Err() != nil {
+						continue
+					}
 					return
 				}
 			} else {
@@ -311,6 +363,10 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 			}
 		}
 
+		if err := c.Request.Context().Err(); err != nil {
+			info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, err)
+			return
+		}
 		if err := scanner.Err(); err != nil {
 			if err != io.EOF {
 				logger.LogError(c, "scanner error: "+err.Error())

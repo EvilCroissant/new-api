@@ -673,28 +673,66 @@ func TestStreamScannerHandler_UpstreamErrorEnvelopes(t *testing.T) {
 type cancelOnRead struct {
 	io.Reader
 	cancel context.CancelFunc
+	reads  int
+	closed atomic.Bool
 }
 
 func (r *cancelOnRead) Read(p []byte) (int, error) {
+	r.reads++
 	n, err := r.Reader.Read(p)
 	r.cancel()
 	return n, err
 }
+
+func (r *cancelOnRead) Close() error {
+	r.closed.Store(true)
+	return nil
+}
+
 func TestStreamScannerHandler_PreservesAlreadyReadErrorOnCancel(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	body := &cancelOnRead{Reader: strings.NewReader("data: {\"type\":\"response.error\",\"message\":\"at capacity\"}\n"), cancel: cancel}
-	c, resp, info := setupStreamTest(t, body)
-	c.Request = c.Request.WithContext(ctx)
-	info.DisablePing = true
-	StreamScannerHandler(c, resp, info, func(string, *StreamResult) { t.Error("must not forward after cancellation") })
-	assert.Equal(t, "at capacity", info.StreamStatus.UpstreamErrorMessage())
+	for _, tc := range []struct {
+		name    string
+		buffer  string
+		unread  string
+		message string
+	}{
+		{"typed error", "data: {\"type\":\"response.error\",\"message\":\"at capacity\"}\n", "", "at capacity"},
+		{"named error", "event: error\ndata: {\"message\":\"at capacity\"}\n\n", "", "at capacity"},
+		{"CRLF named error", "event: response.error\r\ndata: {\"message\":\"overloaded\"}\r\n\r\n", "", "overloaded"},
+		{"multiline error", "event: error\ndata: {\ndata: \"message\":\"overloaded\"}\n\n", "", "overloaded"},
+		{"content before error", "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\nevent: error\ndata: {\"message\":\"overloaded\"}\n\n", "", "overloaded"},
+		{"event type reset", "event: error\n\ndata: {\"message\":\"ordinary content\"}\n\n", "", ""},
+		{"error not yet received", "event: error\n", "data: {\"message\":\"not received\"}\n\n", ""},
+		{"unfinished line", "event: error\ndata: {\"message\":\"unfinished\"}", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			body := &cancelOnRead{
+				Reader: io.MultiReader(strings.NewReader(tc.buffer), strings.NewReader(tc.unread)),
+				cancel: cancel,
+			}
+			c, resp, info := setupStreamTest(t, body)
+			resp.Body = body
+			c.Request = c.Request.WithContext(ctx)
+			info.DisablePing = true
+			var forwarded atomic.Int64
+			StreamScannerHandler(c, resp, info, func(string, *StreamResult) { forwarded.Add(1) })
+			assert.Equal(t, tc.message, info.StreamStatus.UpstreamErrorMessage())
+			assert.Equal(t, relaycommon.StreamEndReasonClientGone, info.StreamStatus.EndReason)
+			assert.ErrorIs(t, info.StreamStatus.EndError, context.Canceled)
+			assert.Zero(t, forwarded.Load(), "must not forward after cancellation")
+			assert.Equal(t, 1, body.reads, "must not read upstream again after cancellation")
+			assert.True(t, body.closed.Load(), "must close upstream on cancellation")
+		})
+	}
 }
 
 func TestStreamScannerHandlerNamedErrorsReachLog(t *testing.T) {
 	for _, tc := range []struct{ name, body, message string }{
 		{"named error", "event: error\ndata: {\"message\":\"at capacity\"}\n\n", "at capacity"},
 		{"named response error", "event: response.error\ndata: {\"message\":\"overloaded\"}\n\n", "overloaded"},
+		{"multiline named error", "event: error\ndata: {\ndata: \"message\":\"overloaded\"}\n\n", "overloaded"},
 		{"nested untyped error", "data: {\"response\":{\"error\":{\"message\":\"overloaded\"}}}\n\n", "overloaded"},
 		{"event reset", "event: error\n\ndata: {\"message\":\"ordinary content\"}\n\n", ""},
 	} {
