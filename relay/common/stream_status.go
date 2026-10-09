@@ -107,17 +107,29 @@ func (s *StreamStatus) RecordError(msg string) {
 // CaptureUpstreamError saves the first actual upstream error before downstream
 // writes can cancel the request. It is diagnostic only, not a routing signal.
 func (s *StreamStatus) CaptureUpstreamError(data string, secrets ...string) {
+	s.CaptureUpstreamSSEError(data, "", secrets...)
+}
+
+// CaptureUpstreamSSEError also recognizes errors identified by the SSE event
+// field when the JSON payload omits its own type.
+func (s *StreamStatus) CaptureUpstreamSSEError(data, eventType string, secrets ...string) {
 	if s == nil || s.UpstreamErrorMessage() != "" {
 		return
 	}
 	event := gjson.Parse(data)
+	if payloadType := event.Get("type").String(); payloadType != "" {
+		eventType = payloadType
+	}
 	message := event.Get("error.message")
 	if message.Type != gjson.String {
 		message = event.Get("error")
 	}
 	if message.Type != gjson.String {
-		switch event.Get("type").String() {
-		case "error", "response.error":
+		message = event.Get("response.error.message")
+	}
+	if message.Type != gjson.String {
+		switch eventType {
+		case "error", "response.error", "upstream_error":
 			message = event.Get("message")
 			if message.Type != gjson.String {
 				message = event.Get("response.error.message")
@@ -126,7 +138,7 @@ func (s *StreamStatus) CaptureUpstreamError(data string, secrets ...string) {
 				message = event.Get("response.error")
 			}
 		case "response.failed", "response.done", "response.completed":
-			if event.Get("type").String() == "response.failed" || event.Get("response.status").String() == "failed" {
+			if eventType == "response.failed" || event.Get("response.status").String() == "failed" {
 				message = event.Get("response.error.message")
 				if message.Type != gjson.String {
 					message = event.Get("response.error")

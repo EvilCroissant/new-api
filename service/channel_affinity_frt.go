@@ -347,7 +347,7 @@ func channelAffinityFRTDynamicThresholdV2(score channelAffinityFRTChannelScore, 
 	}
 	// The historical median may tighten the threshold for a previously fast
 	// channel, but it must never normalize a chronically slow channel. The
-	// absolute red-line remains 20 seconds; MAD only absorbs ordinary jitter
+	// absolute red-line remains 15 seconds; MAD only absorbs ordinary jitter
 	// below that line.
 	threshold := stats.MedianMs + channelAffinityFRTDynamicDispersionFactor*stats.Dispersion
 	return math.Max(channelAffinityFRTReferenceMinMs, math.Min(threshold, channelAffinityFRTReferenceMaxMs)), stats

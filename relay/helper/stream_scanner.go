@@ -251,12 +251,18 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 			wg.Done()
 		}()
 
+		eventType := ""
 		for scanner.Scan() {
 			data := scanner.Text()
+			if data == "" {
+				eventType = ""
+			} else if event, ok := strings.CutPrefix(data, "event:"); ok {
+				eventType = strings.TrimSpace(event)
+			}
 			// Preserve an error frame already read even when cancellation wins
 			// the race with downstream forwarding. Do not read any extra frames.
 			if payload, ok := strings.CutPrefix(data, "data:"); ok {
-				info.StreamStatus.CaptureUpstreamError(strings.TrimSpace(payload), upstreamKey)
+				info.StreamStatus.CaptureUpstreamSSEError(strings.TrimSpace(payload), eventType, upstreamKey)
 			}
 			if err := c.Request.Context().Err(); err != nil {
 				info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, err)
