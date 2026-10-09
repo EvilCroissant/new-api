@@ -329,6 +329,36 @@ describe('request policy settings', () => {
     expect(api.put).not.toHaveBeenCalled()
   })
 
+  it('saves channel and FRT tuning through the routing page', async () => {
+    settings['channel_affinity_setting.enabled'] = true
+    await renderPolicies('/system-settings/request-policies/routing')
+    await userEvent.click(
+      await screen.findByRole('switch', { name: 'FRT Optimization' })
+    )
+    await userEvent.click(
+      screen.getByRole('switch', { name: 'Channel Optimization' })
+    )
+    fireEvent.change(
+      screen.getByRole('spinbutton', { name: 'FRT consecutive slow limit' }),
+      { target: { value: '3' } }
+    )
+    fireEvent.change(
+      screen.getByRole('spinbutton', { name: 'FRT all-slow hold (seconds)' }),
+      { target: { value: '120' } }
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Save Changes' }))
+    await waitFor(() =>
+      expect(api.patch).toHaveBeenCalledWith('/api/option/request_policy', {
+        options: {
+          'channel_affinity_setting.optimization_enabled': 'false',
+          'channel_affinity_setting.frt_optimization_enabled': 'true',
+          'channel_affinity_setting.frt_consecutive_slow_limit': '3',
+          'channel_affinity_setting.frt_all_slow_hold_seconds': '120',
+        },
+      })
+    )
+  })
+
   it('the affinity cache section opens with the keyboard and keeps the existing values', async () => {
     await renderPolicies('/system-settings/request-policies/affinity')
     const toggle = await screen.findByRole('button', {

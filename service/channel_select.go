@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -13,6 +14,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
 )
 
@@ -149,10 +151,75 @@ func (p *RetryParam) selectRetryChannel(group string, filters []dto.ChannelFilte
 	return channel, true, err
 }
 
+func (p *RetryParam) selectFRTRetryChannel() (*model.Channel, string, bool, error) {
+	groups := []string{p.TokenGroup}
+	startIndex := 0
+	if p.TokenGroup == "auto" {
+		groups = GetRequestAutoGroups(p.Ctx, common.GetContextKeyString(p.Ctx, constant.ContextKeyUserGroup))
+		if index, exists := common.GetContextKey(p.Ctx, constant.ContextKeyAutoGroupIndex); exists {
+			if index, ok := index.(int); ok && index >= 0 && index < len(groups) {
+				startIndex = index
+				groups = groups[index:]
+			}
+		}
+	}
+	for i, group := range groups {
+		candidates, err := model.GetSatisfiedChannels(group, p.ModelName, channelSelectionFilters(p.Ctx, p.RequestPath))
+		if err != nil {
+			return nil, group, false, err
+		}
+		available := make([]*model.Channel, 0, len(candidates))
+		for _, candidate := range candidates {
+			if _, failed := p.failedChannelIDs[candidate.Id]; failed {
+				continue
+			}
+			available = append(available, candidate)
+		}
+		if len(available) == 0 {
+			continue
+		}
+		scope := channelAffinityFRTScopeForSelection(p.Ctx, group, p.ModelName)
+		fast, unknown, slow := channelAffinityFRTGlobalCandidates(scope, available, time.Now())
+		if chosen := channelAffinityFRTChooseLowest(fast); chosen != nil {
+			p.setFRTRetryAutoGroup(group, startIndex+i)
+			return chosen.channel, group, true, nil
+		}
+		if len(unknown) > 0 {
+			chosen, err := chooseChannelAffinityFRTUnknown(p.Ctx, scope, candidates, unknown)
+			if chosen != nil {
+				p.setFRTRetryAutoGroup(group, startIndex+i)
+			}
+			return chosen, group, chosen != nil, err
+		}
+		if chosen := channelAffinityFRTChooseLowest(slow); chosen != nil {
+			p.setFRTRetryAutoGroup(group, startIndex+i)
+			return chosen.channel, group, true, nil
+		}
+	}
+	return nil, p.TokenGroup, false, nil
+}
+
+func (p *RetryParam) setFRTRetryAutoGroup(group string, index int) {
+	if p.TokenGroup != "auto" {
+		return
+	}
+	common.SetContextKey(p.Ctx, constant.ContextKeyAutoGroup, group)
+	common.SetContextKey(p.Ctx, constant.ContextKeyAutoGroupIndex, index)
+}
+
 // CacheGetRandomSatisfiedChannel selects the initial channel or the next retry
 // channel. Once a retry leaves a priority, it only moves to the immediately
 // next lower available priority; it never skips an intermediate priority.
 func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, error) {
+	if param != nil && len(param.failedChannelIDs) > 0 {
+		setting := operation_setting.GetChannelAffinitySetting()
+		if setting != nil && setting.Enabled && setting.FRTOptimizationEnabled {
+			channel, group, selected, err := param.selectFRTRetryChannel()
+			if selected || err != nil {
+				return channel, group, err
+			}
+		}
+	}
 	var channel *model.Channel
 	var err error
 	selectGroup := param.TokenGroup

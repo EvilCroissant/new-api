@@ -31,6 +31,7 @@ const (
 	ginKeyChannelAffinitySelection  = "channel_affinity_selection"
 	ginKeyChannelAffinityState      = "channel_affinity_state"
 	ginKeyChannelAffinityProbeID    = "channel_affinity_probe_channel_id"
+	ginKeyChannelAffinityFirstFRT   = "channel_affinity_first_frt"
 
 	channelAffinityUsageCacheStatsNamespace = "new-api:channel_affinity_usage_cache_stats:v1"
 )
@@ -41,7 +42,6 @@ const (
 	channelAffinityFRTReferenceMinMs          = 8_000.0
 	channelAffinityFRTReferenceMaxMs          = 15_000.0
 	channelAffinityFRTExplosionMs             = 15_000.0
-	channelAffinityFRTInitialFastMs           = 5_000.0
 	channelAffinityFRTMinimumDispersionMs     = 500.0
 	channelAffinityFRTMADMultiplier           = 1.4826
 	channelAffinityFRTDynamicDispersionFactor = 1.5
@@ -753,7 +753,7 @@ func TryClaimHigherPriorityAffinityProbe(c *gin.Context, selectedGroup string, p
 		return nil
 	}
 	setting := operation_setting.GetChannelAffinitySetting()
-	if setting == nil || !setting.Enabled || !setting.OptimizationEnabled {
+	if setting == nil || !setting.Enabled || !setting.OptimizationEnabled || setting.FRTOptimizationEnabled {
 		return nil
 	}
 	meta, hasMeta := getChannelAffinityMeta(c)
@@ -900,6 +900,20 @@ func RecordChannelAffinity(c *gin.Context, channelID int) {
 			NextProbeAt:   now.Add(channelAffinityProbeInterval(setting)).UnixMilli(),
 			IdleExpiresAt: idleExpiresAt,
 		}
+		if setting.FRTOptimizationEnabled {
+			if value, exists := c.Get(ginKeyChannelAffinityFirstFRT); exists {
+				if observation, valid := value.(channelAffinityFRTInitialObservation); valid && observation.ChannelID == channelID {
+					initialScope := channelAffinityFRTScopeState{channelAffinityFRTScope: observation.Scope, LastObservedAt: observation.ObservedAt.UnixMilli()}
+					initialScope.Channels = []channelAffinityFRTChannelScore{{ChannelID: channelID, LastObservedAt: observation.ObservedAt.UnixMilli(), Samples: []channelAffinityFRTSample{{FRTMs: float64(observation.FRTMs), ObservedAt: observation.ObservedAt.UnixMilli()}}}}
+					if float64(observation.FRTMs) >= channelAffinityFRTExplosionMs {
+						initialScope.ConsecutiveSlow = 1
+						initialScope.EpisodeVisitedChannel = []int{channelID}
+						initialScope.EpisodeSlowAt = map[int]int64{channelID: observation.ObservedAt.UnixMilli()}
+					}
+					state.FRT = &channelAffinityFRTState{Scopes: []channelAffinityFRTScopeState{initialScope}}
+				}
+			}
+		}
 		if _, err := createChannelAffinityState(cacheKey, state, ttl); err != nil {
 			common.SysError(fmt.Sprintf("channel affinity cache create failed: key=%s, err=%v", cacheKey, err))
 		}
@@ -983,27 +997,33 @@ func persistSuccessfulChannelAffinity(cacheKey string, expected channelAffinityS
 	return false, fmt.Errorf("channel affinity success write CAS conflict after %d attempts", channelAffinitySuccessWriteAttempts)
 }
 
-// RecordChannelAffinityFRT updates the user-scoped latency state whenever the
-// request has a valid per-attempt FRT. It only changes the next affinity
-// choice; it never cancels or retries the request that produced the observation.
+// RecordChannelAffinityFRT records a real attempt and updates the affinity
+// decision for the next request when this attempt owns that session.
 func RecordChannelAffinityFRT(c *gin.Context, relayInfo *relaycommon.RelayInfo, channelID int) {
 	setting := operation_setting.GetChannelAffinitySetting()
 	if c == nil || relayInfo == nil || setting == nil || !setting.Enabled || !setting.FRTOptimizationEnabled || channelID <= 0 {
-		return
-	}
-	selection, ok := getChannelAffinitySelection(c)
-	if !ok || selection.Group == "" {
-		return
-	}
-	if c.GetInt(ginKeyChannelAffinityProbeID) > 0 || c.GetInt("channel_id") != channelID {
 		return
 	}
 	frtMs, ok := relayInfo.FRTMilliseconds()
 	if !ok || frtMs < 0 {
 		return
 	}
-	meta, ok := getChannelAffinityMeta(c)
-	if !ok || meta.UsingGroup == "" || meta.ModelName == "" {
+	meta, hasMeta := getChannelAffinityMeta(c)
+	selection, hasSelection := getChannelAffinitySelection(c)
+	scope := channelAffinityFRTScope{ModelName: relayInfo.OriginModelName, RequestPath: requestPathFromContext(c), Stream: relayInfo.GetIsStream()}
+	if hasMeta && meta.ModelName != "" {
+		scope.ModelName = meta.ModelName
+	}
+	if hasSelection {
+		scope.Group = selection.Group
+	}
+	if scope.ModelName == "" || scope.RequestPath == "" {
+		return
+	}
+	if err := recordChannelAffinityFRTGlobalObservation(scope, channelID, float64(frtMs), relayInfo.FirstResponseTime); err != nil {
+		common.SysError(fmt.Sprintf("channel affinity global frt observation failed: channel=%d, err=%v", channelID, err))
+	}
+	if !hasMeta || !hasSelection || selection.Group == "" || c.GetInt(ginKeyChannelAffinityProbeID) > 0 || c.GetInt("channel_id") != channelID {
 		return
 	}
 	requestState, hasState := getChannelAffinityRequestState(c)
@@ -1023,17 +1043,10 @@ func RecordChannelAffinityFRT(c *gin.Context, relayInfo *relaycommon.RelayInfo, 
 		observeOnly = true
 	}
 
-	scope := channelAffinityFRTScopeForObservation(meta, selection, relayInfo)
-	userID := c.GetInt("id")
-	now := time.Now()
-	if err := recordChannelAffinityFRTUserObservation(userID, scope, channelID, float64(frtMs), now); err != nil {
-		common.SysError(fmt.Sprintf("channel affinity user frt observation failed: user=%d, channel=%d, err=%v", userID, channelID, err))
-	}
-	if err := recordChannelAffinityFRTGlobalObservation(scope, channelID, float64(frtMs), now); err != nil {
-		common.SysError(fmt.Sprintf("channel affinity global frt observation failed: user=%d, channel=%d, err=%v", userID, channelID, err))
-	}
-
 	if !hasState || !requestState.Found {
+		if relayInfo.RetryIndex == 0 {
+			c.Set(ginKeyChannelAffinityFirstFRT, channelAffinityFRTInitialObservation{Scope: scope, ChannelID: channelID, FRTMs: frtMs, ObservedAt: relayInfo.FirstResponseTime})
+		}
 		return
 	}
 

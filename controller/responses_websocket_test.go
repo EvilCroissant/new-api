@@ -19,14 +19,18 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	appdto "github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relay"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/config"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gin-gonic/gin"
 	"github.com/go-redis/redis/v8"
@@ -273,16 +277,17 @@ func TestResponsesWSRequestRunnerSharesRedisSuccessLimitWithHTTP(t *testing.T) {
 }
 
 type responsesWSBillingTest struct {
-	httpUpstream http.HandlerFunc
-	httpDone     chan struct{}
-	user         *model.User
-	token        *model.Token
-	channel      *model.Channel
-	client       *websocket.Conn
-	done         chan struct{}
-	upstreamDone chan struct{}
-	connections  atomic.Int32
-	gatewayURL   string
+	httpUpstream    http.HandlerFunc
+	beforeHTTPRelay func(*gin.Context)
+	httpDone        chan struct{}
+	user            *model.User
+	token           *model.Token
+	channel         *model.Channel
+	client          *websocket.Conn
+	done            chan struct{}
+	upstreamDone    chan struct{}
+	connections     atomic.Int32
+	gatewayURL      string
 }
 
 func (fixture *responsesWSBillingTest) closeAndWait(t *testing.T) {
@@ -410,6 +415,9 @@ func newResponsesWSBillingTest(t *testing.T, expression string, handle func(*web
 	engine.POST("/v1/responses", middleware.TokenAuth(), middleware.ModelRequestRateLimit(), middleware.Distribute(), func(c *gin.Context) {
 		defer func() { fixture.httpDone <- struct{}{} }()
 		c.Set(common.RequestIdKey, "responses-http-billing")
+		if fixture.beforeHTTPRelay != nil {
+			fixture.beforeHTTPRelay(c)
+		}
 		Relay(c, types.RelayFormatOpenAIResponses)
 	})
 	gateway := httptest.NewServer(engine)
@@ -980,7 +988,9 @@ func TestResponsesStreamOutcomesPreserveAccounting(t *testing.T) {
 						assert.Equal(t, "completed", stream["response_status"])
 					}
 				}
-				assert.NotContains(t, logs[0].Other, "sensitive upstream detail")
+				if tc.name == "failed-null-fixed" {
+					assert.Equal(t, "sensitive upstream detail", stream["upstream_error"])
+				}
 				expectedRequests := int64(len(quotas))
 				if tc.ignored {
 					expectedRequests--
@@ -1021,6 +1031,11 @@ func TestResponsesHTTPHealthCountsFinalResult(t *testing.T) {
 			}))
 			t.Cleanup(upstream.Close)
 			require.NoError(t, model.DB.Model(&model.Channel{}).Where("name = ?", "responses-ws-upstream").Update("base_url", upstream.URL).Error)
+			if tc.success {
+				alternate := &model.Channel{Name: "health-retry-alternate", Type: constant.ChannelTypeOpenAI, Key: "alternate", Status: common.ChannelStatusEnabled, Group: "default", Models: "ws-billing", BaseURL: &upstream.URL}
+				require.NoError(t, model.DB.Create(alternate).Error)
+				require.NoError(t, alternate.AddAbilities(model.DB))
+			}
 			request, err := http.NewRequest(http.MethodPost, fixture.gatewayURL+"/v1/responses", strings.NewReader(`{"model":"ws-billing","input":"hello"}`))
 			require.NoError(t, err)
 			request.Header.Set("Authorization", "Bearer sk-"+fixture.token.Key)
@@ -1317,6 +1332,179 @@ func TestResponsesWebSocketPreRoutingRejectionsFollowHealthClassification(t *tes
 			requests, successes := waitPerfCounters(t, 1)
 			assert.Equal(t, int64(1), requests)
 			assert.Zero(t, successes)
+		})
+	}
+}
+
+func TestResponsesRelayRetryExcludesFailedChannel(t *testing.T) {
+	for _, transport := range []string{"http", "websocket"} {
+		t.Run(transport, func(t *testing.T) {
+			const terminal = `{"type":"response.completed","response":{"id":"retry-ok","status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`
+			fixture := newResponsesWSBillingTest(t, `tier("request", fixed(0.002))`, func(ws *websocket.Conn, _ *http.Request) {
+				if _, _, err := ws.ReadMessage(); !assert.NoError(t, err) {
+					return
+				}
+				assert.NoError(t, ws.WriteMessage(websocket.TextMessage, []byte(terminal)))
+				_, _, _ = ws.ReadMessage()
+			}, terminal)
+			common.RedisEnabled = false // Keep affinity caches independent of fixture Redis clients.
+			previousRetries := common.RetryTimes
+			common.RetryTimes = 2
+			t.Cleanup(func() { common.RetryTimes = previousRetries })
+			affinity := operation_setting.GetChannelAffinitySetting()
+			previousAffinity := *affinity
+			t.Cleanup(func() { *affinity = previousAffinity })
+			affinity.Enabled, affinity.OptimizationEnabled, affinity.FRTOptimizationEnabled = true, false, false
+			affinity.Rules = []operation_setting.ChannelAffinityRule{{Name: "retry", ModelRegex: []string{".*"}, KeySources: []operation_setting.ChannelAffinityKeySource{{Type: "gjson", Path: "prompt_cache_key"}}}}
+			var failures atomic.Int32
+			failing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				failures.Add(1)
+				w.WriteHeader(http.StatusBadGateway)
+				_, _ = fmt.Fprint(w, `{"error":{"message":"upstream overloaded"}}`)
+			}))
+			t.Cleanup(failing.Close)
+			// A and B have equal priority. A is the saved session channel, so it
+			// must run first, and then be excluded regardless of random weighting.
+			bad := &model.Channel{Name: "bad", Type: constant.ChannelTypeOpenAI, Key: "bad-key", Status: common.ChannelStatusEnabled, Group: "default", Models: "ws-billing", BaseURL: &failing.URL, Priority: common.GetPointer(int64(10)), Weight: common.GetPointer(uint(1000000))}
+			bad.SetSetting(dto.ChannelSettings{ResponsesWebSocketEnabled: true})
+			require.NoError(t, model.DB.Create(bad).Error)
+			require.NoError(t, bad.AddAbilities(model.DB))
+			require.NoError(t, model.DB.Model(fixture.channel).Update("priority", 10).Error)
+			require.NoError(t, model.DB.Model(&model.Ability{}).Where("channel_id = ?", fixture.channel.Id).Update("priority", 10).Error)
+			seed, _ := gin.CreateTestContext(httptest.NewRecorder())
+			seed.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(fmt.Sprintf(`{"prompt_cache_key":%q}`, "retry-session-"+transport)))
+			_, found := service.GetPreferredChannelByAffinity(seed, "ws-billing", "default")
+			require.False(t, found)
+			seed.Set("channel_id", bad.Id)
+			service.RecordChannelAffinity(seed, bad.Id)
+			t.Cleanup(func() { service.ClearCurrentChannelAffinityCache(seed) })
+			if transport == "http" {
+				fixture.beforeHTTPRelay = func(c *gin.Context) {
+					common.SetContextKey(c, constant.ContextKeyRequestStartTime, time.Now().Add(-time.Hour))
+				}
+				request, err := http.NewRequest(http.MethodPost, fixture.gatewayURL+"/v1/responses", strings.NewReader(`{"model":"ws-billing","prompt_cache_key":"retry-session-http","input":"hi","stream":true}`))
+				require.NoError(t, err)
+				request.Header.Set("Authorization", "Bearer sk-"+fixture.token.Key)
+				request.Header.Set("Content-Type", "application/json")
+				response, err := (&http.Client{Timeout: 3 * time.Second}).Do(request)
+				require.NoError(t, err)
+				body, err := io.ReadAll(response.Body)
+				require.NoError(t, err)
+				require.NoError(t, response.Body.Close())
+				require.Equal(t, http.StatusOK, response.StatusCode, string(body))
+				require.Contains(t, string(body), terminal)
+				<-fixture.httpDone
+			} else {
+				require.NoError(t, fixture.client.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","model":"ws-billing","prompt_cache_key":"retry-session-websocket","input":"hi"}`)))
+				require.Equal(t, "response.completed", readResponsesWSTestEvent(t, fixture.client)["type"])
+			}
+			assert.Equal(t, int32(1), failures.Load(), "the failing channel must be attempted only once")
+			var logs []model.Log
+			require.NoError(t, model.LOG_DB.Where("type = ?", model.LogTypeConsume).Find(&logs).Error)
+			require.Len(t, logs, 1)
+			assert.Equal(t, fixture.channel.Id, logs[0].ChannelId)
+			var other struct {
+				FRT       float64 `json:"frt"`
+				AdminInfo struct {
+					UseChannel []string              `json:"use_channel"`
+					Policy     []service.PolicyEvent `json:"request_policy"`
+				} `json:"admin_info"`
+			}
+			require.NoError(t, common.UnmarshalJsonStr(logs[0].Other, &other))
+			assert.Equal(t, []string{fmt.Sprint(bad.Id), fmt.Sprint(fixture.channel.Id)}, other.AdminInfo.UseChannel)
+			require.NotEmpty(t, other.AdminInfo.Policy)
+			assert.Equal(t, "success", other.AdminInfo.Policy[len(other.AdminInfo.Policy)-1].Decision.Action)
+			assert.Less(t, other.FRT, float64(time.Minute.Milliseconds()), "FRT must not include the stale overall request start")
+		})
+	}
+}
+
+func TestResponsesWebSocketFRTOnInitialAndReusedConnection(t *testing.T) {
+	fixture := newResponsesWSBillingTest(t, `tier("request", fixed(0.002))`, func(ws *websocket.Conn, _ *http.Request) {
+		for index := range 2 {
+			if _, _, err := ws.ReadMessage(); !assert.NoError(t, err) {
+				return
+			}
+			payload := fmt.Sprintf(`{"type":"response.completed","response":{"id":"frt-%d","status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`, index)
+			if !assert.NoError(t, ws.WriteMessage(websocket.TextMessage, []byte(payload))) {
+				return
+			}
+		}
+		_, _, _ = ws.ReadMessage()
+	})
+	common.RedisEnabled = false
+	affinity := operation_setting.GetChannelAffinitySetting()
+	previous := *affinity
+	t.Cleanup(func() { *affinity = previous })
+	affinity.Enabled, affinity.FRTOptimizationEnabled, affinity.OptimizationEnabled = true, true, false
+	affinity.Rules = []operation_setting.ChannelAffinityRule{{Name: "ws-frt", ModelRegex: []string{".*"}, KeySources: []operation_setting.ChannelAffinityKeySource{{Type: "gjson", Path: "prompt_cache_key"}}}}
+	for range 2 {
+		require.NoError(t, fixture.client.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","model":"ws-billing","input":"hi","prompt_cache_key":"frt-reuse"}`)))
+		require.Equal(t, "response.completed", readResponsesWSTestEvent(t, fixture.client)["type"])
+	}
+	var logs []model.Log
+	require.NoError(t, model.LOG_DB.Where("type = ?", model.LogTypeConsume).Order("id").Find(&logs).Error)
+	require.Len(t, logs, 2)
+	for _, log := range logs {
+		var other struct {
+			AdminInfo struct {
+				Affinity struct {
+					Priority int64          `json:"priority"`
+					FRT      map[string]any `json:"frt_optimization"`
+				} `json:"channel_affinity"`
+				Policy []service.PolicyEvent `json:"request_policy"`
+			} `json:"admin_info"`
+		}
+		require.NoError(t, common.UnmarshalJsonStr(log.Other, &other))
+		require.NotEmpty(t, other.AdminInfo.Policy)
+		assert.Equal(t, "success", other.AdminInfo.Policy[len(other.AdminInfo.Policy)-1].Decision.Action)
+		if log.Id == logs[1].Id {
+			require.NotEmpty(t, other.AdminInfo.Affinity.FRT, "the second message must retain affinity context and produce an FRT observation")
+		}
+	}
+	assert.Equal(t, int32(1), fixture.connections.Load())
+}
+
+func TestTaskSubmissionRetryExcludesFailuresAndPreservesLockedChannel(t *testing.T) {
+	for _, locked := range []bool{false, true} {
+		t.Run(fmt.Sprint(locked), func(t *testing.T) {
+			events := []string{}
+			db := setupTaskSubmissionDatabase(t, false, &events)
+			require.NoError(t, db.AutoMigrate(&model.Channel{}, &model.Ability{}))
+			previousRetries, previousCache, previousErrorLog := common.RetryTimes, common.MemoryCacheEnabled, constant.ErrorLogEnabled
+			common.RetryTimes, common.MemoryCacheEnabled, constant.ErrorLogEnabled = 1, false, false
+			t.Cleanup(func() {
+				common.RetryTimes, common.MemoryCacheEnabled, constant.ErrorLogEnabled = previousRetries, previousCache, previousErrorLog
+			})
+			channels := []model.Channel{
+				{Name: "first", Type: constant.ChannelTypeOpenAI, Key: "test", Status: common.ChannelStatusEnabled, Group: "default", Models: "plugin-model", Priority: common.GetPointer(int64(10))},
+				{Name: "second", Type: constant.ChannelTypeOpenAI, Key: "test", Status: common.ChannelStatusEnabled, Group: "default", Models: "plugin-model", Priority: common.GetPointer(int64(10))},
+			}
+			for i := range channels {
+				require.NoError(t, db.Create(&channels[i]).Error)
+				require.NoError(t, channels[i].AddAbilities(db))
+			}
+			c := taskSubmissionTestContext()
+			require.Nil(t, middleware.SetupContextForSelectedChannel(c, &channels[0], "plugin-model"))
+			info := taskSubmissionRelayInfo(nil)
+			info.TokenGroup = "default"
+			info.ChannelMeta = nil
+			info.LockedChannel = nil
+			if locked {
+				info.LockedChannel = &channels[0]
+			}
+			var attempted []int
+			_, taskErr := executeTaskSubmissionWith(c, info, func(c *gin.Context, info *relaycommon.RelayInfo) (*relay.TaskSubmitResult, *appdto.TaskError) {
+				info.InitChannelMeta(c)
+				attempted = append(attempted, info.ChannelId)
+				return nil, &appdto.TaskError{StatusCode: http.StatusBadGateway, Message: "overloaded"}
+			})
+			require.NotNil(t, taskErr)
+			want := []int{channels[0].Id, channels[1].Id}
+			if locked {
+				want[1] = channels[0].Id
+			}
+			assert.Equal(t, want, attempted)
 		})
 	}
 }

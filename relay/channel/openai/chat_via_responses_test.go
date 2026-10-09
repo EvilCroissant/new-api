@@ -333,3 +333,32 @@ func requireOrderedSubstrings(t *testing.T, s string, parts ...string) {
 		offset += idx + len(part)
 	}
 }
+
+func TestBufferedResponsesRejectsErrorsAndMissingTerminal(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		body    string
+		message string
+	}{
+		{"top level error", `data: {"type":"error","message":"Selected model is at capacity."}`, "Selected model is at capacity."},
+		{"nested failure", `data: {"type":"response.failed","response":{"status":"failed","error":{"type":"server_error","message":"overloaded secret-upstream-key"}}}`, "overloaded ***"},
+		{"failed done", `data: {"type":"response.done","response":{"status":"failed","error":{"message":"capacity"}}}`, "capacity"},
+		{"cancelled", `data: {"type":"response.cancelled"}`, ""},
+		{"early eof", `data: {"type":"response.output_text.delta","delta":"partial"}`, ""},
+		{"empty eof", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, recorder, resp, info := newResponsesChatTestContext(t, tc.body+"\n\n", false)
+			info.ApiKey = "secret-upstream-key"
+			usage, apiErr := OaiResponsesToChatBufferedStreamHandler(c, info, resp)
+			require.NotNil(t, apiErr)
+			assert.Nil(t, usage)
+			assert.Empty(t, recorder.Body.String(), "failed buffer must not be returned as successful JSON")
+			assert.Equal(t, tc.message, info.StreamStatus.UpstreamErrorMessage())
+			if tc.message != "" {
+				assert.Contains(t, apiErr.Error(), tc.message)
+			}
+			assert.NotContains(t, apiErr.Error(), "secret-upstream-key")
+		})
+	}
+}

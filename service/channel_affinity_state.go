@@ -78,6 +78,7 @@ type channelAffinityFRTScopeState struct {
 	channelAffinityFRTScope
 	ConsecutiveSlow       int                              `json:"consecutive_slow"`
 	EpisodeVisitedChannel []int                            `json:"episode_visited_channel_ids,omitempty"`
+	EpisodeSlowAt         map[int]int64                    `json:"episode_slow_at,omitempty"`
 	StableCount           int                              `json:"stable_count"`
 	CooldownChannelID     int                              `json:"all_slow_hold_channel_id,omitempty"`
 	CooldownUntil         int64                            `json:"all_slow_hold_until,omitempty"`

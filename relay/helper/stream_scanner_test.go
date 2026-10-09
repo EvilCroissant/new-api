@@ -14,7 +14,9 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -582,4 +584,133 @@ func TestNewStreamScannerCallerLimit(t *testing.T) {
 	require.True(t, scanner.Scan())
 	assert.Equal(t, "data: ok", scanner.Text())
 	require.NoError(t, scanner.Err())
+}
+
+func TestStreamScannerHandler_PreservesUpstreamErrorAfterClientCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pr, pw := io.Pipe()
+	t.Cleanup(func() { _ = pr.Close(); _ = pw.Close() })
+	c, resp, info := setupStreamTest(t, pr)
+	c.Request = c.Request.WithContext(ctx)
+	resp.Body = pr
+	info.IsStream = true
+	info.DisablePing = true
+	const message = "Selected model is at capacity. Please try a different model."
+	captured := make(chan string, 1)
+	done := make(chan struct{})
+	go func() {
+		StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {
+			captured <- info.StreamStatus.UpstreamErrorMessage()
+			cancel()
+		})
+		close(done)
+	}()
+	_, err := fmt.Fprintln(pw, `data: {"type":"error","error":{"message":"`+message+`"}}`)
+	require.NoError(t, err)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stream did not finish after cancellation")
+	}
+	assert.Equal(t, message, <-captured, "capture must happen before downstream handling")
+	assert.Equal(t, relaycommon.StreamEndReasonClientGone, info.StreamStatus.EndReason)
+	assert.ErrorIs(t, info.StreamStatus.EndError, context.Canceled)
+	info.StreamStatus.CaptureUpstreamError(`{"type":"error","message":"context canceled"}`)
+	other := service.GenerateTextOtherInfo(c, info, 1, 1, 1, 0, 1, 0, 1).Snapshot()
+	stream, ok := other["stream_status"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "error", stream["status"])
+	assert.Equal(t, "client_gone", stream["end_reason"])
+	assert.Equal(t, "context canceled", stream["end_error"])
+	assert.Equal(t, message, stream["upstream_error"])
+	assert.NotContains(t, other, "upstream_error")
+	errorOther := model.NewLogOther()
+	service.AppendRelayErrorLogAdminInfo(c, info, errorOther)
+	assert.Equal(t, stream, errorOther.Snapshot()["stream_status"])
+}
+
+func TestStreamScannerHandler_UpstreamErrorEnvelopes(t *testing.T) {
+	for _, tc := range []struct{ name, event, message string }{
+		{"response.error flat", `{"type":"response.error","message":"at capacity"}`, "at capacity"},
+		{"response.error nested", `{"type":"response.error","response":{"error":{"message":"at capacity"}}}`, "at capacity"},
+		{"responses flat", `{"type":"error","message":"at capacity"}`, "at capacity"},
+		{"claude error", `{"type":"error","error":{"type":"overloaded_error","message":"overloaded"}}`, "overloaded"},
+		{"responses failed", `{"type":"response.failed","response":{"error":{"message":"server overloaded"}}}`, "server overloaded"},
+		{"responses done failed", `{"type":"response.done","response":{"status":"failed","error":{"message":"server overloaded"}}}`, "server overloaded"},
+		{"bare error", `{"error":{"message":"upstream unavailable"}}`, "upstream unavailable"},
+		{"string error", `{"error":"upstream unavailable"}`, "upstream unavailable"},
+		{"content is not an error", `{"type":"response.output_text.delta","delta":"Selected model is at capacity"}`, ""},
+		{"nested content is not an error", `{"choices":[{"delta":{"content":"overloaded","error":{"message":"fictional"}}}]}`, ""},
+		{"echoed channel key", `{"error":{"message":"Incorrect API key provided: channel-secret"}}`, "Incorrect API key provided: ***"},
+		{"no message", `{"type":"error","code":"overloaded"}`, ""},
+		{"malformed", `{"type":"error","message":"incomplete"`, ""},
+		{"bounded unicode", `{"error":{"message":"` + strings.Repeat("慢", 2100) + `"}}`, strings.Repeat("慢", 2048) + "…"},
+		{"masked and normalized", `{"error":{"message":" api_key:secret\nretry\u0000later "}}`, "api_key:*** retry later"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, resp, info := setupStreamTest(t, strings.NewReader("data: "+tc.event+"\ndata: [DONE]\n"))
+			info.IsStream = true
+			info.ApiKey = "channel-secret"
+			StreamScannerHandler(c, resp, info, func(string, *StreamResult) {})
+			assert.Equal(t, tc.message, info.StreamStatus.UpstreamErrorMessage())
+			other := service.GenerateTextOtherInfo(c, info, 1, 1, 1, 0, 1, 0, 1).Snapshot()
+			stream := other["stream_status"].(map[string]any)
+			if tc.message == "" {
+				assert.Equal(t, "ok", stream["status"])
+				assert.True(t, service.RequestPolicy(c).Successful)
+				assert.NotContains(t, stream, "upstream_error")
+			} else {
+				assert.Equal(t, "error", stream["status"])
+				assert.Equal(t, "done", stream["end_reason"])
+				assert.False(t, service.RequestPolicy(c).Successful)
+			}
+		})
+	}
+}
+
+// Cancel from the read boundary, after bytes arrive but before Scan returns.
+type cancelOnRead struct {
+	io.Reader
+	cancel context.CancelFunc
+}
+
+func (r *cancelOnRead) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	r.cancel()
+	return n, err
+}
+func TestStreamScannerHandler_PreservesAlreadyReadErrorOnCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	body := &cancelOnRead{Reader: strings.NewReader("data: {\"type\":\"response.error\",\"message\":\"at capacity\"}\n"), cancel: cancel}
+	c, resp, info := setupStreamTest(t, body)
+	c.Request = c.Request.WithContext(ctx)
+	info.DisablePing = true
+	StreamScannerHandler(c, resp, info, func(string, *StreamResult) { t.Error("must not forward after cancellation") })
+	assert.Equal(t, "at capacity", info.StreamStatus.UpstreamErrorMessage())
+}
+
+func TestStreamScannerHandlerNamedErrorsReachLog(t *testing.T) {
+	for _, tc := range []struct{ name, body, message string }{
+		{"named error", "event: error\ndata: {\"message\":\"at capacity\"}\n\n", "at capacity"},
+		{"named response error", "event: response.error\ndata: {\"message\":\"overloaded\"}\n\n", "overloaded"},
+		{"nested untyped error", "data: {\"response\":{\"error\":{\"message\":\"overloaded\"}}}\n\n", "overloaded"},
+		{"event reset", "event: error\n\ndata: {\"message\":\"ordinary content\"}\n\n", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, resp, info := setupStreamTest(t, strings.NewReader(tc.body+"data: [DONE]\n"))
+			info.IsStream = true
+			StreamScannerHandler(c, resp, info, func(string, *StreamResult) {})
+			other := model.NewLogOther()
+			service.AppendRelayErrorLogAdminInfo(c, info, other)
+			stream, ok := other.Snapshot()["stream_status"].(map[string]any)
+			require.True(t, ok)
+			if tc.message == "" {
+				assert.NotContains(t, stream, "upstream_error")
+			} else {
+				assert.Equal(t, tc.message, stream["upstream_error"])
+			}
+		})
+	}
 }

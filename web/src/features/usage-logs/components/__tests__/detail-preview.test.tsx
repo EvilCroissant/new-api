@@ -380,3 +380,44 @@ test.each(['missing schema', 'unsupported expression', 'unknown tier'])(
     expect(preview.textContent).toBe('Dynamic Pricing · No matching results')
   }
 )
+
+test.each([true, false])(
+  'shows upstream diagnostics to the log viewer (isAdmin=%s) while preserving transport errors',
+  async (isAdmin) => {
+    const message =
+      'Selected model is at capacity. Please try a different model.'
+    fireEvent.click(
+      renderPreview(
+        {
+          stream_status: {
+            status: 'error',
+            end_reason: 'client_gone',
+            end_error: 'context canceled',
+            upstream_error: message,
+          },
+        },
+        isAdmin
+      )
+    )
+    const dialog = within(await screen.findByRole('dialog'))
+    expect(dialog.getByText('client_gone')).toBeVisible()
+    expect(dialog.getByText('context canceled')).toBeVisible()
+    expect(dialog.getByText('Upstream Error')).toBeVisible()
+    expect(dialog.getByText(message)).toBeVisible()
+  }
+)
+
+test('does not invent an upstream error for a transport-only disconnect', async () => {
+  fireEvent.click(
+    renderPreview({
+      stream_status: {
+        status: 'error',
+        end_reason: 'client_gone',
+        end_error: 'context canceled',
+      },
+    })
+  )
+  const dialog = within(await screen.findByRole('dialog'))
+  expect(dialog.getByText('context canceled')).toBeVisible()
+  expect(dialog.queryByText('Upstream Error')).not.toBeInTheDocument()
+})

@@ -11,6 +11,8 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
@@ -61,6 +63,21 @@ func TestProcessChannelErrorUsesSnapshotWithoutLeakingChannelMetadata(t *testing
 	ctx.Set("use_channel", []string{"101"})
 	common.SetContextKey(ctx, constant.ContextKeyRequestStartTime, time.Now().Add(-time.Second))
 
+	affinity := operation_setting.GetChannelAffinitySetting()
+	previousAffinity := *affinity
+	t.Cleanup(func() { *affinity = previousAffinity })
+	affinity.Enabled, affinity.FRTOptimizationEnabled = true, false
+	affinity.Rules = []operation_setting.ChannelAffinityRule{{Name: "error-probe", ModelRegex: []string{".*"}, KeySources: []operation_setting.ChannelAffinityKeySource{{Type: "request_header", Key: "X-Session"}}}}
+	ctx.Request.Header.Set("X-Session", t.Name())
+	service.GetPreferredChannelByAffinity(ctx, "gpt-test", "default")
+	service.ClearCurrentChannelAffinityCache(ctx)
+	service.GetPreferredChannelByAffinity(ctx, "gpt-test", "default")
+	service.RecordChannelAffinity(ctx, 100)
+	service.GetPreferredChannelByAffinity(ctx, "gpt-test", "default")
+	service.MarkChannelAffinityUsed(ctx, "default", 202, 10)
+	ctx.Set("channel_affinity_probe_channel_id", 202)
+	t.Cleanup(func() { service.ClearCurrentChannelAffinityCache(ctx) })
+
 	channelSnapshot := types.ChannelError{
 		ChannelId:   101,
 		ChannelType: 1,
@@ -83,6 +100,8 @@ func TestProcessChannelErrorUsesSnapshotWithoutLeakingChannelMetadata(t *testing
 	adminInfo, ok := storedOther["admin_info"].(map[string]any)
 	require.True(t, ok)
 	assert.Equal(t, []any{"101"}, adminInfo["use_channel"])
+	affinityInfo := adminInfo["channel_affinity"].(map[string]any)
+	assert.Equal(t, false, affinityInfo["probe_succeeded"])
 
 	logs, total, err := model.GetUserLogs(7, model.LogTypeError, 0, 0, "", "", 0, 10, "", "", "")
 	require.NoError(t, err)

@@ -385,7 +385,6 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 				ConsumeResponsesQuota(c, info, accumulator.Finish())
 				return nil
 			}
-			info.SetFirstResponseTime()
 			var event struct {
 				dto.ResponsesStreamResponse
 				StreamID string `json:"stream_id"`
@@ -403,6 +402,9 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 				// a subsequent request on this persistent connection.
 				if event.Response != nil && event.Response.ID != "" && event.Response.ID == s.lastResponseID {
 					continue
+				}
+				if event.Type != "error" {
+					info.SetFirstResponseTime()
 				}
 				if event.Type == "error" {
 					var rejection responsesWSErrorEvent
