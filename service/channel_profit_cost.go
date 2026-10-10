@@ -231,8 +231,7 @@ func channelProfitMonitorClient(group *channelProfitGroup, client *http.Client) 
 	return client, nil, nil
 }
 
-// Account logs are scoped to a uniquely verified key name; API-key logs remain
-// the fallback when account metadata cannot identify the local key safely.
+// Discover only the metadata needed for estimates; this never reconciles requests.
 func syncChannelProfitRequestCosts(ctx context.Context, group *channelProfitGroup, client *http.Client, providers ...string) error {
 	client, monitor, err := channelProfitMonitorClient(group, client)
 	if err != nil {
@@ -245,12 +244,41 @@ func syncChannelProfitRequestCosts(ctx context.Context, group *channelProfitGrou
 		return err
 	}
 	now := time.Now().Unix()
+	if group.CostMode == "request" {
+		pricing.LastError = ""
+		return model.SaveChannelProfitPricing(&pricing)
+	}
 	var syncErr error
 	isSub2API := monitor != nil && monitor.Provider == UpstreamMonitorProviderSub2API
-	if monitor == nil && len(providers) > 0 {
+	if len(providers) == 0 && !isSub2API {
+		keys := make([]string, 0, len(group.Keys))
+		for _, key := range group.Keys {
+			keys = append(keys, key.Value)
+		}
+		backend, probeErr := detectChannelProfitBackend(ctx, client, group.BaseURL, keys, time.Now().In(time.Local).Format("2006-01-02"))
+		if probeErr == nil {
+			isSub2API = backend.Provider == channelProfitProviderSub2API
+		} else if monitor == nil {
+			pricing.LastError = errorText(probeErr)
+			if err := model.SaveChannelProfitPricing(&pricing); err != nil {
+				return err
+			}
+			return probeErr
+		}
+	}
+	if len(providers) > 0 {
 		isSub2API = providers[0] == channelProfitProviderSub2API
 	}
 	if isSub2API {
+		// New API prices cached under the same site must not price a Sub2API request.
+		pricing.PricingJSON, pricing.QuotaPerUnit = "", 0
+		if group.ManualRatio != nil {
+			pricing.LastError = ""
+			return model.SaveChannelProfitPricing(&pricing)
+		}
+		var accountRatios map[string]float64
+		var accountErr error
+		accountLoaded := false
 		for _, key := range group.Keys {
 			scope := model.ProfitCostFingerprint(siteID + ":" + model.ProfitCostFingerprint(key.Value))
 			state := model.ChannelProfitKeyState{ID: scope, SiteID: siteID}
@@ -258,10 +286,21 @@ func syncChannelProfitRequestCosts(ctx context.Context, group *channelProfitGrou
 				return err
 			}
 			_, ratio, available, ratioErr := fetchChannelProfitSub2APIGroup(ctx, client, group.BaseURL, key.Value)
+			if !available && monitor != nil && monitor.Provider == UpstreamMonitorProviderSub2API {
+				if !accountLoaded {
+					accountRatios, accountErr = fetchChannelProfitSub2APIAccountRatios(ctx, client, monitor)
+					accountLoaded = true
+				}
+				if accountRatio, ok := accountRatios[key.Value]; ok {
+					ratio, available, ratioErr = accountRatio, true, nil
+				} else {
+					ratioErr = errors.Join(ratioErr, accountErr)
+				}
+			}
 			if available {
 				state.Ratio, state.UpdatedAt = &ratio, now
 			} else if ratioErr == nil {
-				ratioErr = errors.New("upstream key group ratio unavailable")
+				ratioErr = errors.New("Sub2API key ratio unavailable: configure the matching upstream account or a manual cost ratio")
 			}
 			state.LastError = errorText(ratioErr)
 			if err := model.SaveChannelProfitKeyState(&state); err != nil {
@@ -395,6 +434,88 @@ func syncChannelProfitRequestCosts(ctx context.Context, group *channelProfitGrou
 		return err
 	}
 	return syncErr
+}
+
+func fetchChannelProfitSub2APIAccountRatios(ctx context.Context, client *http.Client, monitor *model.UpstreamMonitor) (map[string]float64, error) {
+	if monitor.AccessToken == "" {
+		return nil, errors.New("Sub2API account token unavailable; configure upstream account credentials or a manual cost ratio")
+	}
+	keyGroups := map[string]string{}
+	listed := 0
+	complete := false
+	for page := 1; page <= 100; page++ {
+		query := url.Values{"page": {strconv.Itoa(page)}, "page_size": {"100"}}
+		var response struct {
+			Code int `json:"code"`
+			Data struct {
+				Total *int `json:"total"`
+				Items []struct {
+					Key     string `json:"key"`
+					GroupID *int64 `json:"group_id"`
+				} `json:"items"`
+			} `json:"data"`
+		}
+		if err := fetchChannelProfitJSON(ctx, client, monitor.BaseURL+"/api/v1/keys?"+query.Encode(), monitor.AccessToken, &response); err != nil {
+			return nil, fmt.Errorf("fetch Sub2API account keys: %w", err)
+		}
+		if response.Code != 0 || response.Data.Total == nil || *response.Data.Total < 0 {
+			return nil, errors.New("Sub2API account returned an invalid API key list")
+		}
+		listed += len(response.Data.Items)
+		for _, key := range response.Data.Items {
+			if key.Key == "" || key.GroupID == nil {
+				continue
+			}
+			groupID := strconv.FormatInt(*key.GroupID, 10)
+			if previous, ok := keyGroups[key.Key]; ok && previous != groupID {
+				return nil, errors.New("Sub2API account returned conflicting key groups")
+			}
+			keyGroups[key.Key] = groupID
+		}
+		if listed >= *response.Data.Total {
+			complete = true
+			break
+		}
+		if len(response.Data.Items) == 0 {
+			break
+		}
+	}
+	if !complete {
+		return nil, errors.New("Sub2API account returned an incomplete API key list")
+	}
+	var snapshot upstreamMonitorGroupSnapshot
+	age := time.Now().Unix() - monitor.LastSyncedAt
+	if monitor.LastError != "" || monitor.LastSyncedAt <= 0 || age < 0 || age > 900 || common.UnmarshalJsonStr(monitor.GroupsJSON, &snapshot) != nil || len(snapshot.Groups) == 0 {
+		headers := http.Header{"Authorization": {"Bearer " + monitor.AccessToken}}
+		groups, err := fetchUpstreamMonitorJSON(ctx, client, http.MethodGet, monitor.BaseURL+"/api/v1/groups/available", headers, nil)
+		if err != nil {
+			return nil, fmt.Errorf("fetch Sub2API account groups: %w", err)
+		}
+		rates, err := fetchUpstreamMonitorJSON(ctx, client, http.MethodGet, monitor.BaseURL+"/api/v1/groups/rates", headers, nil)
+		if err != nil {
+			return nil, fmt.Errorf("fetch Sub2API account rates: %w", err)
+		}
+		_, data, err := parseSub2APIGroups(groups, rates)
+		if err != nil {
+			return nil, err
+		}
+		if err := common.UnmarshalJsonStr(data, &snapshot); err != nil {
+			return nil, err
+		}
+	}
+	groupRatios := make(map[string]float64, len(snapshot.Groups))
+	for _, group := range snapshot.Groups {
+		if ratio, ok := upstreamMonitorNumber(group.Multiplier); ok && ratio >= 0 {
+			groupRatios[group.ID] = ratio
+		}
+	}
+	ratios := make(map[string]float64, len(keyGroups))
+	for key, groupID := range keyGroups {
+		if ratio, ok := groupRatios[groupID]; ok {
+			ratios[key] = ratio
+		}
+	}
+	return ratios, nil
 }
 
 func fetchChannelProfitRequestLogs(ctx context.Context, client *http.Client, group *channelProfitGroup, key *channelProfitGroupKey, tokenName string) ([]channelProfitCostLog, error) {

@@ -1200,8 +1200,9 @@ type channelProfitSub2APIUsage struct {
 }
 
 type channelProfitSub2APIBillingResponse struct {
-	Object              string   `json:"object"`
-	GroupRateMultiplier *float64 `json:"group_rate_multiplier"`
+	Object                  string   `json:"object"`
+	GroupRateMultiplier     *float64 `json:"group_rate_multiplier"`
+	EffectiveRateMultiplier *float64 `json:"effective_rate_multiplier"`
 }
 
 type channelProfitBackend struct {
@@ -1566,12 +1567,16 @@ func fetchChannelProfitSub2APIGroup(ctx context.Context, client *http.Client, ba
 		}
 		return "", 0, false, err
 	}
-	if response.Object != "sub2api.key_billing" || response.GroupRateMultiplier == nil {
-		return "", 0, false, errors.New("Sub2API billing response did not include group_rate_multiplier")
+	multiplier := response.EffectiveRateMultiplier
+	if multiplier == nil {
+		multiplier = response.GroupRateMultiplier
 	}
-	ratio := *response.GroupRateMultiplier
+	if response.Object != "sub2api.key_billing" || multiplier == nil {
+		return "", 0, false, errors.New("Sub2API billing response did not include a rate multiplier")
+	}
+	ratio := *multiplier
 	if ratio < 0 || math.IsNaN(ratio) || math.IsInf(ratio, 0) {
-		return "", 0, false, errors.New("Sub2API returned an invalid group_rate_multiplier")
+		return "", 0, false, errors.New("Sub2API returned an invalid rate multiplier")
 	}
 	return "", ratio, true, nil
 }

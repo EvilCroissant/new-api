@@ -355,7 +355,133 @@ func TestChannelProfitDatabaseAndEstimation(t *testing.T) {
 					require.NotNil(t, fixed.EstimatedUSD)
 					assert.Zero(t, *fixed.EstimatedUSD)
 					testChannelProfitMonitorIntegration(t, db)
+					testChannelProfitSub2APICostSync(t, db)
 				})
+			}
+		})
+	}
+}
+
+func testChannelProfitSub2APICostSync(t *testing.T, db *gorm.DB) {
+	zero, special := 0.0, 0.035
+	for i, tc := range []struct {
+		name          string
+		noMonitor     bool
+		wrongProvider bool
+		noBilling     bool
+		freshGroups   bool
+		missingKey    bool
+		incomplete    bool
+		manual        bool
+		effective     *float64
+		want          float64
+		wantError     string
+	}{
+		{name: "detected sub2api overrides stale newapi monitor", wrongProvider: true, want: 0.07},
+		{name: "detected sub2api without account", noMonitor: true, want: 0.07},
+		{name: "effective ratio overrides group ratio", effective: &special, want: special},
+		{name: "explicit zero effective ratio remains free", effective: &zero},
+		{name: "old sub2api uses verified account and user group rate", noBilling: true, want: 0.07},
+		{name: "fresh account rates still require matching key", noBilling: true, freshGroups: true, want: 0.07},
+		{name: "different account cannot supply cost ratio", noBilling: true, freshGroups: true, missingKey: true, wantError: "configure the matching upstream account"},
+		{name: "incomplete key list cannot supply ratio", noBilling: true, incomplete: true, wantError: "incomplete API key list"},
+		{name: "unsupported billing without account explains configuration", noMonitor: true, noBilling: true, wantError: "configure the matching upstream account"},
+		{name: "manual estimate needs no discovery", noMonitor: true, noBilling: true, manual: true, want: special},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			key := "sub2api-integration-key"
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch r.URL.Path {
+				case "/api/status":
+					w.WriteHeader(http.StatusNotFound)
+				case "/v1/usage":
+					assert.Equal(t, "Bearer "+key, r.Header.Get("Authorization"))
+					fmt.Fprintf(w, `{"daily_usage":[{"date":%q,"actual_cost":0.2}]}`, time.Now().Format("2006-01-02"))
+				case "/v1/sub2api/billing":
+					assert.Equal(t, "Bearer "+key, r.Header.Get("Authorization"))
+					if tc.noBilling {
+						w.WriteHeader(http.StatusNotFound)
+					} else if tc.effective != nil {
+						fmt.Fprintf(w, `{"object":"sub2api.key_billing","group_rate_multiplier":0.07,"effective_rate_multiplier":%v}`, *tc.effective)
+					} else {
+						fmt.Fprint(w, `{"object":"sub2api.key_billing","group_rate_multiplier":0.07}`)
+					}
+				case "/api/v1/keys":
+					assert.Equal(t, "Bearer account-token", r.Header.Get("Authorization"))
+					if tc.missingKey {
+						fmt.Fprint(w, `{"code":0,"data":{"total":0,"items":[]}}`)
+					} else if r.URL.Query().Get("page") == "1" {
+						fmt.Fprint(w, `{"code":0,"data":{"total":2,"items":[{"key":"unrelated-key","group_id":2}]}}`)
+					} else if tc.incomplete {
+						fmt.Fprint(w, `{"code":0,"data":{"total":2,"items":[]}}`)
+					} else {
+						fmt.Fprintf(w, `{"code":0,"data":{"total":2,"items":[{"key":%q,"group_id":1}]}}`, key)
+					}
+				case "/api/v1/groups/available":
+					assert.False(t, tc.freshGroups)
+					assert.Equal(t, "Bearer account-token", r.Header.Get("Authorization"))
+					fmt.Fprint(w, `{"code":0,"data":[{"id":1,"rate_multiplier":0.9}]}`)
+				case "/api/v1/groups/rates":
+					assert.False(t, tc.freshGroups)
+					assert.Equal(t, "Bearer account-token", r.Header.Get("Authorization"))
+					fmt.Fprint(w, `{"code":0,"data":{"1":0.07}}`)
+				default:
+					t.Errorf("Sub2API cost sync called unexpected endpoint %s", r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer upstream.Close()
+			if !tc.noMonitor {
+				monitor := &model.UpstreamMonitor{BaseURL: upstream.URL, Provider: UpstreamMonitorProviderSub2API, AccessToken: "account-token", NewAPIUserID: 42, LastSyncedAt: time.Now().Add(-20 * time.Minute).Unix(), GroupsJSON: `{"groups":[{"id":"1","multiplier":0.99}]}`}
+				if tc.wrongProvider {
+					monitor.Provider = UpstreamMonitorProviderNewAPI
+				}
+				if tc.freshGroups {
+					monitor.LastSyncedAt = time.Now().Unix()
+					monitor.GroupsJSON = `{"groups":[{"id":"1","multiplier":0.07}]}`
+				}
+				require.NoError(t, model.CreateUpstreamMonitor(monitor))
+			}
+			channel := &model.Channel{Id: 930000 + i}
+			group := &channelProfitGroup{BaseURL: upstream.URL, SyncIntervalMinutes: 60, Channels: []*model.Channel{channel}, Keys: []*channelProfitGroupKey{{Value: key, Fingerprint: channelProfitKeyFingerprint(key), Owner: channel}}}
+			if tc.manual {
+				group.ManualRatio = &special
+			}
+			siteID := model.ProfitCostSiteID(upstream.URL)
+			pricing := model.ChannelProfitPricing{ID: siteID, QuotaPerUnit: 500000, PricingJSON: `{"test-model":{"quota_type":1,"model_price":9}}`, LastError: "upstream request logs unavailable: /api/log/token: upstream returned HTTP 404"}
+			require.NoError(t, model.SaveChannelProfitPricing(&pricing))
+			synced, failed := syncChannelProfitGroup(context.Background(), group, time.Now().Format("2006-01-02"))
+			assert.Equal(t, 1, synced, "daily totals are independent from cost discovery")
+			assert.Zero(t, failed)
+			// Between daily syncs the scheduler calls this path without a provider.
+			costErr := syncChannelProfitRequestCosts(context.Background(), group, upstream.Client())
+			if tc.wantError != "" {
+				assert.ErrorContains(t, costErr, tc.wantError)
+			} else {
+				require.NoError(t, costErr)
+			}
+			require.NoError(t, db.First(&pricing, "id = ?", siteID).Error)
+			if tc.wantError != "" {
+				assert.Contains(t, pricing.LastError, tc.wantError)
+			} else {
+				assert.Empty(t, pricing.LastError)
+			}
+			if !tc.manual {
+				assert.Empty(t, pricing.PricingJSON, "obsolete New API prices must not affect Sub2API estimates")
+				var state model.ChannelProfitKeyState
+				require.NoError(t, db.First(&state, "id = ?", model.ProfitCostFingerprint(siteID+":"+model.ProfitCostFingerprint(key))).Error)
+				if tc.wantError != "" {
+					assert.Nil(t, state.Ratio)
+					return
+				}
+				require.NotNil(t, state.Ratio)
+				assert.Equal(t, tc.want, *state.Ratio)
+				other := model.NewLogOther()
+				other.SetPublic("group_ratio", 0.1)
+				cost, _, reason := estimateChannelProfitCost(&model.ChannelProfitRequestSnapshot{Config: model.ChannelProfitConfig{CostFactor: 1}, Pricing: &pricing, KeyState: &state}, &model.Log{ModelName: "test-model", Quota: 25000}, other)
+				assert.Empty(t, reason)
+				assert.InDelta(t, 0.5*tc.want, cost, 1e-12)
 			}
 		})
 	}
