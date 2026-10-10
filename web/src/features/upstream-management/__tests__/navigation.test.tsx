@@ -24,7 +24,13 @@ import {
   createRouter,
   RouterProvider,
 } from '@tanstack/react-router'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react'
 import { createInstance } from 'i18next'
 import { I18nextProvider, initReactI18next } from 'react-i18next'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -197,6 +203,101 @@ async function renderPage(path = '/upstream-monitor') {
 }
 
 describe('upstream management navigation', () => {
+  it('shows profit sites and unmatched accounts in one table without inventing account profit', async () => {
+    profitRows = [row]
+    accountMonitors = [
+      monitor,
+      {
+        ...monitor,
+        id: 10,
+        name: 'Standalone account',
+        base_url: 'https://other.example.com',
+      },
+    ]
+    await renderPage()
+    await screen.findByText('Standalone account')
+    expect(screen.getAllByRole('table')).toHaveLength(1)
+    const accountRow = screen.getByText('Standalone account').closest('tr')
+    if (!accountRow) throw new Error('Standalone account row not found')
+    expect(
+      within(accountRow).getByLabelText('Available balance')
+    ).toHaveTextContent('$12.34')
+    const cells = within(accountRow).getAllByRole('cell')
+    expect(cells.slice(1, 4).map((cell) => cell.textContent)).toEqual([
+      '-',
+      '-',
+      '-',
+    ])
+    expect(screen.getAllByLabelText('Available balance')).toHaveLength(2)
+  })
+
+  it('keeps standalone account synchronization and credential editing in the unified table', async () => {
+    accountMonitors = [monitor]
+    const sync = vi
+      .spyOn(api, 'post')
+      .mockResolvedValue({ data: { success: true } })
+    const update = vi
+      .spyOn(api, 'put')
+      .mockResolvedValue({ data: { success: true, data: monitor } })
+    await renderPage()
+    await screen.findByText('Test account')
+    const accountRow = screen.getByText('Test account').closest('tr')
+    if (!accountRow) throw new Error('Account row not found')
+    fireEvent.click(
+      within(accountRow).getByRole('button', { name: 'Sync now' })
+    )
+    await waitFor(() =>
+      expect(sync).toHaveBeenCalledWith(
+        '/api/upstream-monitors/9/sync',
+        undefined,
+        expect.anything()
+      )
+    )
+    fireEvent.click(
+      within(accountRow).getByRole('button', { name: 'Settings' })
+    )
+    fireEvent.change(screen.getByLabelText('Personal access token'), {
+      target: { value: 'replacement' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Save and sync' }))
+    await waitFor(() =>
+      expect(update).toHaveBeenCalledWith(
+        '/api/upstream-monitors/9',
+        { new_api_user_id: 42, access_token: 'replacement' },
+        expect.anything()
+      )
+    )
+    await waitFor(() =>
+      expect(
+        screen.queryByRole('region', { name: 'Edit credentials' })
+      ).not.toBeInTheDocument()
+    )
+  })
+
+  it('deletes standalone accounts only after confirmation in the unified table', async () => {
+    accountMonitors = [monitor]
+    const remove = vi
+      .spyOn(api, 'delete')
+      .mockResolvedValue({ data: { success: true } })
+    await renderPage()
+    await screen.findByText('Test account')
+    fireEvent.click(screen.getByRole('button', { name: 'More' }))
+    fireEvent.click(
+      await screen.findByRole('menuitem', { name: 'Delete monitor' })
+    )
+    const confirmation = await screen.findByRole('alertdialog')
+    expect(remove).not.toHaveBeenCalled()
+    fireEvent.click(
+      within(confirmation).getByRole('button', { name: 'Delete', exact: true })
+    )
+    await waitFor(() =>
+      expect(remove).toHaveBeenCalledWith(
+        '/api/upstream-monitors/9',
+        expect.anything()
+      )
+    )
+  })
+
   it('saves existing account credentials and profit settings through one dialog', async () => {
     profitRows = [row]
     accountMonitors = [monitor]
@@ -291,6 +392,7 @@ describe('upstream management navigation', () => {
     profitLoadError = true
     await renderPage()
     expect(await screen.findByText('Test account')).toBeVisible()
+    expect(screen.getAllByRole('table')).toHaveLength(1)
     expect(screen.getByText('Profit unavailable')).toBeVisible()
     expect(
       screen.queryByRole('button', { name: 'View groups' })
@@ -323,11 +425,19 @@ describe('upstream management navigation', () => {
   })
 
   it('keeps ordinary administrators read-only', async () => {
+    accountMonitors = [monitor]
     useAuthStore
       .getState()
       .auth.setUser({ id: 2, username: 'admin', role: ROLE.ADMIN })
     await renderPage()
     await screen.findByText('Downstream revenue')
+    await screen.findByText('Test account')
+    expect(
+      screen.queryByRole('button', { name: 'Settings' })
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('button', { name: 'More' })
+    ).not.toBeInTheDocument()
     expect(
       screen.queryByRole('button', { name: 'Add monitor' })
     ).not.toBeInTheDocument()

@@ -20,7 +20,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { ArrowRight01Icon, RefreshIcon } from '@hugeicons/core-free-icons'
 import { HugeiconsIcon } from '@hugeicons/react'
 import { CircleDollarSign } from 'lucide-react'
-import { Fragment, useCallback, useState } from 'react'
+import { Fragment, type ReactNode, useCallback, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { EmptyState } from '@/components/empty-state'
@@ -76,6 +76,7 @@ const PROVIDER_LABELS: Partial<Record<ChannelProfitProvider, string>> = {
 
 type ProfitTableProps = {
   rows: ChannelProfitRow[]
+  accountRows?: ReactNode
   monitors?: Record<number, UpstreamMonitor>
   isRoot: boolean
   syncingChannelId?: number
@@ -261,7 +262,7 @@ export function ProfitTable(props: ProfitTableProps) {
     })
   }, [])
 
-  if (props.rows.length === 0) {
+  if (props.rows.length === 0 && !props.accountRows) {
     return (
       <EmptyState
         icon={CircleDollarSign}
@@ -519,6 +520,7 @@ export function ProfitTable(props: ProfitTableProps) {
                 </Fragment>
               )
             })}
+            {props.accountRows}
           </TableBody>
         </Table>
       </div>

@@ -398,11 +398,54 @@ export function ChannelProfit(props: UpstreamManagementPageProps) {
           onRetry={() => void profitQuery.refetch()}
         />
       )}
-      {!profitQuery.isLoading && !profitQuery.isError && summary && (
+      {((!profitQuery.isLoading && !profitQuery.isError && summary) ||
+        orphanMonitors.length > 0) && (
         <div className='space-y-4' aria-busy={profitQuery.isFetching}>
-          <ProfitSummaryCards summary={summary} />
+          {!profitQuery.isLoading && !profitQuery.isError && summary && (
+            <ProfitSummaryCards summary={summary} />
+          )}
           <ProfitTable
-            rows={summary.rows}
+            rows={summary?.rows ?? []}
+            accountRows={
+              orphanMonitors.length > 0 ? (
+                <UpstreamMonitorTable
+                  embedded
+                  monitors={orphanMonitors}
+                  isRoot={isRoot}
+                  syncingId={
+                    accountMutation.isPending &&
+                    accountMutation.variables.action === 'sync'
+                      ? accountMutation.variables.id
+                      : undefined
+                  }
+                  deletingId={
+                    accountMutation.isPending &&
+                    accountMutation.variables.action === 'delete'
+                      ? accountMutation.variables.id
+                      : undefined
+                  }
+                  updatingId={
+                    accountMutation.isPending &&
+                    accountMutation.variables.action === 'update'
+                      ? accountMutation.variables.id
+                      : undefined
+                  }
+                  onSync={(id) =>
+                    accountMutation.mutate({ id, action: 'sync' })
+                  }
+                  onDelete={(id) =>
+                    accountMutation.mutate({ id, action: 'delete' })
+                  }
+                  onUpdateCredentials={async (id, input) => {
+                    await accountMutation.mutateAsync({
+                      id,
+                      input,
+                      action: 'update',
+                    })
+                  }}
+                />
+              ) : undefined
+            }
             monitors={rowMonitors}
             isRoot={isRoot && monitorQuery.isSuccess}
             syncingChannelId={syncingChannelId}
@@ -422,35 +465,6 @@ export function ChannelProfit(props: UpstreamManagementPageProps) {
             t('Could not load upstream monitors')
           )}
           onRetry={() => void monitorQuery.refetch()}
-        />
-      )}
-      {orphanMonitors.length > 0 && (
-        <UpstreamMonitorTable
-          monitors={orphanMonitors}
-          isRoot={isRoot}
-          syncingId={
-            accountMutation.isPending &&
-            accountMutation.variables.action === 'sync'
-              ? accountMutation.variables.id
-              : undefined
-          }
-          deletingId={
-            accountMutation.isPending &&
-            accountMutation.variables.action === 'delete'
-              ? accountMutation.variables.id
-              : undefined
-          }
-          updatingId={
-            accountMutation.isPending &&
-            accountMutation.variables.action === 'update'
-              ? accountMutation.variables.id
-              : undefined
-          }
-          onSync={(id) => accountMutation.mutate({ id, action: 'sync' })}
-          onDelete={(id) => accountMutation.mutate({ id, action: 'delete' })}
-          onUpdateCredentials={async (id, input) => {
-            await accountMutation.mutateAsync({ id, input, action: 'update' })
-          }}
         />
       )}
       <UpstreamMonitorAddDialog
