@@ -349,6 +349,8 @@ func migrateDB() error {
 		&ChannelProfitConfig{},
 		&ChannelProfitSnapshot{},
 		&ChannelProfitRecord{},
+		&ChannelProfitPricing{},
+		&ChannelProfitKeyState{},
 		&UpstreamMonitor{},
 		&Token{},
 		&User{},

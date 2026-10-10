@@ -29,8 +29,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
+import {
+  Field,
+  FieldDescription,
+  FieldGroup,
+  FieldLabel,
+} from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { Spinner } from '@/components/ui/spinner'
 
 import type { ChannelProfitConfigInput, ChannelProfitRow } from '../types'
@@ -48,6 +54,19 @@ export function ProfitSettingsDialog(props: ProfitSettingsDialogProps) {
   const [syncInterval, setSyncInterval] = useState(
     String(props.row.sync_interval_minutes)
   )
+  const [costMode, setCostMode] = useState<'ratio' | 'request'>(
+    props.row.cost_mode ||
+      (props.row.request_cost_usd == null ? 'ratio' : 'request')
+  )
+  const [manualRatio, setManualRatio] = useState(
+    props.row.manual_ratio == null ? '' : String(props.row.manual_ratio)
+  )
+  const parsedManualRatio = Number(manualRatio)
+  const isManualRatioValid =
+    manualRatio.trim() === '' ||
+    (Number.isFinite(parsedManualRatio) &&
+      parsedManualRatio >= 0 &&
+      parsedManualRatio <= 100)
   const [accessToken, setAccessToken] = useState('')
   const [accessTokenChanged, setAccessTokenChanged] = useState(false)
   const [costFactor, setCostFactor] = useState(
@@ -69,12 +88,17 @@ export function ProfitSettingsDialog(props: ProfitSettingsDialogProps) {
   const isFactorValid =
     Number.isFinite(parsedFactor) && parsedFactor > 0 && parsedFactor <= 100
   const isRequestCostValid =
-    requestCost === '' ||
-    (Number.isFinite(parsedRequestCost) &&
+    costMode !== 'request' ||
+    (requestCost.trim() !== '' &&
+      Number.isFinite(parsedRequestCost) &&
       parsedRequestCost >= 0 &&
       parsedRequestCost <= 1000000)
   const isFormValid =
-    isIntervalValid && isDisplayNameValid && isFactorValid && isRequestCostValid
+    isIntervalValid &&
+    isDisplayNameValid &&
+    isFactorValid &&
+    isRequestCostValid &&
+    (costMode !== 'ratio' || isManualRatioValid)
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault()
@@ -84,17 +108,27 @@ export function ProfitSettingsDialog(props: ProfitSettingsDialogProps) {
       display_name: displayName.trim(),
       sync_interval_minutes: parsedInterval,
       cost_factor: parsedFactor,
-      ...(requestCost === ''
+      cost_mode: costMode,
+      ...(costMode !== 'request'
         ? { clear_request_cost: true }
         : { request_cost_usd: parsedRequestCost }),
+    }
+
+    if (costMode === 'ratio') {
+      if (manualRatio.trim() === '') input.clear_manual_ratio = true
+      else input.manual_ratio = parsedManualRatio
     }
 
     if (accessTokenChanged) {
       input.access_token = accessToken.trim()
     }
 
-    await props.onSave(props.row.channel_id, input)
-    props.onClose()
+    try {
+      await props.onSave(props.row.channel_id, input)
+      props.onClose()
+    } catch {
+      // The mutation displays the error; keep the form open for correction.
+    }
   }
 
   return (
@@ -102,7 +136,7 @@ export function ProfitSettingsDialog(props: ProfitSettingsDialogProps) {
       open
       onOpenChange={(open) => !open && !props.saving && props.onClose()}
     >
-      <DialogContent className='rounded-xl sm:max-w-md'>
+      <DialogContent className='max-h-[85dvh] overflow-y-auto rounded-xl sm:max-w-md'>
         <form onSubmit={(e) => void handleSubmit(e)}>
           <DialogHeader>
             <DialogTitle className='text-base font-semibold'>
@@ -114,6 +148,56 @@ export function ProfitSettingsDialog(props: ProfitSettingsDialogProps) {
           </DialogHeader>
 
           <FieldGroup className='my-4 space-y-3.5'>
+            <Field>
+              <FieldLabel htmlFor='profit-cost-mode'>
+                {t('Cost calculation mode')}
+              </FieldLabel>
+              <NativeSelect
+                id='profit-cost-mode'
+                value={costMode}
+                disabled={props.saving}
+                onChange={(event) =>
+                  setCostMode(event.target.value as 'ratio' | 'request')
+                }
+              >
+                <NativeSelectOption value='ratio'>
+                  {t('Usage and upstream ratio')}
+                </NativeSelectOption>
+                <NativeSelectOption value='request'>
+                  {t('Fixed request cost (USD)')}
+                </NativeSelectOption>
+              </NativeSelect>
+              <FieldDescription>
+                {t(
+                  'Cost settings apply to new requests. Reconciliation preserves their purchase cost factor.'
+                )}
+              </FieldDescription>
+            </Field>
+            {costMode === 'ratio' && (
+              <Field data-invalid={!isManualRatioValid}>
+                <FieldLabel htmlFor='profit-manual-ratio'>
+                  {t('Upstream group ratio')}
+                </FieldLabel>
+                <Input
+                  id='profit-manual-ratio'
+                  type='number'
+                  min={0}
+                  max={100}
+                  step='any'
+                  value={manualRatio}
+                  onChange={(event) => setManualRatio(event.target.value)}
+                  placeholder={t('Automatic')}
+                  disabled={props.saving}
+                  aria-invalid={!isManualRatioValid}
+                />
+                <FieldDescription>
+                  {t(
+                    'Leave blank to use the ratio from upstream logs. Zero means free upstream usage.'
+                  )}
+                </FieldDescription>
+              </Field>
+            )}
+
             <Field data-invalid={!isFactorValid}>
               <FieldLabel htmlFor='profit-cost-factor'>
                 {t('Purchase cost factor')}
@@ -131,22 +215,24 @@ export function ProfitSettingsDialog(props: ProfitSettingsDialogProps) {
                 required
               />
             </Field>
-            <Field data-invalid={!isRequestCostValid}>
-              <FieldLabel htmlFor='profit-request-cost'>
-                {t('Fixed request cost (USD)')}
-              </FieldLabel>
-              <Input
-                id='profit-request-cost'
-                type='number'
-                min={0}
-                max={1000000}
-                step='any'
-                value={requestCost}
-                onChange={(event) => setRequestCost(event.target.value)}
-                aria-invalid={!isRequestCostValid}
-                disabled={props.saving}
-              />
-            </Field>
+            {costMode === 'request' && (
+              <Field data-invalid={!isRequestCostValid}>
+                <FieldLabel htmlFor='profit-request-cost'>
+                  {t('Fixed request cost (USD)')}
+                </FieldLabel>
+                <Input
+                  id='profit-request-cost'
+                  type='number'
+                  min={0}
+                  max={1000000}
+                  step='any'
+                  value={requestCost}
+                  onChange={(event) => setRequestCost(event.target.value)}
+                  aria-invalid={!isRequestCostValid}
+                  disabled={props.saving}
+                />
+              </Field>
+            )}
             <Field data-invalid={!isDisplayNameValid}>
               <FieldLabel
                 htmlFor='profit-display-name'

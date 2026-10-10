@@ -28,13 +28,12 @@ func GetAllLogs(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	if err := model.RefreshChannelProfitLogCosts(logs); err != nil {
+		common.SysError("failed to refresh request costs: " + err.Error())
+	}
 	if c.GetInt("role") < common.RoleRootUser {
 		model.FormatAdminLogs(logs)
 	} else {
-		if err := model.RefreshChannelProfitLogCosts(logs); err != nil {
-			common.ApiError(c, err)
-			return
-		}
 		model.FormatRootLogs(logs)
 	}
 	pageInfo.SetTotal(int(total))

@@ -69,6 +69,9 @@ type ChannelProfitGroupRatio struct {
 }
 
 type ChannelProfitRow struct {
+	CostMode              string                      `json:"cost_mode"`
+	ManualRatio           *float64                    `json:"manual_ratio"`
+	CostSyncError         string                      `json:"cost_sync_error"`
 	CostFactor            float64                     `json:"cost_factor"`
 	RequestCostUSD        *float64                    `json:"request_cost_usd"`
 	RequestCoverage       model.ChannelProfitCoverage `json:"request_coverage"`
@@ -120,6 +123,9 @@ type ChannelProfitSyncResult struct {
 }
 
 type ChannelProfitConfigUpdate struct {
+	CostMode            *string
+	ManualRatio         *float64
+	ClearManualRatio    bool
 	CostFactor          *float64
 	RequestCostUSD      *float64
 	ClearRequestCost    bool
@@ -148,6 +154,9 @@ type channelProfitGroupKey struct {
 }
 
 type channelProfitGroup struct {
+	CostLogs            map[string]channelProfitTokenLogs
+	CostMode            string
+	ManualRatio         *float64
 	CostFactor          float64
 	RequestCostUSD      *float64
 	Id                  string
@@ -196,6 +205,7 @@ func (channelProfitSyncHandler) Run(ctx context.Context, task *model.SystemTask,
 }
 
 func init() {
+	model.EstimateChannelProfitCost = estimateChannelProfitCost
 	RegisterSystemTaskHandler(channelProfitSyncHandler{})
 }
 
@@ -223,6 +233,12 @@ func SetChannelProfitMonitoring(channelId int, enabled bool) (*model.ChannelProf
 }
 
 func UpdateChannelProfitConfig(channelId int, update ChannelProfitConfigUpdate) (*model.ChannelProfitConfig, error) {
+	if update.CostMode != nil && *update.CostMode != "ratio" && *update.CostMode != "request" {
+		return nil, errors.New("invalid cost mode")
+	}
+	if update.ManualRatio != nil && (*update.ManualRatio < 0 || *update.ManualRatio > 100 || math.IsNaN(*update.ManualRatio) || math.IsInf(*update.ManualRatio, 0)) {
+		return nil, errors.New("invalid upstream group ratio")
+	}
 	if update.CostFactor != nil && (*update.CostFactor <= 0 || *update.CostFactor > 100 || math.IsNaN(*update.CostFactor) || math.IsInf(*update.CostFactor, 0)) {
 		return nil, errors.New("invalid cost factor")
 	}
@@ -232,6 +248,19 @@ func UpdateChannelProfitConfig(channelId int, update ChannelProfitConfigUpdate) 
 	group, err := getChannelProfitGroup(channelId)
 	if err != nil {
 		return nil, err
+	}
+	costMode, requestCost := group.CostMode, group.RequestCostUSD
+	if update.CostMode != nil {
+		costMode = *update.CostMode
+	}
+	if update.RequestCostUSD != nil {
+		requestCost = update.RequestCostUSD
+	}
+	if update.ClearRequestCost {
+		requestCost = nil
+	}
+	if costMode == "request" && requestCost == nil {
+		return nil, errors.New("fixed request cost is required in request mode")
 	}
 	if update.Enabled != nil && *update.Enabled && len(group.Keys) == 0 {
 		return nil, errors.New("channel group has no upstream key")
@@ -259,6 +288,7 @@ func UpdateChannelProfitConfig(channelId int, update ChannelProfitConfigUpdate) 
 		channelIds = append(channelIds, channel.Id)
 	}
 	configs, err := model.UpdateChannelProfitConfigs(channelIds, model.ChannelProfitConfigUpdate{
+		CostMode: update.CostMode, ManualRatio: update.ManualRatio, ClearManualRatio: update.ClearManualRatio,
 		CostFactor: update.CostFactor, RequestCostUSD: update.RequestCostUSD, ClearRequestCost: update.ClearRequestCost,
 		Enabled:             update.Enabled,
 		DisplayName:         update.DisplayName,
@@ -292,8 +322,8 @@ func SyncChannelProfits(ctx context.Context, syncOptions ...ChannelProfitSyncOpt
 		if options.ChannelId > 0 && !channelProfitGroupContainsChannel(group, options.ChannelId) {
 			continue
 		}
-		if options.DueOnly && group.LastSyncAttemptAt > 0 &&
-			now-group.LastSyncAttemptAt < int64(group.SyncIntervalMinutes*60) {
+
+		if options.DueOnly && group.CostMode == "request" && group.LastSyncAttemptAt > 0 && now-group.LastSyncAttemptAt < int64(group.SyncIntervalMinutes*60) {
 			continue
 		}
 		selected = append(selected, group)
@@ -326,6 +356,24 @@ func SyncChannelProfits(ctx context.Context, syncOptions ...ChannelProfitSyncOpt
 				return
 			}
 
+			// Cost logs need frequent polling even when daily balance sync is infrequent.
+			if options.DueOnly && group.LastSyncAttemptAt > 0 && now-group.LastSyncAttemptAt < int64(group.SyncIntervalMinutes*60) {
+				client, clientErr := GetHttpClientWithProxySettings(group.Channels[0].GetSetting().Proxy, group.Channels[0].GetSetting())
+				if clientErr == nil {
+					clientErr = syncChannelProfitRequestCosts(ctx, group, client)
+				}
+				resultMu.Lock()
+				if clientErr != nil {
+					result.Failed++
+					if firstErr == nil {
+						firstErr = clientErr
+					}
+				} else {
+					result.Synced++
+				}
+				resultMu.Unlock()
+				return
+			}
 			synced, failed := syncChannelProfitGroup(ctx, group, usageDate)
 			channelIds := make([]int, 0, len(group.Channels))
 			for _, channel := range group.Channels {
@@ -374,6 +422,11 @@ func syncChannelProfitGroup(ctx context.Context, group *channelProfitGroup, usag
 			saveChannelProfitFailure(key.Owner.Id, usageDate, key.Value, err)
 		}
 		return 0, len(group.Keys)
+	}
+
+	costSyncErr := syncChannelProfitRequestCosts(ctx, group, client)
+	if costSyncErr != nil {
+		common.SysError("channel request cost sync: " + costSyncErr.Error())
 	}
 
 	newAPIMetadata := map[string]channelProfitNewAPIKeyMetadata{}
@@ -433,7 +486,7 @@ func syncChannelProfitGroup(ctx context.Context, group *channelProfitGroup, usag
 				updateErr = usageErr
 				break
 			}
-			keyName, upstreamGroup, ratio, ratioAvailable, ratioErr := fetchChannelProfitGroup(ctx, client, group.BaseURL, key.Value)
+			keyName, upstreamGroup, ratio, ratioAvailable, ratioErr := channelProfitGroupFromLogs(group.CostLogs[key.Value])
 			updateErr = updateChannelProfitSnapshotForProvider(
 				key.Owner.Id, usageDate, key.Value, channelProfitProviderNewAPI,
 				usage, backend.QuotaPerUnit, 0, false,
@@ -681,6 +734,27 @@ func GetChannelProfitSummary(usageDate string, includeDisabled bool) (*ChannelPr
 		return nil, err
 	}
 
+	channelIDs := make([]int, 0)
+	for _, group := range groups {
+		if !group.Enabled && !includeDisabled {
+			continue
+		}
+		for _, channel := range group.Channels {
+			channelIDs = append(channelIDs, channel.Id)
+		}
+	}
+	coverageByChannel, err := model.ChannelProfitRequestCoverageByChannel(channelIDs, date.Unix(), date.AddDate(0, 0, 1).Unix())
+	if err != nil {
+		return nil, err
+	}
+	var costPricing []model.ChannelProfitPricing
+	if err := model.DB.Select("id", "last_error").Find(&costPricing).Error; err != nil {
+		return nil, err
+	}
+	costErrors := map[string]string{}
+	for _, pricing := range costPricing {
+		costErrors[pricing.ID] = pricing.LastError
+	}
 	summary := &ChannelProfitSummary{
 		UsageDate: usageDate,
 		Rows:      make([]ChannelProfitRow, 0),
@@ -696,9 +770,17 @@ func GetChannelProfitSummary(usageDate string, includeDisabled bool) (*ChannelPr
 			groupSnapshots = append(groupSnapshots, snapshotsByChannel[channel.Id]...)
 		}
 		row := buildChannelProfitGroupRow(group, quotaByChannel, groupSnapshots)
-		row.RequestCoverage, err = model.ChannelProfitRequestCoverage(row.ChannelIds, date.Unix(), date.AddDate(0, 0, 1).Unix())
-		if err != nil {
-			return nil, err
+		if group.CostMode == "ratio" {
+			row.CostSyncError = costErrors[model.ProfitCostSiteID(group.BaseURL)]
+		}
+		for _, id := range row.ChannelIds {
+			coverage := coverageByChannel[id]
+			row.RequestCoverage.Total += coverage.Total
+			row.RequestCoverage.Estimated += coverage.Estimated
+			row.RequestCoverage.Matched += coverage.Matched
+			row.RequestCoverage.Unknown += coverage.Unknown
+			row.RequestCoverage.RevenueUSD += coverage.RevenueUSD
+			row.RequestCoverage.CostUSD += coverage.CostUSD
 		}
 		summary.Rows = append(summary.Rows, row)
 		if !group.Enabled {
@@ -740,6 +822,7 @@ func buildChannelProfitGroupRow(group *channelProfitGroup, quotaByChannel map[in
 		revenueQuota += quotaByChannel[channel.Id]
 	}
 	row := ChannelProfitRow{
+		CostMode: group.CostMode, ManualRatio: group.ManualRatio,
 		CostFactor: group.CostFactor, RequestCostUSD: group.RequestCostUSD,
 		GroupId:               group.Id,
 		ChannelId:             group.Channels[0].Id,
@@ -960,6 +1043,7 @@ func listChannelProfitGroups() ([]*channelProfitGroup, error) {
 		if group == nil {
 			group = &channelProfitGroup{
 				CostFactor:          1,
+				CostMode:            "ratio",
 				BaseURL:             baseURL,
 				SyncIntervalMinutes: channelProfitDefaultIntervalMinutes,
 			}
@@ -979,6 +1063,7 @@ func listChannelProfitGroups() ([]*channelProfitGroup, error) {
 		}
 		group.DisplayName = group.Channels[0].Name
 		settingsConfigured := false
+		intervalConfigured := false
 		for _, channel := range group.Channels {
 			config := configByChannel[channel.Id]
 			if config == nil {
@@ -993,10 +1078,13 @@ func listChannelProfitGroups() ([]*channelProfitGroup, error) {
 					group.CostFactor = config.CostFactor
 				}
 				group.RequestCostUSD = config.RequestCostUSD
+				group.CostMode = model.ChannelProfitCostMode(*config)
+				group.ManualRatio = config.ManualRatio
 				settingsConfigured = true
 			}
-			if config.SyncIntervalMinutes > 0 && group.SyncIntervalMinutes == channelProfitDefaultIntervalMinutes {
+			if config.SyncIntervalMinutes > 0 && !intervalConfigured {
 				group.SyncIntervalMinutes = config.SyncIntervalMinutes
+				intervalConfigured = true
 			}
 			if config.LastSyncAttemptAt > group.LastSyncAttemptAt {
 				group.LastSyncAttemptAt = config.LastSyncAttemptAt
@@ -1067,16 +1155,6 @@ type channelProfitUsageResponse struct {
 	Message string `json:"message"`
 	Data    struct {
 		TotalUsed int64 `json:"total_used"`
-	} `json:"data"`
-}
-
-type channelProfitLogResponse struct {
-	Success bool   `json:"success"`
-	Message string `json:"message"`
-	Data    []struct {
-		TokenName string `json:"token_name"`
-		Group     string `json:"group"`
-		Other     string `json:"other"`
 	} `json:"data"`
 }
 
@@ -1195,7 +1273,7 @@ func fetchChannelProfitQuotaPerUnit(ctx context.Context, client *http.Client, ba
 	if err := fetchChannelProfitJSON(ctx, client, baseURL+"/api/status", "", &response); err != nil {
 		return 0, err
 	}
-	if !response.Success || response.Data.QuotaPerUnit <= 0 {
+	if !response.Success || response.Data.QuotaPerUnit <= 0 || math.IsNaN(response.Data.QuotaPerUnit) || math.IsInf(response.Data.QuotaPerUnit, 0) {
 		return 0, fmt.Errorf("upstream status did not return a valid quota_per_unit: %s", response.Message)
 	}
 	return response.Data.QuotaPerUnit, nil
@@ -1215,29 +1293,32 @@ func fetchChannelProfitUsage(ctx context.Context, client *http.Client, baseURL s
 	return response.Data.TotalUsed, nil
 }
 
-func fetchChannelProfitGroup(ctx context.Context, client *http.Client, baseURL string, key string) (string, string, float64, bool, error) {
-	response := channelProfitLogResponse{}
-	if err := fetchChannelProfitJSON(ctx, client, baseURL+"/api/log/token", key, &response); err != nil {
-		return "", "", 0, false, err
+func channelProfitGroupFromLogs(result channelProfitTokenLogs) (string, string, float64, bool, error) {
+	if result.Err != nil {
+		return "", "", 0, false, result.Err
 	}
-	if !response.Success {
-		return "", "", 0, false, errors.New(response.Message)
+	var latest *channelProfitCostLog
+	for i := range result.Entries {
+		entry := &result.Entries[i]
+		if entry.Type == model.LogTypeConsume && (latest == nil || entry.CreatedAt > latest.CreatedAt) {
+			latest = entry
+		}
 	}
-	if len(response.Data) == 0 {
+	if latest == nil {
 		return "", "", 0, false, errors.New("upstream token has no usage log for ratio discovery")
 	}
-
-	keyName := response.Data[0].TokenName
-	group := response.Data[0].Group
-	other := make(map[string]any)
-	if err := common.UnmarshalJsonStr(response.Data[0].Other, &other); err != nil {
-		return keyName, group, 0, false, fmt.Errorf("decode upstream log ratio: %w", err)
+	var other map[string]any
+	if err := common.UnmarshalJsonStr(latest.Other, &other); err != nil {
+		return latest.TokenName, latest.Group, 0, false, errors.New("invalid upstream log ratio")
 	}
-	ratio, ok := other["group_ratio"].(float64)
-	if !ok || ratio < 0 {
-		return keyName, group, 0, false, errors.New("upstream log did not include group_ratio")
+	ratio, ok := profitNumber(other["group_ratio"])
+	if special, valid := profitNumber(other["user_group_ratio"]); valid {
+		ratio, ok = special, true
 	}
-	return keyName, group, ratio, true, nil
+	if !ok {
+		return latest.TokenName, latest.Group, 0, false, errors.New("upstream log did not include group_ratio")
+	}
+	return latest.TokenName, latest.Group, ratio, true, nil
 }
 
 func fetchChannelProfitNewAPIMetadata(

@@ -479,3 +479,47 @@ test('does not invent an upstream error for a transport-only disconnect', async 
   expect(dialog.getByText('context canceled')).toBeVisible()
   expect(dialog.queryByText('Upstream Error')).not.toBeInTheDocument()
 })
+
+test('reconciled cost shows its source, original estimate and precise ratio', async () => {
+  fireEvent.click(
+    renderPreview({
+      admin_info: {
+        upstream_cost: {
+          status: 'matched',
+          cost_usd: 0.004,
+          estimated_usd: 0.003,
+          source: 'upstream_log',
+          upstream_ratio: 0.005,
+          reconciliation: 'matched',
+        },
+      },
+    })
+  )
+  const dialog = within(await screen.findByRole('dialog'))
+  expect(dialog.getByText('Upstream consumption log')).toBeVisible()
+  expect(dialog.getByText('Original estimate')).toBeVisible()
+  expect(dialog.getByText('0.005')).toBeVisible()
+  expect(dialog.getAllByText('Reconciled')).toHaveLength(2)
+})
+test('unknown cost explains missing data without displaying a zero charge', async () => {
+  fireEvent.click(
+    renderPreview({
+      admin_info: {
+        upstream_cost: {
+          status: 'unknown',
+          cost_usd: 0,
+          reason: 'ratio_unavailable',
+          reconciliation: 'missing_request_id',
+        },
+      },
+    })
+  )
+  const dialog = within(await screen.findByRole('dialog'))
+  expect(
+    dialog.getByText('Upstream ratio unavailable or expired')
+  ).toBeVisible()
+  expect(
+    dialog.getByText('No upstream request ID; cannot reconcile')
+  ).toBeVisible()
+  expect(dialog.queryByText('Upstream cost')).not.toBeInTheDocument()
+})

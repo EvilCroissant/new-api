@@ -104,8 +104,9 @@ func TestStructuredLogsDatabaseMatrix(t *testing.T) {
 			require.NoError(t, usersDB.Where("request_id = ?", "merge-structured").First(&profitRecord).Error)
 			assert.Equal(t, "estimated", profitRecord.Status)
 			assert.InDelta(t, 0.3, profitRecord.CostUSD, 0.000001)
-			coverage, err := ChannelProfitRequestCoverage([]int{182}, stored.CreatedAt, stored.CreatedAt+1)
+			coverages, err := ChannelProfitRequestCoverageByChannel([]int{182}, stored.CreatedAt, stored.CreatedAt+1)
 			require.NoError(t, err)
+			coverage := coverages[182]
 			assert.EqualValues(t, 1, coverage.Estimated)
 			assert.InDelta(t, 0.3, coverage.CostUSD, 0.000001)
 			rows, total, err := GetUserLogs(910001, LogTypeUnknown, 0, 0, "", "", 0, 10, "", "", "")

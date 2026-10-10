@@ -12,6 +12,9 @@ import (
 )
 
 type channelProfitConfigRequest struct {
+	CostMode            *string  `json:"cost_mode"`
+	ManualRatio         *float64 `json:"manual_ratio"`
+	ClearManualRatio    bool     `json:"clear_manual_ratio"`
 	CostFactor          *float64 `json:"cost_factor"`
 	RequestCostUSD      *float64 `json:"request_cost_usd"`
 	ClearRequestCost    bool     `json:"clear_request_cost"`
@@ -48,11 +51,12 @@ func UpdateChannelProfitConfig(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	if request.Enabled == nil && request.DisplayName == nil && request.SyncIntervalMinutes == nil && request.AccessToken == nil && request.CostFactor == nil && request.RequestCostUSD == nil && !request.ClearRequestCost {
+	if request.CostMode == nil && request.ManualRatio == nil && !request.ClearManualRatio && request.Enabled == nil && request.DisplayName == nil && request.SyncIntervalMinutes == nil && request.AccessToken == nil && request.CostFactor == nil && request.RequestCostUSD == nil && !request.ClearRequestCost {
 		common.ApiError(c, errors.New("at least one configuration field is required"))
 		return
 	}
 	config, err := service.UpdateChannelProfitConfig(channelId, service.ChannelProfitConfigUpdate{
+		CostMode: request.CostMode, ManualRatio: request.ManualRatio, ClearManualRatio: request.ClearManualRatio,
 		CostFactor: request.CostFactor, RequestCostUSD: request.RequestCostUSD, ClearRequestCost: request.ClearRequestCost,
 		Enabled:             request.Enabled,
 		DisplayName:         request.DisplayName,
@@ -71,11 +75,12 @@ func UpdateChannelProfitConfig(c *gin.Context) {
 			action = "channel_profit.disable"
 		}
 	}
-	recordManageAudit(c, action, map[string]interface{}{
-		"id":                   channelId,
-		"display_name_changed": request.DisplayName != nil,
-		"interval_changed":     request.SyncIntervalMinutes != nil,
-		"access_token_changed": request.AccessToken != nil,
+	recordManageAudit(c, action, map[string]any{
+		"id":                    channelId,
+		"display_name_changed":  request.DisplayName != nil,
+		"interval_changed":      request.SyncIntervalMinutes != nil,
+		"access_token_changed":  request.AccessToken != nil,
+		"cost_settings_changed": request.CostMode != nil || request.ManualRatio != nil || request.ClearManualRatio || request.CostFactor != nil || request.RequestCostUSD != nil || request.ClearRequestCost,
 	})
 	common.ApiSuccess(c, config)
 }

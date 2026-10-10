@@ -304,7 +304,13 @@ export interface RequestParameterSnapshot {
 export interface RequestUpstreamCost {
   id?: string
   cost_usd?: number
-  status: 'estimated' | 'unknown'
+  status: 'matched' | 'estimated' | 'unknown'
+  estimated_usd?: number
+  source?: string
+  reason?: string
+  reconciliation?: string
+  cost_factor?: number
+  upstream_ratio?: number
   recording_failed?: boolean
 }
 

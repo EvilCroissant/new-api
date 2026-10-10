@@ -7,6 +7,8 @@ import (
 )
 
 type ChannelProfitConfig struct {
+	CostMode            string   `json:"cost_mode" gorm:"type:varchar(16)"`
+	ManualRatio         *float64 `json:"manual_ratio"`
 	CostFactor          float64  `json:"cost_factor"`
 	RequestCostUSD      *float64 `json:"request_cost_usd"`
 	Id                  int      `json:"id"`
@@ -21,6 +23,9 @@ type ChannelProfitConfig struct {
 }
 
 type ChannelProfitConfigUpdate struct {
+	CostMode            *string
+	ManualRatio         *float64
+	ClearManualRatio    bool
 	CostFactor          *float64
 	RequestCostUSD      *float64
 	ClearRequestCost    bool
@@ -98,6 +103,14 @@ func UpdateChannelProfitConfigs(channelIds []int, update ChannelProfitConfigUpda
 			if update.Enabled != nil {
 				config.Enabled = *update.Enabled
 			}
+			if update.CostMode != nil {
+				config.CostMode = *update.CostMode
+			}
+			if update.ClearManualRatio {
+				config.ManualRatio = nil
+			} else if update.ManualRatio != nil {
+				config.ManualRatio = update.ManualRatio
+			}
 			if update.CostFactor != nil {
 				config.CostFactor = *update.CostFactor
 			}
@@ -125,6 +138,12 @@ func UpdateChannelProfitConfigs(channelIds []int, update ChannelProfitConfigUpda
 				}
 			} else {
 				updates := map[string]any{}
+				if update.CostMode != nil {
+					updates["cost_mode"] = config.CostMode
+				}
+				if update.ManualRatio != nil || update.ClearManualRatio {
+					updates["manual_ratio"] = config.ManualRatio
+				}
 				if update.CostFactor != nil {
 					updates["cost_factor"] = config.CostFactor
 				}

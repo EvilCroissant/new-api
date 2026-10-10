@@ -56,10 +56,14 @@ export type ChannelProfitKey = {
 }
 
 export type ChannelProfitRow = {
+  cost_mode: 'ratio' | 'request'
+  manual_ratio: number | null
+  cost_sync_error: string
   cost_factor: number
   request_cost_usd: number | null
   request_coverage: {
     total: number
+    matched: number
     estimated: number
     unknown: number
     revenue_usd: number
@@ -92,6 +96,9 @@ export type ChannelProfitRow = {
 }
 
 export type ChannelProfitConfigInput = {
+  cost_mode?: 'ratio' | 'request'
+  manual_ratio?: number
+  clear_manual_ratio?: boolean
   cost_factor?: number
   request_cost_usd?: number
   clear_request_cost?: boolean

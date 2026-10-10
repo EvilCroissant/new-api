@@ -41,6 +41,7 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip'
 import { formatBillingCurrencyFromUSD } from '@/lib/currency'
+import { formatNumber } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
 import type {
@@ -329,19 +330,18 @@ export function ProfitTable(props: ProfitTableProps) {
                         </Button>
                         <div className='min-w-0'>
                           <div className='flex min-w-0 items-center gap-1'>
-                            {props.isRoot ? (
-                              <button
+                            <p className='text-foreground/90 min-w-0 truncate text-sm font-semibold'>
+                              {row.channel_name}
+                            </p>
+                            {props.isRoot && (
+                              <Button
                                 type='button'
-                                className='text-foreground/90 hover:text-primary min-w-0 cursor-pointer truncate text-left text-sm font-semibold transition-colors hover:underline'
+                                variant='ghost'
+                                size='xs'
                                 onClick={() => setSettingsRow(row)}
-                                aria-label={t('Settings')}
                               >
-                                {row.channel_name}
-                              </button>
-                            ) : (
-                              <p className='text-foreground/90 min-w-0 truncate text-sm font-semibold'>
-                                {row.channel_name}
-                              </p>
+                                {t('Settings')}
+                              </Button>
                             )}
                             {props.isRoot && (
                               <Tooltip>
@@ -391,11 +391,38 @@ export function ProfitTable(props: ProfitTableProps) {
                             })}
                             {pLabel && ` · ${pLabel}`}
                           </p>
+                          {row.cost_sync_error && (
+                            <p className='text-destructive mt-1 text-xs'>
+                              {t('Request cost sync failed')}:{' '}
+                              {row.cost_sync_error}
+                            </p>
+                          )}
                           {row.request_coverage?.total > 0 && (
                             <p className='text-muted-foreground mt-1 text-xs'>
                               {t('Request cost coverage')}:{' '}
-                              {row.request_coverage.estimated}/
-                              {row.request_coverage.total}
+                              {formatNumber(
+                                row.request_coverage.matched +
+                                  row.request_coverage.estimated
+                              )}
+                              /{formatNumber(row.request_coverage.total)}
+                              {' · '}
+                              {t('Reconciled')}:{' '}
+                              {formatNumber(row.request_coverage.matched)}
+                              {' · '}
+                              {t('Estimated cost')}:{' '}
+                              {formatNumber(row.request_coverage.estimated)}
+                              {' · '}
+                              {t('Unknown')}:{' '}
+                              {formatNumber(row.request_coverage.unknown)}
+                            </p>
+                          )}
+                          {row.request_coverage?.total > 0 && (
+                            <p className='text-muted-foreground text-xs'>
+                              {t('Recorded request costs')}:{' '}
+                              {formatBillingCurrencyFromUSD(
+                                row.request_coverage.cost_usd
+                              )}{' '}
+                              · {t('Separate from daily upstream totals')}
                             </p>
                           )}
                         </div>
