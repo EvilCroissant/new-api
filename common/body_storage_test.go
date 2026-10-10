@@ -1,10 +1,13 @@
 package common
 
 import (
+	"bytes"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -34,4 +37,29 @@ func TestNewReplayableBodyReaderKeepsStorageLifecycleWithCaller(t *testing.T) {
 	require.NoError(t, storage.Close())
 	_, err = body.NewReader()
 	require.ErrorIs(t, err, ErrStorageClosed)
+}
+
+func TestCaptureRequestParameterSnapshotExcludesContentAndPreservesBody(t *testing.T) {
+	payload := []byte(`{"model":"gpt-test","temperature":0,"messages":[{"role":"user","content":"private prompt"}],"api_key":"secret-key"}`)
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(payload))
+	request.Header.Set("Content-Type", "application/json")
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = request
+	defer CleanupBodyStorage(ctx)
+
+	CaptureRequestParameterSnapshot(ctx)
+	snapshot := GetRequestParameterSnapshot(ctx)
+	require.NotNil(t, snapshot)
+	assert.Equal(t, "gpt-test", snapshot.Parameters["model"])
+	assert.Equal(t, float64(0), snapshot.Parameters["temperature"])
+	assert.Equal(t, map[string]any{"items": 1}, snapshot.Content["messages"])
+	assert.True(t, snapshot.Omitted)
+	encoded, err := Marshal(snapshot)
+	require.NoError(t, err)
+	assert.NotContains(t, string(encoded), "private prompt")
+	assert.NotContains(t, string(encoded), "secret-key")
+
+	body, err := io.ReadAll(ctx.Request.Body)
+	require.NoError(t, err)
+	assert.Equal(t, payload, body)
 }

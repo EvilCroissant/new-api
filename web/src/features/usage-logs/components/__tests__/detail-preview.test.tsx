@@ -147,6 +147,37 @@ test('keeps log details open when the parent refreshes with unchanged data', asy
   expect(screen.getByRole('dialog')).toBeVisible()
 })
 
+test.each([false, true])(
+  'request summary hides content and scopes cost for admin=%s',
+  async (isAdmin) => {
+    const button = renderPreview(
+      {
+        model_price: 0.25,
+        request_parameters: {
+          parameters: { model: 'gpt-test', temperature: 0 },
+          content: { messages: { items: 2 } },
+          omitted: true,
+        },
+        admin_info: { upstream_cost: { status: 'estimated', cost_usd: 0.1 } },
+      },
+      isAdmin
+    )
+    fireEvent.click(button)
+    const dialog = within(await screen.findByRole('dialog'))
+    expect(dialog.getByText('Request parameters')).toBeVisible()
+    expect(dialog.getByText('Content summary')).toBeVisible()
+    expect(dialog.getByText('{"items":2}')).toBeVisible()
+    expect(dialog.queryByText('private prompt')).not.toBeInTheDocument()
+    if (isAdmin) {
+      expect(dialog.getByText('Per-request upstream cost')).toBeVisible()
+    } else {
+      expect(
+        dialog.queryByText('Per-request upstream cost')
+      ).not.toBeInTheDocument()
+    }
+  }
+)
+
 test.each([
   {
     name: 'fixed expression zero price',

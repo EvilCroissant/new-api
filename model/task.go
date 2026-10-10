@@ -81,9 +81,10 @@ func (t *Task) GetData(v any) error {
 }
 
 type Properties struct {
-	Input             string `json:"input"`
-	UpstreamModelName string `json:"upstream_model_name,omitempty"`
-	OriginModelName   string `json:"origin_model_name,omitempty"`
+	RequestParameters *common.RequestParameterSnapshot `json:"request_parameters,omitempty"`
+	Input             string                           `json:"input"`
+	UpstreamModelName string                           `json:"upstream_model_name,omitempty"`
+	OriginModelName   string                           `json:"origin_model_name,omitempty"`
 }
 
 func (m *Properties) Scan(val any) error {

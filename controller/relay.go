@@ -67,6 +67,7 @@ func geminiRelayHandler(c *gin.Context, info *relaycommon.RelayInfo) *types.NewA
 }
 
 func Relay(c *gin.Context, relayFormat types.RelayFormat) {
+	common.CaptureRequestParameterSnapshot(c)
 
 	requestId := c.GetString(common.RequestIdKey)
 	//group := common.GetContextKeyString(c, constant.ContextKeyUsingGroup)
@@ -302,6 +303,7 @@ func processChannelError(c *gin.Context, channelError types.ChannelError, err *t
 }
 
 func RelayMidjourney(c *gin.Context) {
+	common.CaptureRequestParameterSnapshot(c)
 	policy := service.RequestPolicy(c)
 	defer func() {
 		if policy.Attempts > 0 && !policy.Successful {
@@ -384,6 +386,7 @@ func RelayNotFound(c *gin.Context) {
 // existing handler while claimed requests enter the generation-pinned
 // host-owned protocol bridge.
 func RelayTaskPluginEndpoint(c *gin.Context, fallback gin.HandlerFunc) {
+	common.CaptureRequestParameterSnapshot(c)
 	pinnedValue, exists := c.Get(pluginruntime.ContextKeyPinnedEndpoint)
 	if !exists {
 		fallback(c)
@@ -432,6 +435,7 @@ type taskSubmissionOutcome struct {
 }
 
 func RelayTask(c *gin.Context) {
+	common.CaptureRequestParameterSnapshot(c)
 	relayInfo, err := relaycommon.GenRelayInfo(c, types.RelayFormatTask, nil, nil)
 	if err != nil {
 		respondTaskSubmissionError(c, &taskdto.TaskError{
@@ -623,6 +627,7 @@ func executeTaskSubmissionWith(
 
 	stage = "insert"
 	task := model.InitTask(result.Platform, relayInfo)
+	task.Properties.RequestParameters = common.GetRequestParameterSnapshot(c)
 	task.PrivateData.Execution = service.TaskExecutionSnapshotFromContext(c)
 	task.PrivateData.UpstreamTaskID = result.UpstreamTaskID
 	task.PrivateData.BillingSource = relayInfo.BillingSource

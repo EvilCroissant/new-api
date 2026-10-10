@@ -281,6 +281,12 @@ func RecordErrorLog(c *gin.Context, userId int, channelId int, modelName string,
 	username := c.GetString("username")
 	requestId := c.GetString(common.RequestIdKey)
 	upstreamRequestId := c.GetString(common.UpstreamRequestIdKey)
+	if other == nil {
+		other = NewLogOther()
+	}
+	if snapshot := common.GetRequestParameterSnapshot(c); snapshot != nil {
+		other.SetPublic("request_parameters", snapshot)
+	}
 	otherStr := other.JSONString()
 	// 判断是否需要记录 IP
 	needRecordIp := false
@@ -346,6 +352,12 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 	upstreamRequestId := c.GetString(common.UpstreamRequestIdKey)
 	createdAt := common.GetTimestamp()
 	other := params.Other
+	if other == nil {
+		other = NewLogOther()
+	}
+	if snapshot := common.GetRequestParameterSnapshot(c); snapshot != nil {
+		other.SetPublic("request_parameters", snapshot)
+	}
 	content := other.setContent(params.Content)
 	otherStr := other.JSONString()
 	// 判断是否需要记录 IP
@@ -381,6 +393,8 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 		UpstreamRequestId: upstreamRequestId,
 		Other:             otherStr,
 	}
+	recordChannelProfit(c, log, other)
+	log.Other = other.JSONString()
 	err := createLog(log)
 	if err != nil {
 		logger.LogError(c, common.LogText("failed to record log: %s", err.Error()))

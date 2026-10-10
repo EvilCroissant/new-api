@@ -69,30 +69,33 @@ type ChannelProfitGroupRatio struct {
 }
 
 type ChannelProfitRow struct {
-	GroupId               string                    `json:"group_id"`
-	ChannelId             int                       `json:"channel_id"`
-	ChannelIds            []int                     `json:"channel_ids"`
-	ChannelNames          []string                  `json:"channel_names"`
-	ChannelName           string                    `json:"channel_name"`
-	BaseURL               string                    `json:"base_url"`
-	Provider              string                    `json:"provider"`
-	Enabled               bool                      `json:"enabled"`
-	SyncIntervalMinutes   int                       `json:"sync_interval_minutes"`
-	LastSyncAttemptAt     int64                     `json:"last_sync_attempt_at"`
-	AccessTokenConfigured bool                      `json:"access_token_configured"`
-	RevenueUSD            float64                   `json:"revenue_usd"`
-	CostUSD               float64                   `json:"cost_usd"`
-	CostAvailable         bool                      `json:"cost_available"`
-	ProfitUSD             float64                   `json:"profit_usd"`
-	ProfitAvailable       bool                      `json:"profit_available"`
-	Margin                float64                   `json:"margin"`
-	MarginAvailable       bool                      `json:"margin_available"`
-	Partial               bool                      `json:"partial"`
-	Status                string                    `json:"status"`
-	LastSyncedAt          int64                     `json:"last_synced_at"`
-	LastError             string                    `json:"last_error"`
-	DownstreamRates       []ChannelProfitGroupRatio `json:"downstream_rates"`
-	Keys                  []ChannelProfitKeySummary `json:"keys"`
+	CostFactor            float64                     `json:"cost_factor"`
+	RequestCostUSD        *float64                    `json:"request_cost_usd"`
+	RequestCoverage       model.ChannelProfitCoverage `json:"request_coverage"`
+	GroupId               string                      `json:"group_id"`
+	ChannelId             int                         `json:"channel_id"`
+	ChannelIds            []int                       `json:"channel_ids"`
+	ChannelNames          []string                    `json:"channel_names"`
+	ChannelName           string                      `json:"channel_name"`
+	BaseURL               string                      `json:"base_url"`
+	Provider              string                      `json:"provider"`
+	Enabled               bool                        `json:"enabled"`
+	SyncIntervalMinutes   int                         `json:"sync_interval_minutes"`
+	LastSyncAttemptAt     int64                       `json:"last_sync_attempt_at"`
+	AccessTokenConfigured bool                        `json:"access_token_configured"`
+	RevenueUSD            float64                     `json:"revenue_usd"`
+	CostUSD               float64                     `json:"cost_usd"`
+	CostAvailable         bool                        `json:"cost_available"`
+	ProfitUSD             float64                     `json:"profit_usd"`
+	ProfitAvailable       bool                        `json:"profit_available"`
+	Margin                float64                     `json:"margin"`
+	MarginAvailable       bool                        `json:"margin_available"`
+	Partial               bool                        `json:"partial"`
+	Status                string                      `json:"status"`
+	LastSyncedAt          int64                       `json:"last_synced_at"`
+	LastError             string                      `json:"last_error"`
+	DownstreamRates       []ChannelProfitGroupRatio   `json:"downstream_rates"`
+	Keys                  []ChannelProfitKeySummary   `json:"keys"`
 }
 
 type ChannelProfitSummary struct {
@@ -117,6 +120,9 @@ type ChannelProfitSyncResult struct {
 }
 
 type ChannelProfitConfigUpdate struct {
+	CostFactor          *float64
+	RequestCostUSD      *float64
+	ClearRequestCost    bool
 	Enabled             *bool
 	DisplayName         *string
 	SyncIntervalMinutes *int
@@ -142,6 +148,8 @@ type channelProfitGroupKey struct {
 }
 
 type channelProfitGroup struct {
+	CostFactor          float64
+	RequestCostUSD      *float64
 	Id                  string
 	BaseURL             string
 	Channels            []*model.Channel
@@ -215,6 +223,12 @@ func SetChannelProfitMonitoring(channelId int, enabled bool) (*model.ChannelProf
 }
 
 func UpdateChannelProfitConfig(channelId int, update ChannelProfitConfigUpdate) (*model.ChannelProfitConfig, error) {
+	if update.CostFactor != nil && (*update.CostFactor <= 0 || *update.CostFactor > 100 || math.IsNaN(*update.CostFactor) || math.IsInf(*update.CostFactor, 0)) {
+		return nil, errors.New("invalid cost factor")
+	}
+	if update.RequestCostUSD != nil && (*update.RequestCostUSD < 0 || *update.RequestCostUSD > 1000000 || math.IsNaN(*update.RequestCostUSD) || math.IsInf(*update.RequestCostUSD, 0)) {
+		return nil, errors.New("invalid request cost")
+	}
 	group, err := getChannelProfitGroup(channelId)
 	if err != nil {
 		return nil, err
@@ -245,6 +259,7 @@ func UpdateChannelProfitConfig(channelId int, update ChannelProfitConfigUpdate) 
 		channelIds = append(channelIds, channel.Id)
 	}
 	configs, err := model.UpdateChannelProfitConfigs(channelIds, model.ChannelProfitConfigUpdate{
+		CostFactor: update.CostFactor, RequestCostUSD: update.RequestCostUSD, ClearRequestCost: update.ClearRequestCost,
 		Enabled:             update.Enabled,
 		DisplayName:         update.DisplayName,
 		SyncIntervalMinutes: update.SyncIntervalMinutes,
@@ -681,6 +696,10 @@ func GetChannelProfitSummary(usageDate string, includeDisabled bool) (*ChannelPr
 			groupSnapshots = append(groupSnapshots, snapshotsByChannel[channel.Id]...)
 		}
 		row := buildChannelProfitGroupRow(group, quotaByChannel, groupSnapshots)
+		row.RequestCoverage, err = model.ChannelProfitRequestCoverage(row.ChannelIds, date.Unix(), date.AddDate(0, 0, 1).Unix())
+		if err != nil {
+			return nil, err
+		}
 		summary.Rows = append(summary.Rows, row)
 		if !group.Enabled {
 			continue
@@ -721,6 +740,7 @@ func buildChannelProfitGroupRow(group *channelProfitGroup, quotaByChannel map[in
 		revenueQuota += quotaByChannel[channel.Id]
 	}
 	row := ChannelProfitRow{
+		CostFactor: group.CostFactor, RequestCostUSD: group.RequestCostUSD,
 		GroupId:               group.Id,
 		ChannelId:             group.Channels[0].Id,
 		ChannelIds:            channelIds,
@@ -863,6 +883,9 @@ func buildChannelProfitGroupRow(group *channelProfitGroup, quotaByChannel map[in
 		key.UpstreamGroup = snapshot.UpstreamGroup
 		key.UpstreamGroupRatio = snapshot.UpstreamGroupRatio
 		key.RatioAvailable = snapshot.RatioAvailable
+		if group.CostFactor > 0 {
+			cost *= group.CostFactor
+		}
 		key.CostUSD = cost
 		key.CostAvailable = costAvailable
 		key.ProfitAvailable = key.RevenueAvailable && key.CostAvailable
@@ -936,6 +959,7 @@ func listChannelProfitGroups() ([]*channelProfitGroup, error) {
 		group := groupByBaseURL[baseURL]
 		if group == nil {
 			group = &channelProfitGroup{
+				CostFactor:          1,
 				BaseURL:             baseURL,
 				SyncIntervalMinutes: channelProfitDefaultIntervalMinutes,
 			}
@@ -954,7 +978,7 @@ func listChannelProfitGroups() ([]*channelProfitGroup, error) {
 			group.Id = group.Id[:16]
 		}
 		group.DisplayName = group.Channels[0].Name
-		intervalConfigured := false
+		settingsConfigured := false
 		for _, channel := range group.Channels {
 			config := configByChannel[channel.Id]
 			if config == nil {
@@ -964,9 +988,15 @@ func listChannelProfitGroups() ([]*channelProfitGroup, error) {
 			if group.DisplayName == group.Channels[0].Name && strings.TrimSpace(config.DisplayName) != "" {
 				group.DisplayName = strings.TrimSpace(config.DisplayName)
 			}
-			if !intervalConfigured && config.SyncIntervalMinutes > 0 {
+			if !settingsConfigured {
+				if config.CostFactor > 0 {
+					group.CostFactor = config.CostFactor
+				}
+				group.RequestCostUSD = config.RequestCostUSD
+				settingsConfigured = true
+			}
+			if config.SyncIntervalMinutes > 0 && group.SyncIntervalMinutes == channelProfitDefaultIntervalMinutes {
 				group.SyncIntervalMinutes = config.SyncIntervalMinutes
-				intervalConfigured = true
 			}
 			if config.LastSyncAttemptAt > group.LastSyncAttemptAt {
 				group.LastSyncAttemptAt = config.LastSyncAttemptAt

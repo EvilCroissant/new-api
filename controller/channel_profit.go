@@ -12,10 +12,13 @@ import (
 )
 
 type channelProfitConfigRequest struct {
-	Enabled             *bool   `json:"enabled"`
-	DisplayName         *string `json:"display_name"`
-	SyncIntervalMinutes *int    `json:"sync_interval_minutes"`
-	AccessToken         *string `json:"access_token"`
+	CostFactor          *float64 `json:"cost_factor"`
+	RequestCostUSD      *float64 `json:"request_cost_usd"`
+	ClearRequestCost    bool     `json:"clear_request_cost"`
+	Enabled             *bool    `json:"enabled"`
+	DisplayName         *string  `json:"display_name"`
+	SyncIntervalMinutes *int     `json:"sync_interval_minutes"`
+	AccessToken         *string  `json:"access_token"`
 }
 
 func GetChannelProfit(c *gin.Context) {
@@ -45,11 +48,12 @@ func UpdateChannelProfitConfig(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	if request.Enabled == nil && request.DisplayName == nil && request.SyncIntervalMinutes == nil && request.AccessToken == nil {
+	if request.Enabled == nil && request.DisplayName == nil && request.SyncIntervalMinutes == nil && request.AccessToken == nil && request.CostFactor == nil && request.RequestCostUSD == nil && !request.ClearRequestCost {
 		common.ApiError(c, errors.New("at least one configuration field is required"))
 		return
 	}
 	config, err := service.UpdateChannelProfitConfig(channelId, service.ChannelProfitConfigUpdate{
+		CostFactor: request.CostFactor, RequestCostUSD: request.RequestCostUSD, ClearRequestCost: request.ClearRequestCost,
 		Enabled:             request.Enabled,
 		DisplayName:         request.DisplayName,
 		SyncIntervalMinutes: request.SyncIntervalMinutes,

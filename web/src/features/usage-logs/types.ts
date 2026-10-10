@@ -128,7 +128,9 @@ export interface ToolSurchargeItem {
 }
 
 export interface LogOtherData {
+  request_parameters?: RequestParameterSnapshot
   admin_info?: {
+    upstream_cost?: RequestUpstreamCost
     request_policy?: PolicyEvent[]
     is_multi_key?: boolean
     multi_key_index?: number
@@ -292,6 +294,20 @@ export interface LogOtherData {
   subscription_total?: number
 }
 
+export interface RequestParameterSnapshot {
+  parameters: Record<string, unknown>
+  content?: Record<string, unknown>
+  omitted?: boolean
+  truncated?: boolean
+}
+
+export interface RequestUpstreamCost {
+  id?: string
+  cost_usd?: number
+  status: 'estimated' | 'unknown'
+  recording_failed?: boolean
+}
+
 /**
  * Log statistics data
  */
@@ -350,6 +366,7 @@ export interface TaskLog {
   progress_message_en?: string
   data?: unknown
   properties?: {
+    request_parameters?: RequestParameterSnapshot
     input?: string
     upstream_model_name?: string
     origin_model_name?: string

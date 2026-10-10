@@ -214,6 +214,9 @@ func appendTaskLogInfo(task *model.Task, other *model.LogOther) {
 	if task == nil || other == nil {
 		return
 	}
+	if task.Properties.RequestParameters != nil {
+		other.SetPublic("request_parameters", task.Properties.RequestParameters)
+	}
 	if task.TaskID != "" {
 		other.SetPublic("task_id", task.TaskID)
 	}

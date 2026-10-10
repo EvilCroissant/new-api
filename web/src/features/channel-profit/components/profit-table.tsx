@@ -391,6 +391,13 @@ export function ProfitTable(props: ProfitTableProps) {
                             })}
                             {pLabel && ` · ${pLabel}`}
                           </p>
+                          {row.request_coverage?.total > 0 && (
+                            <p className='text-muted-foreground mt-1 text-xs'>
+                              {t('Request cost coverage')}:{' '}
+                              {row.request_coverage.estimated}/
+                              {row.request_coverage.total}
+                            </p>
+                          )}
                         </div>
                       </div>
                     </TableCell>

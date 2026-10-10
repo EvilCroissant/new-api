@@ -50,6 +50,12 @@ export function ProfitSettingsDialog(props: ProfitSettingsDialogProps) {
   )
   const [accessToken, setAccessToken] = useState('')
   const [accessTokenChanged, setAccessTokenChanged] = useState(false)
+  const [costFactor, setCostFactor] = useState(
+    String(props.row.cost_factor || 1)
+  )
+  const [requestCost, setRequestCost] = useState(
+    props.row.request_cost_usd == null ? '' : String(props.row.request_cost_usd)
+  )
 
   const parsedInterval = Number(syncInterval)
   const isIntervalValid =
@@ -58,7 +64,17 @@ export function ProfitSettingsDialog(props: ProfitSettingsDialogProps) {
     parsedInterval <= 10080
 
   const isDisplayNameValid = displayName.trim().length > 0
-  const isFormValid = isIntervalValid && isDisplayNameValid
+  const parsedFactor = Number(costFactor)
+  const parsedRequestCost = Number(requestCost)
+  const isFactorValid =
+    Number.isFinite(parsedFactor) && parsedFactor > 0 && parsedFactor <= 100
+  const isRequestCostValid =
+    requestCost === '' ||
+    (Number.isFinite(parsedRequestCost) &&
+      parsedRequestCost >= 0 &&
+      parsedRequestCost <= 1000000)
+  const isFormValid =
+    isIntervalValid && isDisplayNameValid && isFactorValid && isRequestCostValid
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault()
@@ -67,6 +83,10 @@ export function ProfitSettingsDialog(props: ProfitSettingsDialogProps) {
     const input: ChannelProfitConfigInput = {
       display_name: displayName.trim(),
       sync_interval_minutes: parsedInterval,
+      cost_factor: parsedFactor,
+      ...(requestCost === ''
+        ? { clear_request_cost: true }
+        : { request_cost_usd: parsedRequestCost }),
     }
 
     if (accessTokenChanged) {
@@ -94,6 +114,39 @@ export function ProfitSettingsDialog(props: ProfitSettingsDialogProps) {
           </DialogHeader>
 
           <FieldGroup className='my-4 space-y-3.5'>
+            <Field data-invalid={!isFactorValid}>
+              <FieldLabel htmlFor='profit-cost-factor'>
+                {t('Purchase cost factor')}
+              </FieldLabel>
+              <Input
+                id='profit-cost-factor'
+                type='number'
+                min={0.000001}
+                max={100}
+                step='any'
+                value={costFactor}
+                onChange={(event) => setCostFactor(event.target.value)}
+                aria-invalid={!isFactorValid}
+                disabled={props.saving}
+                required
+              />
+            </Field>
+            <Field data-invalid={!isRequestCostValid}>
+              <FieldLabel htmlFor='profit-request-cost'>
+                {t('Fixed request cost (USD)')}
+              </FieldLabel>
+              <Input
+                id='profit-request-cost'
+                type='number'
+                min={0}
+                max={1000000}
+                step='any'
+                value={requestCost}
+                onChange={(event) => setRequestCost(event.target.value)}
+                aria-invalid={!isRequestCostValid}
+                disabled={props.saving}
+              />
+            </Field>
             <Field data-invalid={!isDisplayNameValid}>
               <FieldLabel
                 htmlFor='profit-display-name'

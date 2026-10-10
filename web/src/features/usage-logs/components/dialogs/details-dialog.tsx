@@ -94,6 +94,7 @@ import { USAGE_BILLING_PATH, type LogOtherData } from '../../types'
 import { ResponseModelDetails } from '../model-badge'
 import { PluginAuthorLink } from '../plugin-author-link'
 import { DetailRow, DetailSection } from './log-detail-layout'
+import { RequestParameterDetails } from './request-parameter-details'
 
 // Maps a channel-update changed-field token (as recorded by the backend audit)
 // to its i18n label key for display in the audit details.
@@ -679,6 +680,27 @@ export function DetailsDialog(props: DetailsDialogProps) {
       bodyClassName='pr-2 sm:pr-4'
     >
       <div className='w-full max-w-full min-w-0 space-y-2.5 overflow-x-hidden py-1 sm:space-y-3'>
+        <RequestParameterDetails snapshot={other?.request_parameters} />
+        {props.isAdmin && other?.admin_info?.upstream_cost && (
+          <DetailSection label={t('Per-request upstream cost')}>
+            <DetailRow
+              label={t('Cost status')}
+              value={
+                other.admin_info.upstream_cost.status === 'estimated'
+                  ? t('Estimated cost')
+                  : t('Unknown')
+              }
+            />
+            {other.admin_info.upstream_cost.status === 'estimated' && (
+              <DetailRow
+                label={t('Estimated cost')}
+                value={formatBillingCurrencyFromUSD(
+                  other.admin_info.upstream_cost.cost_usd ?? 0
+                )}
+              />
+            )}
+          </DetailSection>
+        )}
         {/* Overview section - key identifiers */}
         <div className='min-w-0 space-y-1'>
           {props.log.request_id && (

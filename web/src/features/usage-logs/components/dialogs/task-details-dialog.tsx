@@ -31,6 +31,7 @@ import { taskActionMapper, taskStatusMapper } from '../../lib/mappers'
 import { resolveTaskDetailAccess } from '../../lib/task-details'
 import type { TaskLog } from '../../types'
 import { PluginAuthorLink } from '../plugin-author-link'
+import { RequestParameterDetails } from './request-parameter-details'
 
 function DetailRow(props: {
   label: React.ReactNode
@@ -115,6 +116,7 @@ export function TaskDetailsDialog(props: TaskDetailsDialogProps) {
       bodyClassName='pr-2 sm:pr-4'
     >
       <div className='space-y-3'>
+        <RequestParameterDetails snapshot={properties?.request_parameters} />
         <DetailSection label={t('Basic Information')}>
           <DetailRow label={t('Task ID')} value={props.log.task_id} mono />
           <DetailRow label={t('Platform')} value={props.log.platform} mono />

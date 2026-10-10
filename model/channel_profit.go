@@ -7,18 +7,23 @@ import (
 )
 
 type ChannelProfitConfig struct {
-	Id                  int    `json:"id"`
-	ChannelId           int    `json:"channel_id" gorm:"uniqueIndex;not null"`
-	Enabled             bool   `json:"enabled"`
-	DisplayName         string `json:"display_name" gorm:"type:varchar(100)"`
-	SyncIntervalMinutes int    `json:"sync_interval_minutes"`
-	LastSyncAttemptAt   int64  `json:"last_sync_attempt_at" gorm:"bigint;index"`
-	AccessToken         string `json:"-" gorm:"type:text"`
-	CreatedAt           int64  `json:"created_at" gorm:"autoCreateTime"`
-	UpdatedAt           int64  `json:"updated_at" gorm:"autoUpdateTime"`
+	CostFactor          float64  `json:"cost_factor"`
+	RequestCostUSD      *float64 `json:"request_cost_usd"`
+	Id                  int      `json:"id"`
+	ChannelId           int      `json:"channel_id" gorm:"uniqueIndex;not null"`
+	Enabled             bool     `json:"enabled"`
+	DisplayName         string   `json:"display_name" gorm:"type:varchar(100)"`
+	SyncIntervalMinutes int      `json:"sync_interval_minutes"`
+	LastSyncAttemptAt   int64    `json:"last_sync_attempt_at" gorm:"bigint;index"`
+	AccessToken         string   `json:"-" gorm:"type:text"`
+	CreatedAt           int64    `json:"created_at" gorm:"autoCreateTime"`
+	UpdatedAt           int64    `json:"updated_at" gorm:"autoUpdateTime"`
 }
 
 type ChannelProfitConfigUpdate struct {
+	CostFactor          *float64
+	RequestCostUSD      *float64
+	ClearRequestCost    bool
 	Enabled             *bool
 	DisplayName         *string
 	SyncIntervalMinutes *int
@@ -93,6 +98,14 @@ func UpdateChannelProfitConfigs(channelIds []int, update ChannelProfitConfigUpda
 			if update.Enabled != nil {
 				config.Enabled = *update.Enabled
 			}
+			if update.CostFactor != nil {
+				config.CostFactor = *update.CostFactor
+			}
+			if update.ClearRequestCost {
+				config.RequestCostUSD = nil
+			} else if update.RequestCostUSD != nil {
+				config.RequestCostUSD = update.RequestCostUSD
+			}
 			if update.DisplayName != nil {
 				config.DisplayName = *update.DisplayName
 			}
@@ -112,6 +125,12 @@ func UpdateChannelProfitConfigs(channelIds []int, update ChannelProfitConfigUpda
 				}
 			} else {
 				updates := map[string]any{}
+				if update.CostFactor != nil {
+					updates["cost_factor"] = config.CostFactor
+				}
+				if update.RequestCostUSD != nil || update.ClearRequestCost {
+					updates["request_cost_usd"] = config.RequestCostUSD
+				}
 				if update.Enabled != nil {
 					updates["enabled"] = config.Enabled
 				}
@@ -137,6 +156,11 @@ func UpdateChannelProfitConfigs(channelIds []int, update ChannelProfitConfigUpda
 		}
 		return nil
 	})
+	if err == nil {
+		for _, id := range channelIds {
+			InvalidateChannelProfitConfig(id)
+		}
+	}
 	return configs, err
 }
 

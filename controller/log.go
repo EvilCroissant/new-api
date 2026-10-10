@@ -31,6 +31,10 @@ func GetAllLogs(c *gin.Context) {
 	if c.GetInt("role") < common.RoleRootUser {
 		model.FormatAdminLogs(logs)
 	} else {
+		if err := model.RefreshChannelProfitLogCosts(logs); err != nil {
+			common.ApiError(c, err)
+			return
+		}
 		model.FormatRootLogs(logs)
 	}
 	pageInfo.SetTotal(int(total))

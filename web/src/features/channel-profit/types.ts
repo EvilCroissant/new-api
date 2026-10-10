@@ -56,6 +56,15 @@ export type ChannelProfitKey = {
 }
 
 export type ChannelProfitRow = {
+  cost_factor: number
+  request_cost_usd: number | null
+  request_coverage: {
+    total: number
+    estimated: number
+    unknown: number
+    revenue_usd: number
+    cost_usd: number
+  }
   group_id: string
   channel_id: number
   channel_ids: number[]
@@ -83,6 +92,9 @@ export type ChannelProfitRow = {
 }
 
 export type ChannelProfitConfigInput = {
+  cost_factor?: number
+  request_cost_usd?: number
+  clear_request_cost?: boolean
   enabled?: boolean
   display_name?: string
   sync_interval_minutes?: number

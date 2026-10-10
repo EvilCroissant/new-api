@@ -69,6 +69,14 @@ func TestStructuredLogsDatabaseMatrix(t *testing.T) {
 			require.NoError(t, logsDB.Raw(versionQuery).Scan(&version).Error)
 			t.Logf("database version: %s", version)
 			require.NoError(t, usersDB.AutoMigrate(&User{}))
+			for range 2 {
+				require.NoError(t, usersDB.AutoMigrate(&ChannelProfitConfig{}, &ChannelProfitRecord{}))
+			}
+			enabled, costFactor, requestCost := true, 1.5, 0.2
+			_, err = UpdateChannelProfitConfigs([]int{182}, ChannelProfitConfigUpdate{
+				Enabled: &enabled, CostFactor: &costFactor, RequestCostUSD: &requestCost,
+			})
+			require.NoError(t, err)
 			require.NoError(t, usersDB.Create(&User{Id: 910001, Username: "merge-log-user", Setting: "{}"}).Error)
 			require.NoError(t, logsDB.AutoMigrate(&Log{}))
 			legacy := Log{UserId: 910001, Type: LogTypeConsume, Content: "旧日志原文", Other: `{"frt":6600}`, RequestId: "merge-legacy"}
@@ -82,6 +90,7 @@ func TestStructuredLogsDatabaseMatrix(t *testing.T) {
 			c.Request = httptest.NewRequest("POST", "/v1/responses", nil)
 			c.Set("username", "merge-log-user")
 			c.Set(common.RequestIdKey, "merge-structured")
+			CaptureChannelProfitConfig(c, 182)
 			other := NewLogOther()
 			other.SetPublic("frt", 6600)
 			other.SetPublic("stream_status", map[string]any{"status": "error", "end_reason": "client_gone", "end_error": "context canceled", "upstream_error": "at capacity"})
@@ -91,6 +100,14 @@ func TestStructuredLogsDatabaseMatrix(t *testing.T) {
 			var stored Log
 			require.NoError(t, logsDB.Where("request_id = ?", "merge-structured").First(&stored).Error)
 			assert.Contains(t, stored.Other, "frt_optimization")
+			var profitRecord ChannelProfitRecord
+			require.NoError(t, usersDB.Where("request_id = ?", "merge-structured").First(&profitRecord).Error)
+			assert.Equal(t, "estimated", profitRecord.Status)
+			assert.InDelta(t, 0.3, profitRecord.CostUSD, 0.000001)
+			coverage, err := ChannelProfitRequestCoverage([]int{182}, stored.CreatedAt, stored.CreatedAt+1)
+			require.NoError(t, err)
+			assert.EqualValues(t, 1, coverage.Estimated)
+			assert.InDelta(t, 0.3, coverage.CostUSD, 0.000001)
 			rows, total, err := GetUserLogs(910001, LogTypeUnknown, 0, 0, "", "", 0, 10, "", "", "")
 			require.NoError(t, err)
 			require.EqualValues(t, 2, total)
@@ -103,6 +120,11 @@ func TestStructuredLogsDatabaseMatrix(t *testing.T) {
 			assert.EqualValues(t, 6600, public["frt"])
 			assert.Equal(t, "at capacity", public["stream_status"].(map[string]any)["upstream_error"])
 			assert.NotContains(t, public, "admin_info")
+			require.NoError(t, RefreshChannelProfitLogCosts([]*Log{&stored}))
+			var rootOther map[string]any
+			require.NoError(t, common.UnmarshalJsonStr(stored.Other, &rootOther))
+			admin := rootOther["admin_info"].(map[string]any)
+			assert.Equal(t, "estimated", admin["upstream_cost"].(map[string]any)["status"])
 			assert.Equal(t, legacy.Content, rows[1].Content)
 			assert.JSONEq(t, legacy.Other, rows[1].Other)
 		})
