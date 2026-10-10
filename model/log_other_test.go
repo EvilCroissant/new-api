@@ -1,11 +1,113 @@
 package model
 
 import (
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
+	"github.com/gin-gonic/gin"
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/driver/mysql"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
 )
+
+func TestStructuredLogsDatabaseMatrix(t *testing.T) {
+	for _, dialect := range []string{"sqlite", "mysql", "postgres"} {
+		t.Run(dialect, func(t *testing.T) {
+			var driver gorm.Dialector
+			switch dialect {
+			case "sqlite":
+				driver = sqlite.Open(filepath.Join(t.TempDir(), "logs.db"))
+			case "mysql":
+				dsn := os.Getenv("TEST_MYSQL_DSN")
+				if dsn == "" {
+					t.Skip("TEST_MYSQL_DSN not configured")
+				}
+				driver = mysql.Open(dsn)
+			case "postgres":
+				dsn := os.Getenv("TEST_POSTGRES_DSN")
+				if dsn == "" {
+					t.Skip("TEST_POSTGRES_DSN not configured")
+				}
+				driver = postgres.Open(dsn)
+			}
+			logsDB, err := gorm.Open(driver, &gorm.Config{})
+			require.NoError(t, err)
+			// Keep the primary database separate to exercise LOG_SQL_DSN behavior.
+			usersDB, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "users.db")), &gorm.Config{})
+			require.NoError(t, err)
+			previousDB, previousLogDB := DB, LOG_DB
+			previousMainType, previousLogType := common.MainDatabaseType(), common.LogDatabaseType()
+			previousConsume, previousExport, previousRedis := common.LogConsumeEnabled, common.DataExportEnabled, common.RedisEnabled
+			DB, LOG_DB = usersDB, logsDB
+			common.SetMainDatabaseType(common.DatabaseTypeSQLite)
+			common.SetLogDatabaseType(common.DatabaseType(dialect))
+			common.LogConsumeEnabled, common.DataExportEnabled, common.RedisEnabled = true, false, false
+			initCol()
+			t.Cleanup(func() {
+				DB, LOG_DB = previousDB, previousLogDB
+				common.SetMainDatabaseType(previousMainType)
+				common.SetLogDatabaseType(previousLogType)
+				common.LogConsumeEnabled, common.DataExportEnabled, common.RedisEnabled = previousConsume, previousExport, previousRedis
+				initCol()
+				for _, db := range []*gorm.DB{usersDB, logsDB} {
+					sqlDB, err := db.DB()
+					require.NoError(t, err)
+					require.NoError(t, sqlDB.Close())
+				}
+			})
+			var version string
+			versionQuery := "SELECT version()"
+			if dialect == "sqlite" {
+				versionQuery = "SELECT sqlite_version()"
+			}
+			require.NoError(t, logsDB.Raw(versionQuery).Scan(&version).Error)
+			t.Logf("database version: %s", version)
+			require.NoError(t, usersDB.AutoMigrate(&User{}))
+			require.NoError(t, usersDB.Create(&User{Id: 910001, Username: "merge-log-user", Setting: "{}"}).Error)
+			require.NoError(t, logsDB.AutoMigrate(&Log{}))
+			legacy := Log{UserId: 910001, Type: LogTypeConsume, Content: "旧日志原文", Other: `{"frt":6600}`, RequestId: "merge-legacy"}
+			require.NoError(t, logsDB.Create(&legacy).Error)
+			t.Cleanup(func() { require.NoError(t, logsDB.Where("user_id = ?", 910001).Delete(&Log{}).Error) })
+			// The persisted schema is unchanged; existing rows survive repeated startup migrations.
+			for range 2 {
+				require.NoError(t, logsDB.AutoMigrate(&Log{}))
+			}
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest("POST", "/v1/responses", nil)
+			c.Set("username", "merge-log-user")
+			c.Set(common.RequestIdKey, "merge-structured")
+			other := NewLogOther()
+			other.SetPublic("frt", 6600)
+			other.SetPublic("stream_status", map[string]any{"status": "error", "end_reason": "client_gone", "end_error": "context canceled", "upstream_error": "at capacity"})
+			other.SetAdmin("channel_affinity", map[string]any{"frt_optimization": map[string]any{"from_channel_id": 165, "to_channel_id": 182}})
+			RecordConsumeLog(c, 910001, RecordConsumeLogParams{ChannelId: 182, ModelName: "test-model", Quota: 12, Other: other,
+				Content: []*common.Message{common.NewMessage("Model {{model}}", map[string]any{"model": "test-model"})}})
+			var stored Log
+			require.NoError(t, logsDB.Where("request_id = ?", "merge-structured").First(&stored).Error)
+			assert.Contains(t, stored.Other, "frt_optimization")
+			rows, total, err := GetUserLogs(910001, LogTypeUnknown, 0, 0, "", "", 0, 10, "", "", "")
+			require.NoError(t, err)
+			require.EqualValues(t, 2, total)
+			require.Len(t, rows, 2)
+			assert.Equal(t, "Model test-model", rows[0].Content)
+			assert.Equal(t, 12, rows[0].Quota)
+			var public map[string]any
+			require.NoError(t, common.UnmarshalJsonStr(rows[0].Other, &public))
+			assert.Contains(t, public, "content_parts")
+			assert.EqualValues(t, 6600, public["frt"])
+			assert.Equal(t, "at capacity", public["stream_status"].(map[string]any)["upstream_error"])
+			assert.NotContains(t, public, "admin_info")
+			assert.Equal(t, legacy.Content, rows[1].Content)
+			assert.JSONEq(t, legacy.Other, rows[1].Other)
+		})
+	}
+}
 
 func TestLogOtherScopesAndMerges(t *testing.T) {
 	var other LogOther

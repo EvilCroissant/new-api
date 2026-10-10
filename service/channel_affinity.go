@@ -142,7 +142,7 @@ func GetChannelAffinityCacheStats() ChannelAffinityCacheStats {
 
 	keys, err := cache.Keys()
 	if err != nil {
-		common.SysError(fmt.Sprintf("channel affinity cache list keys failed: err=%v", err))
+		common.SysError(common.LogText("channel affinity cache list keys failed: err=%v", err))
 		keys = nil
 	}
 	total := len(keys)
@@ -198,12 +198,12 @@ func ClearChannelAffinityCacheAll() int {
 	cache := getChannelAffinityCache()
 	keys, err := cache.Keys()
 	if err != nil {
-		common.SysError(fmt.Sprintf("channel affinity cache list keys failed: err=%v", err))
+		common.SysError(common.LogText("channel affinity cache list keys failed: err=%v", err))
 		keys = nil
 	}
 	if len(keys) > 0 {
 		if _, err := cache.DeleteMany(keys); err != nil {
-			common.SysError(fmt.Sprintf("channel affinity cache delete many failed: err=%v", err))
+			common.SysError(common.LogText("channel affinity cache delete many failed: err=%v", err))
 		}
 	}
 	return len(keys)
@@ -212,12 +212,12 @@ func ClearChannelAffinityCacheAll() int {
 func ClearChannelAffinityCacheByRuleName(ruleName string) (int, error) {
 	ruleName = strings.TrimSpace(ruleName)
 	if ruleName == "" {
-		return 0, fmt.Errorf("rule_name 不能为空")
+		return 0, common.NewMessage("rule_name cannot be empty")
 	}
 
 	setting := operation_setting.GetChannelAffinitySetting()
 	if setting == nil {
-		return 0, fmt.Errorf("channel_affinity_setting 未初始化")
+		return 0, common.NewMessage("Channel affinity settings are not initialized")
 	}
 
 	var matchedRule *operation_setting.ChannelAffinityRule
@@ -230,10 +230,10 @@ func ClearChannelAffinityCacheByRuleName(ruleName string) (int, error) {
 		break
 	}
 	if matchedRule == nil {
-		return 0, fmt.Errorf("未知规则名称")
+		return 0, common.NewMessage("Unknown rule name")
 	}
 	if !matchedRule.IncludeRuleName {
-		return 0, fmt.Errorf("该规则未启用 include_rule_name，无法按规则清空缓存")
+		return 0, common.NewMessage("This rule does not have include_rule_name enabled, so its cache cannot be cleared by rule")
 	}
 
 	cache := getChannelAffinityCache()
@@ -615,7 +615,7 @@ func GetPreferredChannelByAffinity(c *gin.Context, modelName string, usingGroup 
 
 		affinityState, found, err := getChannelAffinityCache().Get(cacheKeySuffix)
 		if err != nil {
-			common.SysError(fmt.Sprintf("channel affinity cache get failed: key=%s, err=%v", cacheKeyFull, err))
+			common.SysError(common.LogText("channel affinity cache get failed: key=%s, err=%v", cacheKeyFull, err))
 			return 0, false
 		}
 		c.Set(ginKeyChannelAffinityState, channelAffinityRequestState{
@@ -668,7 +668,7 @@ func ClearCurrentChannelAffinityCache(c *gin.Context) bool {
 	if hasState && requestState.Found {
 		deleted, err = deleteChannelAffinityState(cacheKey, requestState.State)
 		if err != nil {
-			common.SysError(fmt.Sprintf("channel affinity cache delete current failed: err=%v", err))
+			common.SysError(common.LogText("channel affinity cache delete current failed: err=%v", err))
 		}
 	}
 	c.Set(ginKeyChannelAffinityState, channelAffinityRequestState{})
