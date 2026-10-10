@@ -120,6 +120,42 @@ describe('security sidebar visibility', () => {
   })
 })
 
+describe('upstream management sidebar entry', () => {
+  it.each([
+    { enabled: true, profit: true, upstream_monitor: false },
+    { enabled: true, profit: false, upstream_monitor: true },
+    { enabled: true, profit: true, upstream_monitor: true },
+  ])(
+    'shows one merged entry when either legacy module is enabled (%j)',
+    (admin) => {
+      const { result } = sidebarFor({ admin })
+      const items = result.current.flatMap((group) => group.items)
+      const entries = items.filter(
+        (item) => item.title === 'Upstream management'
+      )
+      expect(entries).toHaveLength(1)
+      expect(entries[0]).toMatchObject({ url: '/upstream-monitor' })
+      expect(
+        items.some((item) => 'url' in item && item.url === '/profit')
+      ).toBe(false)
+      expect(checkIsActive('/upstream-monitor?tab=profit', entries[0])).toBe(
+        true
+      )
+    }
+  )
+
+  it('hides the merged entry when both legacy modules are disabled', () => {
+    const { result } = sidebarFor({
+      admin: { enabled: true, profit: false, upstream_monitor: false },
+    })
+    expect(
+      result.current
+        .flatMap((group) => group.items)
+        .some((item) => item.title === 'Upstream management')
+    ).toBe(false)
+  })
+})
+
 describe('audit log sidebar entry', () => {
   it('admin settings default Audit Logs to visible and preserve its independent toggle when saved', () => {
     const config = parseSidebarModulesAdmin(

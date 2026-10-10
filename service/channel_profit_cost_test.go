@@ -140,7 +140,7 @@ func TestChannelProfitDatabaseAndReconciliation(t *testing.T) {
 					common.SetMainDatabaseType(common.DatabaseType(dialect))
 					common.SetLogDatabaseType(common.DatabaseTypeSQLite)
 					common.LogConsumeEnabled, common.RedisEnabled, common.DataExportEnabled = true, false, false
-					tables := []any{&model.ChannelProfitConfig{}, &model.ChannelProfitRecord{}, &model.ChannelProfitPricing{}, &model.ChannelProfitKeyState{}, &model.User{}}
+					tables := []any{&model.ChannelProfitConfig{}, &model.ChannelProfitSnapshot{}, &model.ChannelProfitRecord{}, &model.ChannelProfitPricing{}, &model.ChannelProfitKeyState{}, &model.UpstreamMonitor{}, &model.User{}}
 					t.Cleanup(func() {
 						for _, table := range tables {
 							require.NoError(t, db.Migrator().DropTable(table))
@@ -335,7 +335,149 @@ func TestChannelProfitDatabaseAndReconciliation(t *testing.T) {
 					assert.Equal(t, "not_applicable", fixed.Reconciliation)
 					require.NotNil(t, fixed.EstimatedUSD)
 					assert.Zero(t, *fixed.EstimatedUSD)
+					testChannelProfitMonitorIntegration(t, db)
 				})
+			}
+		})
+	}
+}
+
+func testChannelProfitMonitorIntegration(t *testing.T, db *gorm.DB) {
+	for _, tc := range []struct {
+		name         string
+		provider     string
+		missingUnit  bool
+		missingKey   bool
+		logRatio     bool
+		freshMonitor bool
+	}{
+		{name: "monitor credentials and live group ratio", provider: UpstreamMonitorProviderNewAPI},
+		{name: "fresh monitor group snapshot reused after key verification", provider: UpstreamMonitorProviderNewAPI, freshMonitor: true},
+		{name: "missing quota unit still discovers prices and ratio", provider: UpstreamMonitorProviderNewAPI, missingUnit: true},
+		{name: "unrelated account cannot supply ratio", provider: UpstreamMonitorProviderNewAPI, missingKey: true},
+		{name: "logs work without status or account mapping", provider: UpstreamMonitorProviderNewAPI, missingUnit: true, missingKey: true, logRatio: true},
+		{name: "sub2api key billing supplies ratio without newapi endpoints", provider: UpstreamMonitorProviderSub2API},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			key := "integration-key-123456789"
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if r.URL.Path == "/v1/sub2api/billing" {
+					assert.Equal(t, "Bearer "+key, r.Header.Get("Authorization"))
+					fmt.Fprint(w, `{"object":"sub2api.key_billing","group_rate_multiplier":0.07}`)
+					return
+				}
+				if tc.provider == UpstreamMonitorProviderSub2API {
+					t.Errorf("Sub2API must not call New API endpoint %s", r.URL.Path)
+					w.WriteHeader(404)
+					return
+				}
+				if r.URL.Path == "/v1/usage" {
+					assert.Equal(t, "Bearer "+key, r.Header.Get("Authorization"))
+					w.WriteHeader(404)
+					return
+				}
+				if r.URL.Path == "/api/log/token" {
+					assert.Equal(t, "Bearer "+key, r.Header.Get("Authorization"))
+					assert.Empty(t, r.Header.Get("New-Api-User"))
+					if tc.logRatio {
+						fmt.Fprintf(w, `{"success":true,"data":[{"type":2,"created_at":%d,"other":"{\"group_ratio\":0.08}"}]}`, time.Now().Unix())
+					} else {
+						fmt.Fprint(w, `{"success":true,"data":[{"type":2,"quota":1000,"request_id":"integration-request"}]}`)
+					}
+					return
+				}
+				assert.Equal(t, "Bearer monitor-access", r.Header.Get("Authorization"))
+				assert.Equal(t, "42", r.Header.Get("New-Api-User"))
+				switch r.URL.Path {
+				case "/api/status":
+					if tc.missingUnit {
+						w.WriteHeader(503)
+					} else {
+						fmt.Fprint(w, `{"success":true,"data":{"quota_per_unit":"500000"}}`)
+					}
+				case "/api/pricing":
+					fmt.Fprint(w, `{"success":true,"data":[{"model_name":"test-model","quota_type":1,"model_price":0.5}]}`)
+				case "/api/token/":
+					if tc.missingKey {
+						fmt.Fprint(w, `{"success":true,"data":{"items":[],"total":0}}`)
+					} else {
+						fmt.Fprintf(w, `{"success":true,"data":{"items":[{"key":%q,"name":"key-name","group":"upstream-group"}],"total":1}}`, model.MaskTokenKey(key))
+					}
+				case "/api/user/self/groups":
+					if tc.freshMonitor {
+						t.Error("fresh monitor snapshot should supply group ratios")
+					}
+					fmt.Fprint(w, `{"success":true,"data":{"upstream-group":{"ratio":"0.07"},"other-group":{"ratio":0.9}}}`)
+				default:
+					w.WriteHeader(404)
+				}
+			}))
+			defer upstream.Close()
+			monitor := &model.UpstreamMonitor{BaseURL: upstream.URL, Provider: tc.provider, AccessToken: "monitor-access", NewAPIUserID: 42, GroupsJSON: `{"groups":[{"id":"upstream-group","multiplier":0.99}]}`, LastSyncedAt: time.Now().Add(-48 * time.Hour).Unix()}
+			if tc.freshMonitor {
+				monitor.GroupsJSON = `{"groups":[{"id":"upstream-group","multiplier":"0.07"}]}`
+				monitor.LastSyncedAt = time.Now().Unix()
+			}
+			require.NoError(t, model.CreateUpstreamMonitor(monitor))
+			group := &channelProfitGroup{BaseURL: upstream.URL, Keys: []*channelProfitGroupKey{{Value: key, Fingerprint: channelProfitKeyFingerprint(key)}}}
+			siteID := model.ProfitCostSiteID(upstream.URL)
+			pending := model.ChannelProfitRecord{ID: fmt.Sprint(time.Now().UnixNano()), Scope: model.ProfitCostFingerprint(siteID + ":" + model.ProfitCostFingerprint(key)), UpstreamRequestID: "integration-request", Status: "estimated", CostMode: "ratio", CostUSD: 0.04, CostFactor: 1}
+			require.NoError(t, db.Create(&pending).Error)
+			if tc.missingUnit && !tc.missingKey {
+				channel := &model.Channel{Id: 920199}
+				group.Channels = []*model.Channel{channel}
+				group.Keys[0].Owner = channel
+				// Exercise the full scheduler path: daily totals fail, but request
+				// prices and ratios must still be populated for the next relay.
+				synced, failed := syncChannelProfitGroup(context.Background(), group, time.Now().Format("2006-01-02"))
+				assert.Zero(t, synced)
+				assert.Equal(t, 1, failed)
+				var state model.ChannelProfitKeyState
+				require.NoError(t, db.First(&state, "id = ?", pending.Scope).Error)
+				require.NotNil(t, state.Ratio)
+				assert.Equal(t, 0.07, *state.Ratio)
+			}
+			for range 2 {
+				err := syncChannelProfitRequestCosts(context.Background(), group, upstream.Client())
+				if tc.missingUnit {
+					assert.ErrorContains(t, err, "actual request cost reconciliation unavailable")
+				} else {
+					require.NoError(t, err)
+				}
+			}
+			require.NoError(t, db.First(&pending, "id = ?", pending.ID).Error)
+			if tc.missingUnit || tc.provider == UpstreamMonitorProviderSub2API {
+				assert.Equal(t, "estimated", pending.Status)
+				assert.Equal(t, 0.04, pending.CostUSD)
+			} else {
+				assert.Equal(t, "matched", pending.Status)
+				assert.InDelta(t, 0.002, pending.CostUSD, 1e-12)
+			}
+			var state model.ChannelProfitKeyState
+			require.NoError(t, db.Where("id = ?", model.ProfitCostFingerprint(siteID+":"+model.ProfitCostFingerprint(key))).First(&state).Error)
+			if tc.missingKey && !tc.logRatio {
+				assert.Nil(t, state.Ratio, "an account catalogue alone cannot identify this key's group")
+			} else {
+				require.NotNil(t, state.Ratio)
+				want := 0.07
+				if tc.logRatio {
+					want = 0.08
+				}
+				assert.Equal(t, want, *state.Ratio)
+				assert.GreaterOrEqual(t, state.UpdatedAt, time.Now().Unix()-5)
+				var pricing model.ChannelProfitPricing
+				require.NoError(t, db.First(&pricing, "id = ?", siteID).Error)
+				other := model.NewLogOther()
+				other.SetPublic("group_ratio", 0.1)
+				cost, source, reason := estimateChannelProfitCost(&model.ChannelProfitRequestSnapshot{Config: model.ChannelProfitConfig{CostFactor: 1}, Pricing: &pricing, KeyState: &state}, &model.Log{ModelName: "test-model", Quota: 25000}, other)
+				assert.Empty(t, reason)
+				assert.InDelta(t, 0.5*want, cost, 1e-12)
+				if tc.provider == UpstreamMonitorProviderSub2API {
+					assert.Equal(t, "local_ratio_fallback", source)
+				} else {
+					assert.Equal(t, "upstream_pricing", source)
+				}
 			}
 		})
 	}

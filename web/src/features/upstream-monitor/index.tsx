@@ -25,9 +25,12 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { ErrorState } from '@/components/error-state'
-import { SectionPageLayout } from '@/components/layout'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
+import {
+  UpstreamManagementLayout,
+  type UpstreamManagementPageProps,
+} from '@/features/upstream-management/components/upstream-management-layout'
 import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
 
@@ -45,7 +48,7 @@ function getErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback
 }
 
-export function UpstreamMonitorPage() {
+export function UpstreamMonitorPage(props: UpstreamManagementPageProps) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [isAddOpen, setIsAddOpen] = useState(false)
@@ -173,62 +176,55 @@ export function UpstreamMonitorPage() {
     )
   }
 
-  return (
-    <SectionPageLayout>
-      <SectionPageLayout.Title>
-        {t('Upstream monitoring')}
-      </SectionPageLayout.Title>
-      <SectionPageLayout.Actions>
-        <div className='flex items-center gap-2'>
-          <Button
-            type='button'
-            variant='outline'
-            size='sm'
-            onClick={() => monitorQuery.refetch()}
-            disabled={monitorQuery.isFetching}
-          >
-            <HugeiconsIcon
-              icon={RefreshIcon}
-              strokeWidth={2}
-              data-icon='inline-start'
-              className={monitorQuery.isFetching ? 'animate-spin' : undefined}
-              aria-hidden='true'
-            />
-            {t('Refresh')}
-          </Button>
-          {isRoot && (
-            <Button type='button' size='sm' onClick={() => setIsAddOpen(true)}>
-              <HugeiconsIcon
-                icon={Add01Icon}
-                strokeWidth={2}
-                data-icon='inline-start'
-                aria-hidden='true'
-              />
-              {t('Add monitor')}
-            </Button>
-          )}
-        </div>
-      </SectionPageLayout.Actions>
-      <SectionPageLayout.Content>
-        <>
-          <div className='space-y-4'>
-            <p className='text-muted-foreground text-sm'>
-              {t(
-                'Monitor independent upstream account balances and group pricing. Data refreshes automatically every hour.'
-              )}
-            </p>
-            {monitorContent}
-          </div>
-
-          <UpstreamMonitorAddDialog
-            open={isAddOpen}
-            onOpenChange={setIsAddOpen}
-            onCreated={async (_monitor: UpstreamMonitor) => {
-              await refreshMonitors()
-            }}
+  const actions = (
+    <div className='flex items-center gap-2'>
+      <Button
+        type='button'
+        variant='outline'
+        size='sm'
+        onClick={() => monitorQuery.refetch()}
+        disabled={monitorQuery.isFetching}
+      >
+        <HugeiconsIcon
+          icon={RefreshIcon}
+          strokeWidth={2}
+          data-icon='inline-start'
+          className={monitorQuery.isFetching ? 'animate-spin' : undefined}
+          aria-hidden='true'
+        />
+        {t('Refresh')}
+      </Button>
+      {isRoot && (
+        <Button type='button' size='sm' onClick={() => setIsAddOpen(true)}>
+          <HugeiconsIcon
+            icon={Add01Icon}
+            strokeWidth={2}
+            data-icon='inline-start'
+            aria-hidden='true'
           />
-        </>
-      </SectionPageLayout.Content>
-    </SectionPageLayout>
+          {t('Add monitor')}
+        </Button>
+      )}
+    </div>
+  )
+
+  return (
+    <UpstreamManagementLayout
+      tab='accounts'
+      onTabChange={props.onTabChange}
+      actions={actions}
+    >
+      <>
+        <div className='space-y-4'>{monitorContent}</div>
+
+        <UpstreamMonitorAddDialog
+          open={isAddOpen}
+          onOpenChange={setIsAddOpen}
+          onCreated={async (_monitor: UpstreamMonitor) => {
+            await refreshMonitors()
+          }}
+        />
+      </>
+    </UpstreamManagementLayout>
   )
 }

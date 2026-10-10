@@ -19,7 +19,6 @@ For commercial licensing, please contact support@quantumnous.com
 import {
   Activity,
   Box,
-  CircleDollarSign,
   ClipboardList,
   CreditCard,
   FileText,
@@ -166,13 +165,10 @@ export function useSidebarData(): SidebarData {
             icon: Radio,
           },
           {
-            title: t('Profit'),
-            url: '/profit',
-            icon: CircleDollarSign,
-          },
-          {
-            title: t('Upstream monitoring'),
+            title: t('Upstream management'),
             url: '/upstream-monitor',
+            activeUrls: ['/profit'],
+            configUrls: ['/upstream-monitor', '/profit'],
             icon: Radar,
           },
           {

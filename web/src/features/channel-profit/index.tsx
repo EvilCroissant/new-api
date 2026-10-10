@@ -26,11 +26,14 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { ErrorState } from '@/components/error-state'
-import { SectionPageLayout } from '@/components/layout'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
+import {
+  UpstreamManagementLayout,
+  type UpstreamManagementPageProps,
+} from '@/features/upstream-management/components/upstream-management-layout'
 import { formatTimestampRelative } from '@/lib/format'
 import { ROLE } from '@/lib/roles'
 import { cn } from '@/lib/utils'
@@ -54,7 +57,7 @@ function getErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback
 }
 
-export function ChannelProfit() {
+export function ChannelProfit(props: UpstreamManagementPageProps) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [usageDate, setUsageDate] = useState(() => dayjs().format('YYYY-MM-DD'))
@@ -164,125 +167,127 @@ export function ChannelProfit() {
     ? configMutation.variables?.channelId
     : undefined
 
-  return (
-    <SectionPageLayout>
-      <SectionPageLayout.Title>{t('Profit')}</SectionPageLayout.Title>
-      <SectionPageLayout.Actions>
-        <div className='flex flex-wrap items-center gap-2.5'>
-          {summary && (
-            <div className='mr-1 flex items-center gap-2'>
-              {summary.partial && (
-                <Badge variant='warning' className='text-[11px] font-normal'>
-                  {t('Partial data')}
-                </Badge>
-              )}
-              <span className='text-muted-foreground/80 hidden font-mono text-xs sm:inline-block'>
-                {summary.last_synced_at > 0
-                  ? t('Last sync: {{time}}', {
-                      time: formatTimestampRelative(summary.last_synced_at),
-                    })
-                  : t('Not synchronized yet')}
-              </span>
-            </div>
+  const actions = (
+    <div className='flex flex-wrap items-center gap-2.5 max-sm:max-w-[calc(100vw-1.5rem)]'>
+      {summary && (
+        <div className='mr-1 flex items-center gap-2'>
+          {summary.partial && (
+            <Badge variant='warning' className='text-[11px] font-normal'>
+              {t('Partial data')}
+            </Badge>
           )}
-          <Input
-            type='date'
-            value={usageDate}
-            max={todayStr}
-            onChange={(event) => setUsageDate(event.target.value)}
-            className='h-9 w-[140px] font-mono text-xs shadow-2xs'
-            aria-label={t('Usage date')}
-          />
-          {isRoot && (
-            <>
-              <Button
-                type='button'
-                variant='outline'
-                size='sm'
-                className='h-9 shadow-2xs'
-                onClick={() => setSyncSettingsOpen(true)}
-              >
-                <HugeiconsIcon
-                  icon={Settings02Icon}
-                  strokeWidth={2}
-                  data-icon='inline-start'
-                  className='size-3.5'
-                  aria-hidden='true'
-                />
-                {t('Sync settings')}
-              </Button>
-              <Button
-                type='button'
-                variant='outline'
-                size='sm'
-                className='h-9 shadow-2xs'
-                onClick={() => syncMutation.mutate(undefined)}
-                disabled={syncMutation.isPending}
-              >
-                <HugeiconsIcon
-                  icon={RefreshIcon}
-                  strokeWidth={2}
-                  data-icon='inline-start'
-                  className={cn(
-                    'size-3.5',
-                    syncMutation.isPending && 'animate-spin'
-                  )}
-                  aria-hidden='true'
-                />
-                {t('Sync now')}
-              </Button>
-            </>
-          )}
+          <span className='text-muted-foreground/80 hidden font-mono text-xs sm:inline-block'>
+            {summary.last_synced_at > 0
+              ? t('Last sync: {{time}}', {
+                  time: formatTimestampRelative(summary.last_synced_at),
+                })
+              : t('Not synchronized yet')}
+          </span>
         </div>
-      </SectionPageLayout.Actions>
-      <SectionPageLayout.Content>
-        {profitQuery.isLoading && (
-          <div className='space-y-4'>
-            <div className='grid gap-3 sm:grid-cols-2 xl:grid-cols-4'>
-              {['revenue', 'cost', 'profit', 'margin'].map((metric) => (
-                <Skeleton key={metric} className='h-20 rounded-xl' />
-              ))}
-            </div>
-            <Skeleton className='h-[380px] rounded-xl' />
-          </div>
-        )}
-        {!profitQuery.isLoading && (profitQuery.isError || !summary) && (
-          <ErrorState
-            title={t('Could not load profit data')}
-            description={
-              profitQuery.error instanceof Error
-                ? profitQuery.error.message
-                : undefined
-            }
-            onRetry={() => void profitQuery.refetch()}
-          />
-        )}
-        {!profitQuery.isLoading && !profitQuery.isError && summary && (
-          <div className='space-y-4' aria-busy={profitQuery.isFetching}>
-            <ProfitSummaryCards summary={summary} />
-            <ProfitTable
-              rows={summary.rows}
-              isRoot={isRoot}
-              syncingChannelId={syncingChannelId}
-              savingChannelId={savingChannelId}
-              onSync={(channelId) => syncMutation.mutate(channelId)}
-              onSaveSettings={async (channelId, input) => {
-                await configMutation.mutateAsync({ channelId, input })
-              }}
+      )}
+      <Input
+        type='date'
+        value={usageDate}
+        max={todayStr}
+        onChange={(event) => setUsageDate(event.target.value)}
+        className='h-9 w-[140px] font-mono text-xs shadow-2xs'
+        aria-label={t('Usage date')}
+      />
+      {isRoot && (
+        <>
+          <Button
+            type='button'
+            variant='outline'
+            size='sm'
+            className='h-9 shadow-2xs'
+            onClick={() => setSyncSettingsOpen(true)}
+          >
+            <HugeiconsIcon
+              icon={Settings02Icon}
+              strokeWidth={2}
+              data-icon='inline-start'
+              className='size-3.5'
+              aria-hidden='true'
             />
+            {t('Sync settings')}
+          </Button>
+          <Button
+            type='button'
+            variant='outline'
+            size='sm'
+            className='h-9 shadow-2xs'
+            onClick={() => syncMutation.mutate(undefined)}
+            disabled={syncMutation.isPending}
+          >
+            <HugeiconsIcon
+              icon={RefreshIcon}
+              strokeWidth={2}
+              data-icon='inline-start'
+              className={cn(
+                'size-3.5',
+                syncMutation.isPending && 'animate-spin'
+              )}
+              aria-hidden='true'
+            />
+            {t('Sync now')}
+          </Button>
+        </>
+      )}
+    </div>
+  )
+
+  return (
+    <UpstreamManagementLayout
+      tab='profit'
+      onTabChange={props.onTabChange}
+      actions={actions}
+    >
+      {profitQuery.isLoading && (
+        <div className='space-y-4'>
+          <div className='grid gap-3 sm:grid-cols-2 xl:grid-cols-4'>
+            {['revenue', 'cost', 'profit', 'margin'].map((metric) => (
+              <Skeleton key={metric} className='h-20 rounded-xl' />
+            ))}
           </div>
-        )}
-        {syncSettingsOpen && summary && (
-          <SyncMonitoringDialog
+          <Skeleton className='h-[380px] rounded-xl' />
+        </div>
+      )}
+      {!profitQuery.isLoading && (profitQuery.isError || !summary) && (
+        <ErrorState
+          title={t('Could not load profit data')}
+          description={
+            profitQuery.error instanceof Error
+              ? profitQuery.error.message
+              : undefined
+          }
+          onRetry={() => void profitQuery.refetch()}
+        />
+      )}
+      {!profitQuery.isLoading && !profitQuery.isError && summary && (
+        <div className='space-y-4' aria-busy={profitQuery.isFetching}>
+          <ProfitSummaryCards summary={summary} />
+          <ProfitTable
             rows={summary.rows}
-            togglingChannelId={togglingChannelId}
-            onToggle={(channelId, enabled) =>
-              monitoringMutation.mutate({ channelId, enabled })
-            }
-            onClose={() => setSyncSettingsOpen(false)}
+            isRoot={isRoot}
+            syncingChannelId={syncingChannelId}
+            savingChannelId={savingChannelId}
+            onSync={(channelId) => syncMutation.mutate(channelId)}
+            onSaveSettings={async (channelId, input) => {
+              await configMutation.mutateAsync({ channelId, input })
+            }}
           />
-        )}
-      </SectionPageLayout.Content>
-    </SectionPageLayout>
+        </div>
+      )}
+      {syncSettingsOpen && summary && (
+        <SyncMonitoringDialog
+          rows={summary.rows}
+          togglingChannelId={togglingChannelId}
+          onToggle={(channelId, enabled) =>
+            monitoringMutation.mutate({ channelId, enabled })
+          }
+          onClose={() => setSyncSettingsOpen(false)}
+        />
+      )}
+    </UpstreamManagementLayout>
   )
 }

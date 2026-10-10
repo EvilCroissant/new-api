@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -416,8 +417,19 @@ func syncChannelProfitGroup(ctx context.Context, group *channelProfitGroup, usag
 	for _, key := range group.Keys {
 		keyValues = append(keyValues, key.Value)
 	}
+	client, _, err = channelProfitMonitorClient(group, client)
+	if err != nil {
+		for _, key := range group.Keys {
+			saveChannelProfitFailure(key.Owner.Id, usageDate, key.Value, err)
+		}
+		return 0, len(group.Keys)
+	}
 	backend, err := detectChannelProfitBackend(ctx, client, group.BaseURL, keyValues, usageDate)
 	if err != nil {
+		// Pricing/ratio discovery does not require the quota unit used by daily totals.
+		if costErr := syncChannelProfitRequestCosts(ctx, group, client); costErr != nil {
+			common.SysError("channel request cost sync: " + costErr.Error())
+		}
 		for _, key := range group.Keys {
 			saveChannelProfitFailure(key.Owner.Id, usageDate, key.Value, err)
 		}
@@ -1269,14 +1281,11 @@ func detectChannelProfitBackend(
 }
 
 func fetchChannelProfitQuotaPerUnit(ctx context.Context, client *http.Client, baseURL string) (float64, error) {
-	response := channelProfitStatusResponse{}
+	var response json.RawMessage
 	if err := fetchChannelProfitJSON(ctx, client, baseURL+"/api/status", "", &response); err != nil {
 		return 0, err
 	}
-	if !response.Success || response.Data.QuotaPerUnit <= 0 || math.IsNaN(response.Data.QuotaPerUnit) || math.IsInf(response.Data.QuotaPerUnit, 0) {
-		return 0, fmt.Errorf("upstream status did not return a valid quota_per_unit: %s", response.Message)
-	}
-	return response.Data.QuotaPerUnit, nil
+	return parseNewAPIQuotaPerUnit(response)
 }
 
 func fetchChannelProfitUsage(ctx context.Context, client *http.Client, baseURL string, key string) (int64, error) {
@@ -1327,6 +1336,7 @@ func fetchChannelProfitNewAPIMetadata(
 	baseURL string,
 	accessToken string,
 	keys []*channelProfitGroupKey,
+	monitors ...*model.UpstreamMonitor,
 ) (map[string]channelProfitNewAPIKeyMetadata, map[string]float64, error) {
 	keysByMask := make(map[string][]*channelProfitGroupKey, len(keys)*2)
 	for _, key := range keys {
@@ -1401,6 +1411,24 @@ func fetchChannelProfitNewAPIMetadata(
 			return nil, nil, fmt.Errorf("upstream API key name %q is duplicated and cannot be billed independently", metadata.Name)
 		}
 		nameOwner[metadata.Name] = fingerprint
+	}
+	if len(monitors) > 0 && monitors[0] != nil {
+		monitor := monitors[0]
+		age := time.Now().Unix() - monitor.LastSyncedAt
+		if monitor.Provider == UpstreamMonitorProviderNewAPI && model.ProfitCostSiteID(monitor.BaseURL) == model.ProfitCostSiteID(baseURL) && monitor.AccessToken == accessToken && monitor.LastError == "" && monitor.LastSyncedAt > 0 && age >= 0 && age <= 900 {
+			var snapshot upstreamMonitorGroupSnapshot
+			if common.UnmarshalJsonStr(monitor.GroupsJSON, &snapshot) == nil {
+				ratios := make(map[string]float64, len(snapshot.Groups))
+				for _, group := range snapshot.Groups {
+					if ratio, ok := upstreamMonitorNumber(group.Multiplier); ok && ratio >= 0 {
+						ratios[group.ID] = ratio
+					}
+				}
+				if len(ratios) > 0 {
+					return metadataByKey, ratios, nil
+				}
+			}
+		}
 	}
 
 	groupResponse := channelProfitNewAPIGroupResponse{}

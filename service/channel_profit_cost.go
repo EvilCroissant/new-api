@@ -12,7 +12,9 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"net/url"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -184,9 +186,61 @@ type channelProfitTokenLogs struct {
 	Err     error
 }
 
+// Monitor credentials belong to one upstream account. Only send them to that
+// site, and never replace the API key used for token-scoped usage or logs.
+type channelProfitMonitorTransport struct {
+	base    http.RoundTripper
+	monitor *model.UpstreamMonitor
+}
+
+func (transport channelProfitMonitorTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	monitor := transport.monitor
+	baseURL, err := url.Parse(monitor.BaseURL)
+	if err == nil && strings.EqualFold(request.URL.Scheme, baseURL.Scheme) && strings.EqualFold(request.URL.Host, baseURL.Host) && strings.HasPrefix(request.URL.Path, strings.TrimRight(baseURL.Path, "/")+"/") {
+		auth := request.Header.Get("Authorization")
+		path := strings.TrimPrefix(request.URL.Path, strings.TrimRight(baseURL.Path, "/"))
+		if monitor.AccessToken != "" && monitor.NewAPIUserID > 0 && (auth == "Bearer "+monitor.AccessToken || (auth == "" && (path == "/api/status" || path == "/api/pricing"))) {
+			request = request.Clone(request.Context())
+			request.Header.Set("Authorization", "Bearer "+monitor.AccessToken)
+			request.Header.Set("New-Api-User", fmt.Sprint(monitor.NewAPIUserID))
+		}
+	}
+	return transport.base.RoundTrip(request)
+}
+
+func channelProfitMonitorClient(group *channelProfitGroup, client *http.Client) (*http.Client, *model.UpstreamMonitor, error) {
+	monitors, err := model.ListUpstreamMonitors()
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, monitor := range monitors {
+		if model.ProfitCostSiteID(monitor.BaseURL) != model.ProfitCostSiteID(group.BaseURL) {
+			continue
+		}
+		if monitor.Provider != UpstreamMonitorProviderNewAPI {
+			return client, monitor, nil
+		}
+		if group.AccessToken == "" {
+			group.AccessToken = strings.TrimSpace(monitor.AccessToken)
+		}
+		copyClient := *client
+		base := client.Transport
+		if base == nil {
+			base = http.DefaultTransport
+		}
+		copyClient.Transport = channelProfitMonitorTransport{base: base, monitor: monitor}
+		return &copyClient, monitor, nil
+	}
+	return client, nil, nil
+}
+
 // Poll token-scoped logs, never an account-wide log stream that could attribute
 // another key's request to this channel. Daily snapshots remain independent.
 func syncChannelProfitRequestCosts(ctx context.Context, group *channelProfitGroup, client *http.Client) error {
+	client, monitor, err := channelProfitMonitorClient(group, client)
+	if err != nil {
+		return err
+	}
 	group.CostLogs = make(map[string]channelProfitTokenLogs, len(group.Keys))
 	siteID := model.ProfitCostSiteID(group.BaseURL)
 	pricing := model.ChannelProfitPricing{ID: siteID}
@@ -195,77 +249,108 @@ func syncChannelProfitRequestCosts(ctx context.Context, group *channelProfitGrou
 	}
 	now := time.Now().Unix()
 	var syncErr error
-	if pricing.QuotaPerUnit <= 0 && pricing.LastError != "" && now-pricing.LastAttemptAt < 300 {
-		return errors.New(pricing.LastError)
-	}
-	if pricing.UpdatedAt == 0 || now-pricing.UpdatedAt >= 300 {
-		pricing.LastAttemptAt = now
-		qpu, err := fetchChannelProfitQuotaPerUnit(ctx, client, group.BaseURL)
-		if err == nil {
-			var response struct {
-				Success bool              `json:"success"`
-				Data    []json.RawMessage `json:"data"`
+	if monitor != nil && monitor.Provider == UpstreamMonitorProviderSub2API {
+		for _, key := range group.Keys {
+			scope := model.ProfitCostFingerprint(siteID + ":" + model.ProfitCostFingerprint(key.Value))
+			state := model.ChannelProfitKeyState{ID: scope, SiteID: siteID}
+			if err := model.DB.Where("id = ?", scope).Limit(1).Find(&state).Error; err != nil {
+				return err
 			}
-			err = fetchChannelProfitJSON(ctx, client, group.BaseURL+"/api/pricing", "", &response)
-			if err == nil && !response.Success {
-				err = errors.New("upstream pricing unavailable")
+			_, ratio, available, ratioErr := fetchChannelProfitSub2APIGroup(ctx, client, group.BaseURL, key.Value)
+			if available {
+				state.Ratio, state.UpdatedAt = &ratio, now
+			} else if ratioErr == nil {
+				ratioErr = errors.New("upstream key group ratio unavailable")
 			}
-			if err == nil {
-				prices := map[string]model.Pricing{}
-				for _, raw := range response.Data {
-					var price model.Pricing
-					var fields map[string]json.RawMessage
-					if common.Unmarshal(raw, &price) != nil || common.Unmarshal(raw, &fields) != nil || price.ModelName == "" {
-						continue
-					}
-					// An omitted price is not a free model. Preserve explicit zero only.
-					if price.BillingMode != "tiered_expr" {
-						required := []string{"quota_type", "model_ratio", "completion_ratio"}
-						if price.QuotaType == 1 {
-							required = []string{"quota_type", "model_price"}
-						}
-						complete := true
-						for _, field := range required {
-							if len(fields[field]) == 0 || string(fields[field]) == "null" {
-								complete = false
-							}
-						}
-						if !complete {
-							continue
-						}
-					}
-					prices[price.ModelName] = price
-				}
-				data, encodeErr := common.Marshal(prices)
-				err = encodeErr
-				if err == nil {
-					pricing.PricingJSON = string(data)
-					pricing.QuotaPerUnit = qpu
-					pricing.UpdatedAt = now
-				}
+			state.LastError = errorText(ratioErr)
+			if err := model.SaveChannelProfitKeyState(&state); err != nil {
+				return err
 			}
-			// The quota unit is sufficient for exact reconciliation even if pricing
-			// discovery is unavailable (e.g. upstream hides its public price table).
-			if qpu > 0 {
-				pricing.QuotaPerUnit = qpu
-			}
+			syncErr = errors.Join(syncErr, ratioErr)
 		}
-		if err != nil {
-			syncErr = errors.New("upstream pricing synchronization failed")
-		}
-	}
-	if pricing.QuotaPerUnit <= 0 {
-		pricing.LastError = "upstream pricing and quota unit unavailable"
+		pricing.LastError = errorText(syncErr)
 		if err := model.SaveChannelProfitPricing(&pricing); err != nil {
 			return err
 		}
-		return errors.New(pricing.LastError)
+		return syncErr
+	}
+	if now-pricing.LastAttemptAt >= 300 {
+		pricing.LastAttemptAt = now
+		qpu, quotaErr := fetchChannelProfitQuotaPerUnit(ctx, client, group.BaseURL)
+		if quotaErr == nil {
+			pricing.QuotaPerUnit = qpu
+		}
+		var response struct {
+			Success bool              `json:"success"`
+			Data    []json.RawMessage `json:"data"`
+		}
+		err := fetchChannelProfitJSON(ctx, client, group.BaseURL+"/api/pricing", "", &response)
+		if err == nil && !response.Success {
+			err = errors.New("upstream pricing unavailable")
+		}
+		if err == nil {
+			prices := map[string]model.Pricing{}
+			for _, raw := range response.Data {
+				var price model.Pricing
+				var fields map[string]json.RawMessage
+				if common.Unmarshal(raw, &price) != nil || common.Unmarshal(raw, &fields) != nil || price.ModelName == "" {
+					continue
+				}
+				// An omitted price is not a free model. Preserve explicit zero only.
+				if price.BillingMode != "tiered_expr" {
+					required := []string{"quota_type", "model_ratio", "completion_ratio"}
+					if price.QuotaType == 1 {
+						required = []string{"quota_type", "model_price"}
+					}
+					complete := true
+					for _, field := range required {
+						if len(fields[field]) == 0 || string(fields[field]) == "null" {
+							complete = false
+						}
+					}
+					if !complete {
+						continue
+					}
+				}
+				prices[price.ModelName] = price
+			}
+			data, encodeErr := common.Marshal(prices)
+			err = encodeErr
+			if err == nil {
+				pricing.PricingJSON = string(data)
+				pricing.UpdatedAt = now
+			}
+		}
+		if err != nil {
+			syncErr = errors.New("upstream model pricing unavailable; ratio fallback estimates only")
+		}
+	}
+	if pricing.QuotaPerUnit <= 0 {
+		syncErr = errors.Join(syncErr, errors.New("upstream quota unit unavailable; actual request cost reconciliation unavailable"))
+	}
+	if pricing.PricingJSON == "" && syncErr == nil {
+		syncErr = errors.New("upstream model pricing unavailable; ratio fallback estimates only")
+	}
+	metadata := map[string]channelProfitNewAPIKeyMetadata{}
+	ratios := map[string]float64{}
+	if group.AccessToken != "" {
+		metadata, ratios, err = fetchChannelProfitNewAPIMetadata(ctx, client, group.BaseURL, group.AccessToken, group.Keys, monitor)
+		if err != nil {
+			metadata, ratios = nil, nil
+		}
 	}
 	for _, key := range group.Keys {
 		scope := model.ProfitCostFingerprint(siteID + ":" + model.ProfitCostFingerprint(key.Value))
 		state := model.ChannelProfitKeyState{ID: scope, SiteID: siteID}
 		if err := model.DB.Where("id = ?", scope).Limit(1).Find(&state).Error; err != nil {
 			return err
+		}
+		// The account endpoint verifies the key's group before using its ratio.
+		// It also refreshes idle keys without pretending an old log is fresh.
+		if info, ok := metadata[key.Fingerprint]; ok && info.Group != "auto" {
+			if ratio, ok := ratios[info.Group]; ok {
+				state.Ratio, state.UpdatedAt = &ratio, now
+			}
 		}
 		var response struct {
 			Success bool                   `json:"success"`
@@ -295,7 +380,7 @@ func syncChannelProfitRequestCosts(ctx context.Context, group *channelProfitGrou
 			if special, valid := profitNumber(other["user_group_ratio"]); valid {
 				ratio, ok = special, true
 			}
-			if ok {
+			if ok && entry.CreatedAt >= state.UpdatedAt {
 				state.Ratio = &ratio
 				state.UpdatedAt = entry.CreatedAt
 				latest = entry.CreatedAt
@@ -303,6 +388,9 @@ func syncChannelProfitRequestCosts(ctx context.Context, group *channelProfitGrou
 		}
 		if err := model.SaveChannelProfitKeyState(&state); err != nil {
 			return err
+		}
+		if pricing.QuotaPerUnit <= 0 {
+			continue
 		}
 		// Conflicting duplicate IDs are not safe to reconcile.
 		charges := map[string]float64{}

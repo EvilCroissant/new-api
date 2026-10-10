@@ -147,11 +147,11 @@ export function SidebarModulesSection({
         description: t('Configure upstream providers and routing.'),
       },
       profit: {
-        title: t('Profit'),
+        title: t('Channel profit'),
         description: t('Compare downstream revenue with upstream costs.'),
       },
       upstream_monitor: {
-        title: t('Upstream monitoring'),
+        title: t('Account monitoring'),
         description: t(
           'Monitor independent upstream account balances, groups, and pricing.'
         ),

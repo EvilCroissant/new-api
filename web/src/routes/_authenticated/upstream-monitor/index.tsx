@@ -18,12 +18,16 @@ For commercial licensing, please contact support@quantumnous.com
 */
 
 import { createFileRoute, redirect } from '@tanstack/react-router'
+import { z } from 'zod'
 
-import { UpstreamMonitorPage } from '@/features/upstream-monitor'
+import { UpstreamManagementPage } from '@/features/upstream-management'
 import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
 
 export const Route = createFileRoute('/_authenticated/upstream-monitor/')({
+  validateSearch: z.object({
+    tab: z.enum(['accounts', 'profit']).catch('accounts'),
+  }),
   beforeLoad: () => {
     const { auth } = useAuthStore.getState()
 
@@ -31,5 +35,17 @@ export const Route = createFileRoute('/_authenticated/upstream-monitor/')({
       throw redirect({ to: '/403' })
     }
   },
-  component: UpstreamMonitorPage,
+  component: UpstreamManagementRoute,
 })
+
+function UpstreamManagementRoute() {
+  const { tab } = Route.useSearch()
+  const navigate = Route.useNavigate()
+
+  return (
+    <UpstreamManagementPage
+      tab={tab}
+      onTabChange={(nextTab) => void navigate({ search: { tab: nextTab } })}
+    />
+  )
+}
