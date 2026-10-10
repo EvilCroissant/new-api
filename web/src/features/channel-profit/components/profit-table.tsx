@@ -40,6 +40,11 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
+import type {
+  UpstreamMonitor,
+  UpstreamMonitorProvider,
+  UpstreamMonitorUpdateInput,
+} from '@/features/upstream-monitor/types'
 import { formatBillingCurrencyFromUSD } from '@/lib/currency'
 import { formatNumber } from '@/lib/format'
 import { cn } from '@/lib/utils'
@@ -71,13 +76,15 @@ const PROVIDER_LABELS: Partial<Record<ChannelProfitProvider, string>> = {
 
 type ProfitTableProps = {
   rows: ChannelProfitRow[]
+  monitors?: Record<number, UpstreamMonitor>
   isRoot: boolean
   syncingChannelId?: number
   savingChannelId?: number
   onSync: (channelId: number) => void
   onSaveSettings: (
     channelId: number,
-    input: ChannelProfitConfigInput
+    input: ChannelProfitConfigInput,
+    account?: UpstreamMonitorUpdateInput & { provider: UpstreamMonitorProvider }
   ) => Promise<void>
 }
 
@@ -287,6 +294,7 @@ export function ProfitTable(props: ProfitTableProps) {
           </TableHeader>
           <TableBody>
             {props.rows.map((row) => {
+              const monitor = props.monitors?.[row.channel_id]
               const expanded = expandedGroups.has(row.group_id)
               const pLabel = providerLabel(row.provider)
               const isSyncing = props.syncingChannelId === row.channel_id
@@ -330,18 +338,50 @@ export function ProfitTable(props: ProfitTableProps) {
                         </Button>
                         <div className='min-w-0'>
                           <div className='flex min-w-0 items-center gap-1'>
-                            <p className='text-foreground/90 min-w-0 truncate text-sm font-semibold'>
-                              {row.channel_name}
-                            </p>
-                            {props.isRoot && (
+                            {props.isRoot ? (
                               <Button
                                 type='button'
-                                variant='ghost'
-                                size='xs'
+                                variant='link'
+                                className='text-foreground/90 hover:text-primary h-auto min-w-0 shrink justify-start p-0 text-left text-sm font-semibold'
                                 onClick={() => setSettingsRow(row)}
+                                aria-label={t('Settings')}
                               >
-                                {t('Settings')}
+                                <span className='truncate'>
+                                  {row.channel_name}
+                                </span>
                               </Button>
+                            ) : (
+                              <p className='text-foreground/90 min-w-0 truncate text-sm font-semibold'>
+                                {row.channel_name}
+                              </p>
+                            )}
+                            {monitor && (
+                              <Tooltip>
+                                <TooltipTrigger
+                                  render={
+                                    <span
+                                      tabIndex={0}
+                                      className={cn(
+                                        'shrink-0 text-xs tabular-nums',
+                                        monitor.last_error
+                                          ? 'text-warning'
+                                          : 'text-muted-foreground'
+                                      )}
+                                      aria-label={t('Available balance')}
+                                    />
+                                  }
+                                >
+                                  {monitor.balance_available
+                                    ? formatBillingCurrencyFromUSD(
+                                        monitor.balance_usd,
+                                        { digitsSmall: 6, digitsLarge: 2 }
+                                      )
+                                    : '-'}
+                                </TooltipTrigger>
+                                <TooltipContent className='max-w-sm break-words'>
+                                  {monitor.last_error || t('Available balance')}
+                                </TooltipContent>
+                              </Tooltip>
                             )}
                             {props.isRoot && (
                               <Tooltip>
@@ -405,9 +445,6 @@ export function ProfitTable(props: ProfitTableProps) {
                                   row.request_coverage.estimated
                               )}
                               /{formatNumber(row.request_coverage.total)}
-                              {' · '}
-                              {t('Reconciled')}:{' '}
-                              {formatNumber(row.request_coverage.matched)}
                               {' · '}
                               {t('Estimated cost')}:{' '}
                               {formatNumber(row.request_coverage.estimated)}
@@ -487,6 +524,7 @@ export function ProfitTable(props: ProfitTableProps) {
       </div>
       {settingsRow && (
         <ProfitSettingsDialog
+          monitor={props.monitors?.[settingsRow.channel_id]}
           key={settingsRow.group_id}
           row={settingsRow}
           saving={props.savingChannelId === settingsRow.channel_id}

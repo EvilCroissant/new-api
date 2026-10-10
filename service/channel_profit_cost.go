@@ -1,9 +1,9 @@
 package service
 
-// Adapted from the cost-estimation/reconciliation design in
+// Adapted from the cost-estimation design in
 // atelier-of-dongn/YMeng-CC-New-API (ip-policy, AGPL-3.0).
 // This integration keeps request-time configuration snapshots and never treats
-// an estimate, missing usage or an unmatched upstream request as an actual cost.
+// an estimate or missing usage as an actual cost.
 
 import (
 	"context"
@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -117,7 +118,7 @@ func channelProfitUsageCost(pricing model.Pricing, qpu float64, log *model.Log, 
 		usage.ClaudeCacheCreation5mTokens = max(counts["cache_creation_tokens_5m"], totalWrite-usage.ClaudeCacheCreation1hTokens)
 	}
 	// These legacy log fields do not carry a complete multimodal usage contract.
-	// Keep their cost unknown until an exact upstream charge is available.
+	// Keep their cost unknown rather than estimating from incomplete facts.
 	if counts["image_output"] > 0 || counts["image_cache_tokens"] > 0 || counts["audio_input_token_count"] > 0 || values["audio"] != nil {
 		return 0, "usage_unsupported"
 	}
@@ -172,13 +173,11 @@ func channelProfitUsageCost(pricing model.Pricing, qpu float64, log *model.Log, 
 }
 
 type channelProfitCostLog struct {
-	TokenName string   `json:"token_name"`
-	Group     string   `json:"group"`
-	RequestID string   `json:"request_id"`
-	Type      int      `json:"type"`
-	Quota     *float64 `json:"quota"`
-	CreatedAt int64    `json:"created_at"`
-	Other     string   `json:"other"`
+	TokenName string `json:"token_name"`
+	Group     string `json:"group"`
+	Type      int    `json:"type"`
+	CreatedAt int64  `json:"created_at"`
+	Other     string `json:"other"`
 }
 
 type channelProfitTokenLogs struct {
@@ -220,9 +219,7 @@ func channelProfitMonitorClient(group *channelProfitGroup, client *http.Client) 
 		if monitor.Provider != UpstreamMonitorProviderNewAPI {
 			return client, monitor, nil
 		}
-		if group.AccessToken == "" {
-			group.AccessToken = strings.TrimSpace(monitor.AccessToken)
-		}
+		group.AccessToken = strings.TrimSpace(monitor.AccessToken)
 		copyClient := *client
 		base := client.Transport
 		if base == nil {
@@ -234,9 +231,9 @@ func channelProfitMonitorClient(group *channelProfitGroup, client *http.Client) 
 	return client, nil, nil
 }
 
-// Poll token-scoped logs, never an account-wide log stream that could attribute
-// another key's request to this channel. Daily snapshots remain independent.
-func syncChannelProfitRequestCosts(ctx context.Context, group *channelProfitGroup, client *http.Client) error {
+// Account logs are scoped to a uniquely verified key name; API-key logs remain
+// the fallback when account metadata cannot identify the local key safely.
+func syncChannelProfitRequestCosts(ctx context.Context, group *channelProfitGroup, client *http.Client, providers ...string) error {
 	client, monitor, err := channelProfitMonitorClient(group, client)
 	if err != nil {
 		return err
@@ -249,7 +246,11 @@ func syncChannelProfitRequestCosts(ctx context.Context, group *channelProfitGrou
 	}
 	now := time.Now().Unix()
 	var syncErr error
-	if monitor != nil && monitor.Provider == UpstreamMonitorProviderSub2API {
+	isSub2API := monitor != nil && monitor.Provider == UpstreamMonitorProviderSub2API
+	if monitor == nil && len(providers) > 0 {
+		isSub2API = providers[0] == channelProfitProviderSub2API
+	}
+	if isSub2API {
 		for _, key := range group.Keys {
 			scope := model.ProfitCostFingerprint(siteID + ":" + model.ProfitCostFingerprint(key.Value))
 			state := model.ChannelProfitKeyState{ID: scope, SiteID: siteID}
@@ -322,11 +323,8 @@ func syncChannelProfitRequestCosts(ctx context.Context, group *channelProfitGrou
 			}
 		}
 		if err != nil {
-			syncErr = errors.New("upstream model pricing unavailable; ratio fallback estimates only")
+			syncErr = fmt.Errorf("upstream model pricing unavailable; ratio fallback estimates only: %w", err)
 		}
-	}
-	if pricing.QuotaPerUnit <= 0 {
-		syncErr = errors.Join(syncErr, errors.New("upstream quota unit unavailable; actual request cost reconciliation unavailable"))
 	}
 	if pricing.PricingJSON == "" && syncErr == nil {
 		syncErr = errors.New("upstream model pricing unavailable; ratio fallback estimates only")
@@ -336,7 +334,7 @@ func syncChannelProfitRequestCosts(ctx context.Context, group *channelProfitGrou
 	if group.AccessToken != "" {
 		metadata, ratios, err = fetchChannelProfitNewAPIMetadata(ctx, client, group.BaseURL, group.AccessToken, group.Keys, monitor)
 		if err != nil {
-			metadata, ratios = nil, nil
+			ratios = nil
 		}
 	}
 	for _, key := range group.Keys {
@@ -350,25 +348,27 @@ func syncChannelProfitRequestCosts(ctx context.Context, group *channelProfitGrou
 		if info, ok := metadata[key.Fingerprint]; ok && info.Group != "auto" {
 			if ratio, ok := ratios[info.Group]; ok {
 				state.Ratio, state.UpdatedAt = &ratio, now
+				state.LastError = ""
+				if err := model.SaveChannelProfitKeyState(&state); err != nil {
+					return err
+				}
+				continue
 			}
 		}
-		var response struct {
-			Success bool                   `json:"success"`
-			Data    []channelProfitCostLog `json:"data"`
-		}
-		if err := fetchChannelProfitJSON(ctx, client, group.BaseURL+"/api/log/token", key.Value, &response); err != nil || !response.Success {
-			state.LastError = "upstream request logs unavailable"
-			group.CostLogs[key.Value] = channelProfitTokenLogs{Err: errors.New(state.LastError)}
+		entries, logErr := fetchChannelProfitRequestLogs(ctx, client, group, key, metadata[key.Fingerprint].Name)
+		if logErr != nil {
+			state.LastError = logErr.Error()
+			group.CostLogs[key.Value] = channelProfitTokenLogs{Err: logErr}
 			if err := model.SaveChannelProfitKeyState(&state); err != nil {
 				return err
 			}
-			syncErr = errors.New(state.LastError)
+			syncErr = errors.Join(syncErr, logErr)
 			continue
 		}
-		group.CostLogs[key.Value] = channelProfitTokenLogs{Entries: response.Data}
+		group.CostLogs[key.Value] = channelProfitTokenLogs{Entries: entries}
 		state.LastError = ""
 		latest := int64(-1)
-		for _, entry := range response.Data {
+		for _, entry := range entries {
 			if entry.Type != model.LogTypeConsume || entry.CreatedAt < latest {
 				continue
 			}
@@ -389,38 +389,70 @@ func syncChannelProfitRequestCosts(ctx context.Context, group *channelProfitGrou
 		if err := model.SaveChannelProfitKeyState(&state); err != nil {
 			return err
 		}
-		if pricing.QuotaPerUnit <= 0 {
-			continue
-		}
-		// Conflicting duplicate IDs are not safe to reconcile.
-		charges := map[string]float64{}
-		conflicts := map[string]bool{}
-		for _, entry := range response.Data {
-			if entry.Type != model.LogTypeConsume || entry.RequestID == "" || entry.Quota == nil {
-				continue
-			}
-			quota, valid := profitNumber(*entry.Quota)
-			if !valid {
-				continue
-			}
-			if previous, ok := charges[entry.RequestID]; ok && previous != quota {
-				conflicts[entry.RequestID] = true
-			}
-			charges[entry.RequestID] = quota
-		}
-		for id, quota := range charges {
-			if conflicts[id] {
-				syncErr = errors.New("conflicting upstream request costs")
-				continue
-			}
-			if err := model.ReconcileChannelProfitCost(scope, id, quota/pricing.QuotaPerUnit); err != nil {
-				return fmt.Errorf("reconcile upstream request cost: %w", err)
-			}
-		}
 	}
 	pricing.LastError = errorText(syncErr)
 	if err := model.SaveChannelProfitPricing(&pricing); err != nil {
 		return err
 	}
 	return syncErr
+}
+
+func fetchChannelProfitRequestLogs(ctx context.Context, client *http.Client, group *channelProfitGroup, key *channelProfitGroupKey, tokenName string) ([]channelProfitCostLog, error) {
+	if tokenName == "" || group.AccessToken == "" {
+		var response struct {
+			Success bool                   `json:"success"`
+			Data    []channelProfitCostLog `json:"data"`
+		}
+		if err := fetchChannelProfitJSON(ctx, client, group.BaseURL+"/api/log/token", key.Value, &response); err != nil {
+			return nil, fmt.Errorf("upstream request logs unavailable: %w", err)
+		}
+		if !response.Success {
+			return nil, errors.New("/api/log/token: upstream rejected request logs; check API key permissions")
+		}
+		return response.Data, nil
+	}
+	entries := make([]channelProfitCostLog, 0)
+	start := time.Now().Add(-24 * time.Hour).Unix()
+	end := time.Now().Unix()
+	listed := 0
+	// Bound each poll to recent logs used only for group-ratio discovery.
+	for page := 1; page <= 100; page++ {
+		query := url.Values{"token_name": {tokenName}, "type": {"2"}, "p": {strconv.Itoa(page)}, "size": {"100"}}
+		query.Set("start_timestamp", strconv.FormatInt(start, 10))
+		query.Set("end_timestamp", strconv.FormatInt(end, 10))
+		var response struct {
+			Success bool `json:"success"`
+			Data    struct {
+				Items    []channelProfitCostLog `json:"items"`
+				Total    int                    `json:"total"`
+				PageSize int                    `json:"page_size"`
+			} `json:"data"`
+		}
+		if err := fetchChannelProfitJSON(ctx, client, group.BaseURL+"/api/log/self?"+query.Encode(), group.AccessToken, &response); err != nil {
+			return nil, fmt.Errorf("upstream request logs unavailable: %w", err)
+		}
+		if !response.Success {
+			return nil, errors.New("/api/log/self: upstream rejected request logs; check account permissions")
+		}
+		listed += len(response.Data.Items)
+		for _, entry := range response.Data.Items {
+			if entry.TokenName == tokenName {
+				entries = append(entries, entry)
+			}
+		}
+		pageSize := response.Data.PageSize
+		if pageSize <= 0 {
+			pageSize = 100
+		}
+		if page*pageSize >= response.Data.Total {
+			if listed < response.Data.Total {
+				return nil, errors.New("/api/log/self: upstream returned incomplete request logs")
+			}
+			return entries, nil
+		}
+		if len(response.Data.Items) == 0 {
+			return nil, errors.New("/api/log/self: upstream returned incomplete request logs")
+		}
+	}
+	return nil, errors.New("/api/log/self: upstream request log pagination limit exceeded")
 }

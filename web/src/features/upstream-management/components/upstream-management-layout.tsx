@@ -20,7 +20,6 @@ import type { ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { SectionPageLayout } from '@/components/layout'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 
 export type UpstreamManagementTab = 'accounts' | 'profit'
 
@@ -38,31 +37,12 @@ export function UpstreamManagementLayout(props: UpstreamManagementLayoutProps) {
   const { t } = useTranslation()
 
   return (
-    <Tabs
-      value={props.tab}
-      onValueChange={(tab) => {
-        if (tab === 'accounts' || tab === 'profit') props.onTabChange?.(tab)
-      }}
-      className='min-h-0 flex-1 gap-0'
-    >
-      <SectionPageLayout stackActionsOnMobile>
-        <SectionPageLayout.Title>
-          {t('Upstream management')}
-        </SectionPageLayout.Title>
-        <SectionPageLayout.Actions>{props.actions}</SectionPageLayout.Actions>
-        <SectionPageLayout.Content>
-          <TabsList
-            aria-label={t('Upstream management')}
-            className='mb-4 max-w-full flex-wrap justify-start group-data-horizontal/tabs:h-auto'
-          >
-            <TabsTrigger value='accounts'>
-              {t('Account monitoring')}
-            </TabsTrigger>
-            <TabsTrigger value='profit'>{t('Channel profit')}</TabsTrigger>
-          </TabsList>
-          <TabsContent value={props.tab}>{props.children}</TabsContent>
-        </SectionPageLayout.Content>
-      </SectionPageLayout>
-    </Tabs>
+    <SectionPageLayout stackActionsOnMobile>
+      <SectionPageLayout.Title>
+        {t('Upstream management')}
+      </SectionPageLayout.Title>
+      <SectionPageLayout.Actions>{props.actions}</SectionPageLayout.Actions>
+      <SectionPageLayout.Content>{props.children}</SectionPageLayout.Content>
+    </SectionPageLayout>
   )
 }

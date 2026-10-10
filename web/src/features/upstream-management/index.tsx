@@ -26,11 +26,6 @@ import {
   type UpstreamManagementTab,
 } from './components/upstream-management-layout'
 
-const AccountsPage = lazy(() =>
-  import('@/features/upstream-monitor').then((module) => ({
-    default: module.UpstreamMonitorPage,
-  }))
-)
 const ProfitPage = lazy(() =>
   import('@/features/channel-profit').then((module) => ({
     default: module.ChannelProfit,
@@ -51,11 +46,7 @@ export function UpstreamManagementPage(
         </UpstreamManagementLayout>
       }
     >
-      {props.tab === 'profit' ? (
-        <ProfitPage onTabChange={props.onTabChange} />
-      ) : (
-        <AccountsPage onTabChange={props.onTabChange} />
-      )}
+      <ProfitPage onTabChange={props.onTabChange} />
     </Suspense>
   )
 }

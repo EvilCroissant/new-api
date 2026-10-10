@@ -24,12 +24,13 @@ import {
   createRouter,
   RouterProvider,
 } from '@tanstack/react-router'
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import userEvent from '@testing-library/user-event'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { createInstance } from 'i18next'
 import { I18nextProvider, initReactI18next } from 'react-i18next'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { ChannelProfitRow } from '@/features/channel-profit/types'
+import type { UpstreamMonitor } from '@/features/upstream-monitor/types'
 import { api } from '@/lib/api'
 import { ROLE } from '@/lib/roles'
 import { Route as ProfitRoute } from '@/routes/_authenticated/profit'
@@ -44,9 +45,69 @@ await i18n.use(initReactI18next).init({
 
 const queryClients: QueryClient[] = []
 let requestedURLs: string[] = []
+let profitRows: ChannelProfitRow[] = []
+let accountMonitors: UpstreamMonitor[] = []
+let profitLoadError = false
+
+const row: ChannelProfitRow = {
+  group_id: 'test-site',
+  channel_id: 182,
+  channel_ids: [182],
+  channel_names: ['Test upstream'],
+  channel_name: 'Test upstream',
+  base_url: 'https://example.com/v1/',
+  provider: 'new_api',
+  enabled: true,
+  cost_mode: 'ratio',
+  cost_factor: 1,
+  manual_ratio: null,
+  request_cost_usd: null,
+  sync_interval_minutes: 60,
+  access_token_configured: false,
+  last_sync_attempt_at: 0,
+  last_synced_at: 0,
+  last_error: '',
+  cost_sync_error: '',
+  revenue_usd: 0,
+  cost_usd: 0,
+  cost_available: false,
+  profit_usd: 0,
+  profit_available: false,
+  margin: 0,
+  margin_available: false,
+  partial: false,
+  status: 'pending',
+  downstream_rates: [],
+  request_coverage: {
+    total: 0,
+    matched: 0,
+    estimated: 0,
+    unknown: 0,
+    revenue_usd: 0,
+    cost_usd: 0,
+  },
+  keys: [],
+}
+
+const monitor = {
+  id: 9,
+  name: 'Test account',
+  base_url: 'https://example.com',
+  provider: 'newapi',
+  new_api_user_id: 42,
+  access_token_configured: true,
+  refresh_token_configured: false,
+  balance_available: true,
+  balance_usd: 12.34,
+  last_error: '',
+  last_synced_at: 0,
+} as UpstreamMonitor
 
 beforeEach(() => {
   requestedURLs = []
+  profitRows = []
+  accountMonitors = []
+  profitLoadError = false
   useAuthStore.getState().auth.setUser({
     id: 1,
     username: 'root',
@@ -55,9 +116,12 @@ beforeEach(() => {
   vi.spyOn(api, 'get').mockImplementation(async (url) => {
     requestedURLs.push(url)
     if (url === '/api/upstream-monitors/') {
-      return { data: { success: true, data: [] } }
+      return { data: { success: true, data: accountMonitors } }
     }
     if (url === '/api/channel-profit/') {
+      if (profitLoadError) {
+        return { data: { success: false, message: 'Profit unavailable' } }
+      }
       return {
         data: {
           success: true,
@@ -72,7 +136,7 @@ beforeEach(() => {
             margin_available: true,
             partial: false,
             last_synced_at: 0,
-            rows: [],
+            rows: profitRows,
           },
         },
       }
@@ -133,70 +197,140 @@ async function renderPage(path = '/upstream-monitor') {
 }
 
 describe('upstream management navigation', () => {
-  it('switches views and restores the selected tab through browser history', async () => {
-    const router = await renderPage()
-    await screen.findByText('No upstream monitors')
+  it('saves existing account credentials and profit settings through one dialog', async () => {
+    profitRows = [row]
+    accountMonitors = [monitor]
+    const update = vi.spyOn(api, 'put').mockImplementation(async (url) => ({
+      data: {
+        success: true,
+        data: url === '/api/upstream-monitors/9' ? monitor : {},
+      },
+    }))
+    await renderPage()
+    await screen.findByLabelText('Available balance')
     expect(
-      screen.getByRole('heading', { name: 'Upstream management' })
-    ).toBeInTheDocument()
-    expect(
-      screen.getByRole('tab', { name: 'Account monitoring' })
-    ).toHaveAttribute('aria-selected', 'true')
-    expect(requestedURLs).not.toContain('/api/channel-profit/')
-
-    fireEvent.click(screen.getByRole('tab', { name: 'Channel profit' }))
-    await screen.findByText('Downstream revenue')
-    expect(
-      screen.getByRole('tabpanel', { name: 'Channel profit' })
-    ).toBeInTheDocument()
-    expect(
-      screen.queryByRole('button', { name: 'Add monitor' })
+      screen.queryByRole('button', { name: 'View groups' })
     ).not.toBeInTheDocument()
-    expect(router.state.location.search).toEqual({ tab: 'profit' })
-
-    await act(async () => router.history.back())
-    await screen.findByText('No upstream monitors')
-    expect(
-      screen.getByRole('tab', { name: 'Account monitoring' })
-    ).toHaveAttribute('aria-selected', 'true')
-    fireEvent.click(screen.getByRole('button', { name: 'Add monitor' }))
-    expect(
-      await screen.findByRole('dialog', { name: 'Add upstream monitor' })
-    ).toBeInTheDocument()
-  })
-
-  it('opens the profit tab from the legacy profit link without loading account data', async () => {
-    const router = await renderPage('/profit')
-    await screen.findByText('Downstream revenue')
-    expect(router.state.location.pathname).toBe('/upstream-monitor')
-    expect(router.state.location.search).toEqual({ tab: 'profit' })
-    expect(requestedURLs).not.toContain('/api/upstream-monitors/')
-  })
-
-  it('falls back to accounts for an invalid tab and supports keyboard tab switching', async () => {
-    const user = userEvent.setup()
-    await renderPage('/upstream-monitor?tab=invalid')
-    await screen.findByText('No upstream monitors')
-    screen.getByRole('tab', { name: 'Account monitoring' }).focus()
-    await user.keyboard('{ArrowRight}{Enter}')
-    await screen.findByText('Downstream revenue')
-    expect(screen.getByRole('tab', { name: 'Channel profit' })).toHaveAttribute(
-      'aria-selected',
-      'true'
+    expect(screen.queryByText('Test account')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+    fireEvent.change(screen.getByLabelText('Personal access token'), {
+      target: { value: 'replacement' },
+    })
+    fireEvent.change(screen.getByLabelText('Purchase cost factor'), {
+      target: { value: '0.8' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    )
+    expect(update).toHaveBeenCalledWith(
+      '/api/upstream-monitors/9',
+      { new_api_user_id: 42, access_token: 'replacement' },
+      expect.anything()
+    )
+    expect(update).toHaveBeenCalledWith(
+      '/api/channel-profit/182',
+      expect.objectContaining({ cost_factor: 0.8 }),
+      expect.anything()
     )
   })
 
-  it('keeps ordinary administrators read-only in both views', async () => {
+  it('reuses the account after pricing save fails and keeps the entered form for retry', async () => {
+    profitRows = [row]
+    const create = vi.spyOn(api, 'post').mockImplementation(async () => {
+      accountMonitors = [monitor]
+      return { data: { success: true, data: monitor } }
+    })
+    let pricingAttempts = 0
+    const update = vi.spyOn(api, 'put').mockImplementation(async (url) => {
+      if (url === '/api/channel-profit/182' && ++pricingAttempts === 1) {
+        return { data: { success: false, message: 'Pricing save failed' } }
+      }
+      return {
+        data: {
+          success: true,
+          data: url === '/api/upstream-monitors/9' ? monitor : {},
+        },
+      }
+    })
+    await renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Settings' }))
+    fireEvent.change(screen.getByLabelText('Site type'), {
+      target: { value: 'newapi' },
+    })
+    fireEvent.change(screen.getByLabelText('New API user ID'), {
+      target: { value: '42' },
+    })
+    fireEvent.change(screen.getByLabelText('Personal access token'), {
+      target: { value: 'replacement' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(pricingAttempts).toBe(1))
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled()
+    )
+    expect(screen.getByRole('dialog')).toBeVisible()
+    expect(screen.getByLabelText('Personal access token')).toHaveValue(
+      'replacement'
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    )
+    expect(create).toHaveBeenCalledTimes(1)
+    expect(update).toHaveBeenCalledWith(
+      '/api/upstream-monitors/9',
+      expect.objectContaining({ access_token: 'replacement' }),
+      expect.anything()
+    )
+    expect(pricingAttempts).toBe(2)
+  })
+
+  it('retains standalone account monitors when profit loading fails and removes group browsing', async () => {
+    accountMonitors = [monitor]
+    profitLoadError = true
+    await renderPage()
+    expect(await screen.findByText('Test account')).toBeVisible()
+    expect(screen.getByText('Profit unavailable')).toBeVisible()
+    expect(
+      screen.queryByRole('button', { name: 'View groups' })
+    ).not.toBeInTheDocument()
+  })
+  it.each([
+    '/upstream-monitor',
+    '/upstream-monitor?tab=accounts',
+    '/upstream-monitor?tab=invalid',
+  ])('shows one profit screen with account data at %s', async (path) => {
+    await renderPage(path)
+    await screen.findByText('Downstream revenue')
+    expect(
+      screen.getByRole('heading', { name: 'Upstream management' })
+    ).toBeVisible()
+    expect(screen.queryByRole('tab')).not.toBeInTheDocument()
+    expect(requestedURLs).toContain('/api/channel-profit/')
+    expect(requestedURLs).toContain('/api/upstream-monitors/')
+    fireEvent.click(screen.getByRole('button', { name: 'Add monitor' }))
+    expect(
+      await screen.findByRole('dialog', { name: 'Add upstream monitor' })
+    ).toBeVisible()
+  })
+
+  it('opens the unified screen from the legacy profit link', async () => {
+    const router = await renderPage('/profit')
+    await screen.findByText('Downstream revenue')
+    expect(router.state.location.pathname).toBe('/upstream-monitor')
+    expect(requestedURLs).toContain('/api/upstream-monitors/')
+  })
+
+  it('keeps ordinary administrators read-only', async () => {
     useAuthStore
       .getState()
       .auth.setUser({ id: 2, username: 'admin', role: ROLE.ADMIN })
     await renderPage()
-    await screen.findByText('No upstream monitors')
+    await screen.findByText('Downstream revenue')
     expect(
       screen.queryByRole('button', { name: 'Add monitor' })
     ).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('tab', { name: 'Channel profit' }))
-    await screen.findByText('Downstream revenue')
     expect(
       screen.queryByRole('button', { name: 'Sync settings' })
     ).not.toBeInTheDocument()

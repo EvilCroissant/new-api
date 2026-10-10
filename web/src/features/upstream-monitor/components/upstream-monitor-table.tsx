@@ -19,8 +19,6 @@ For commercial licensing, please contact support@quantumnous.com
 
 import {
   Alert02Icon,
-  ArrowDown01Icon,
-  ArrowUp01Icon,
   Delete02Icon,
   Edit02Icon,
   LinkSquare01Icon,
@@ -71,7 +69,6 @@ import { formatTimestampRelative } from '@/lib/format'
 
 import type { UpstreamMonitor, UpstreamMonitorUpdateInput } from '../types'
 import { UpstreamMonitorCredentialPanel } from './upstream-monitor-credential-panel'
-import { UpstreamMonitorGroupPanel } from './upstream-monitor-group-panel'
 
 type UpstreamMonitorTableProps = {
   monitors: UpstreamMonitor[]
@@ -91,7 +88,7 @@ const LOW_BALANCE_USD = 5
 
 type ExpandedPanel = {
   id: number
-  kind: 'groups' | 'credentials'
+  kind: 'credentials'
 }
 
 function providerLabel(provider: UpstreamMonitor['provider']): string {
@@ -130,13 +127,10 @@ export function UpstreamMonitorTable(props: UpstreamMonitorTableProps) {
               const isSyncing = props.syncingId === monitor.id
               const isDeleting = props.deletingId === monitor.id
               const isUpdating = props.updatingId === monitor.id
-              const isGroupsExpanded =
-                expandedPanel?.id === monitor.id &&
-                expandedPanel.kind === 'groups'
               const isCredentialsExpanded =
                 expandedPanel?.id === monitor.id &&
                 expandedPanel.kind === 'credentials'
-              const isExpanded = isGroupsExpanded || isCredentialsExpanded
+              const isExpanded = isCredentialsExpanded
               const panelID = `upstream-monitor-panel-${monitor.id}`
               const isLowBalance =
                 monitor.balance_available &&
@@ -255,47 +249,6 @@ export function UpstreamMonitorTable(props: UpstreamMonitorTableProps) {
                     <TableCell>{syncStatus}</TableCell>
                     <TableCell>
                       <div className='flex justify-end gap-0.5'>
-                        <Tooltip>
-                          <TooltipTrigger
-                            render={
-                              <Button
-                                type='button'
-                                variant='ghost'
-                                size='icon-sm'
-                                aria-expanded={isGroupsExpanded}
-                                aria-controls={panelID}
-                                aria-label={
-                                  isGroupsExpanded
-                                    ? t('Hide groups')
-                                    : t('View groups')
-                                }
-                                onClick={() =>
-                                  setExpandedPanel(
-                                    isGroupsExpanded
-                                      ? null
-                                      : { id: monitor.id, kind: 'groups' }
-                                  )
-                                }
-                              />
-                            }
-                          >
-                            <HugeiconsIcon
-                              icon={
-                                isGroupsExpanded
-                                  ? ArrowUp01Icon
-                                  : ArrowDown01Icon
-                              }
-                              strokeWidth={2}
-                              aria-hidden='true'
-                            />
-                          </TooltipTrigger>
-                          <TooltipContent>
-                            {isGroupsExpanded
-                              ? t('Hide groups')
-                              : t('View groups')}
-                          </TooltipContent>
-                        </Tooltip>
-
                         {props.isRoot && (
                           <>
                             <Tooltip>
@@ -392,12 +345,6 @@ export function UpstreamMonitorTable(props: UpstreamMonitorTableProps) {
                   {isExpanded && (
                     <TableRow className='h-auto border-b hover:bg-transparent'>
                       <TableCell colSpan={5} className='p-0 whitespace-normal'>
-                        {isGroupsExpanded && (
-                          <UpstreamMonitorGroupPanel
-                            monitor={monitor}
-                            id={panelID}
-                          />
-                        )}
                         {isCredentialsExpanded && (
                           <UpstreamMonitorCredentialPanel
                             monitor={monitor}

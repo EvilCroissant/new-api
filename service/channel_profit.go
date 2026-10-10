@@ -417,12 +417,22 @@ func syncChannelProfitGroup(ctx context.Context, group *channelProfitGroup, usag
 	for _, key := range group.Keys {
 		keyValues = append(keyValues, key.Value)
 	}
-	client, _, err = channelProfitMonitorClient(group, client)
+	client, monitor, err := channelProfitMonitorClient(group, client)
 	if err != nil {
 		for _, key := range group.Keys {
 			saveChannelProfitFailure(key.Owner.Id, usageDate, key.Value, err)
 		}
 		return 0, len(group.Keys)
+	}
+	if monitor != nil && time.Now().Unix()-monitor.LastSyncedAt >= int64(group.SyncIntervalMinutes)*60 {
+		_, saveErr := syncAndSaveUpstreamMonitorWithClient(ctx, monitor, upstreamMonitorHTTPClient())
+		if saveErr != nil {
+			common.SysError("upstream monitor sync: " + saveErr.Error())
+		}
+		client, monitor, err = channelProfitMonitorClient(group, client)
+		if err != nil {
+			return 0, len(group.Keys)
+		}
 	}
 	backend, err := detectChannelProfitBackend(ctx, client, group.BaseURL, keyValues, usageDate)
 	if err != nil {
@@ -436,13 +446,14 @@ func syncChannelProfitGroup(ctx context.Context, group *channelProfitGroup, usag
 		return 0, len(group.Keys)
 	}
 
-	costSyncErr := syncChannelProfitRequestCosts(ctx, group, client)
+	costSyncErr := syncChannelProfitRequestCosts(ctx, group, client, backend.Provider)
 	if costSyncErr != nil {
 		common.SysError("channel request cost sync: " + costSyncErr.Error())
 	}
 
 	newAPIMetadata := map[string]channelProfitNewAPIKeyMetadata{}
 	newAPIGroupRatios := map[string]float64{}
+	var newAPIRatioErr error
 	if backend.Provider == channelProfitProviderNewAPI && group.AccessToken != "" {
 		newAPIMetadata, newAPIGroupRatios, err = fetchChannelProfitNewAPIMetadata(
 			ctx,
@@ -450,13 +461,15 @@ func syncChannelProfitGroup(ctx context.Context, group *channelProfitGroup, usag
 			group.BaseURL,
 			group.AccessToken,
 			group.Keys,
+			monitor,
 		)
-		if err != nil {
+		if err != nil && len(newAPIMetadata) != len(group.Keys) {
 			for _, key := range group.Keys {
 				saveChannelProfitFailure(key.Owner.Id, usageDate, key.Value, err)
 			}
 			return 0, len(group.Keys)
 		}
+		newAPIRatioErr = err
 	}
 
 	synced := 0
@@ -489,7 +502,7 @@ func syncChannelProfitGroup(ctx context.Context, group *channelProfitGroup, usag
 				updateErr = updateChannelProfitSnapshotForProvider(
 					key.Owner.Id, usageDate, key.Value, channelProfitProviderNewAPI,
 					0, backend.QuotaPerUnit, costUSD, true,
-					metadata.Name, metadata.Group, ratio, ratioAvailable, nil, interval,
+					metadata.Name, metadata.Group, ratio, ratioAvailable, newAPIRatioErr, interval,
 				)
 				break
 			}
@@ -1362,6 +1375,8 @@ func fetchChannelProfitNewAPIMetadata(
 	}
 
 	metadataByKey := make(map[string]channelProfitNewAPIKeyMetadata, len(keys))
+	tokenNames := make(map[string]int)
+	listed := 0
 	for page := 1; ; page++ {
 		query := url.Values{}
 		query.Set("p", strconv.Itoa(page))
@@ -1373,7 +1388,9 @@ func fetchChannelProfitNewAPIMetadata(
 		if !response.Success {
 			return nil, nil, fmt.Errorf("fetch upstream API keys: %s", response.Message)
 		}
+		listed += len(response.Data.Items)
 		for _, item := range response.Data.Items {
+			tokenNames[strings.TrimSpace(item.Name)]++
 			matched := keysByMask[item.Key]
 			if len(matched) > 1 {
 				return nil, nil, fmt.Errorf("multiple local API keys share upstream mask %s", item.Key)
@@ -1398,8 +1415,14 @@ func fetchChannelProfitNewAPIMetadata(
 		if pageSize <= 0 {
 			pageSize = channelProfitNewAPITokenPageSize
 		}
-		if page*pageSize >= response.Data.Total || len(response.Data.Items) == 0 {
+		if page*pageSize >= response.Data.Total {
+			if listed < response.Data.Total {
+				return nil, nil, errors.New("/api/token/: upstream returned incomplete API key list")
+			}
 			break
+		}
+		if len(response.Data.Items) == 0 {
+			return nil, nil, errors.New("/api/token/: upstream returned incomplete API key list")
 		}
 	}
 	if len(metadataByKey) != len(keys) {
@@ -1407,6 +1430,9 @@ func fetchChannelProfitNewAPIMetadata(
 	}
 	nameOwner := make(map[string]string, len(metadataByKey))
 	for fingerprint, metadata := range metadataByKey {
+		if tokenNames[metadata.Name] > 1 {
+			return nil, nil, fmt.Errorf("upstream API key name %q is duplicated and cannot be billed independently", metadata.Name)
+		}
 		if owner, exists := nameOwner[metadata.Name]; exists && owner != fingerprint {
 			return nil, nil, fmt.Errorf("upstream API key name %q is duplicated and cannot be billed independently", metadata.Name)
 		}
@@ -1433,10 +1459,10 @@ func fetchChannelProfitNewAPIMetadata(
 
 	groupResponse := channelProfitNewAPIGroupResponse{}
 	if err := fetchChannelProfitJSON(ctx, client, baseURL+"/api/user/self/groups", accessToken, &groupResponse); err != nil {
-		return nil, nil, fmt.Errorf("fetch upstream group ratios: %w", err)
+		return metadataByKey, nil, fmt.Errorf("fetch upstream group ratios: %w", err)
 	}
 	if !groupResponse.Success {
-		return nil, nil, fmt.Errorf("fetch upstream group ratios: %s", groupResponse.Message)
+		return metadataByKey, nil, errors.New("/api/user/self/groups: upstream rejected group ratios")
 	}
 	groupRatios := make(map[string]float64, len(groupResponse.Data))
 	for name, item := range groupResponse.Data {
@@ -1568,10 +1594,10 @@ func fetchChannelProfitJSON(ctx context.Context, client *http.Client, targetURL 
 	defer resp.Body.Close()
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 32<<10))
-		return &channelProfitHTTPError{StatusCode: resp.StatusCode}
+		return fmt.Errorf("%s: %w", req.URL.Path, &channelProfitHTTPError{StatusCode: resp.StatusCode})
 	}
 	if err := common.DecodeJson(io.LimitReader(resp.Body, channelProfitMaxBodyBytes), dest); err != nil {
-		return err
+		return fmt.Errorf("%s: invalid upstream JSON response", req.URL.Path)
 	}
 	return nil
 }

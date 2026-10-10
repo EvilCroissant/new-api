@@ -103,7 +103,7 @@ type profitReleasedRecord struct {
 	Status            string `gorm:"type:varchar(16);index"`
 }
 
-func TestChannelProfitDatabaseAndReconciliation(t *testing.T) {
+func TestChannelProfitDatabaseAndEstimation(t *testing.T) {
 	for _, dialect := range []string{"sqlite", "mysql", "postgres"} {
 		t.Run(dialect, func(t *testing.T) {
 			for _, upgrade := range []bool{false, true} {
@@ -239,23 +239,29 @@ func TestChannelProfitDatabaseAndReconciliation(t *testing.T) {
 					assert.Equal(t, "upstream_pricing", record.Source)
 					assert.InDelta(t, 0.000516, record.CostUSD, 1e-12)
 					assert.Equal(t, 2.0, record.CostFactor)
+					assert.Empty(t, record.UpstreamRequestID)
+					assert.Empty(t, record.Reconciliation)
 					require.NoError(t, syncChannelProfitRequestCosts(context.Background(), group, upstream.Client()))
 					require.NoError(t, syncChannelProfitRequestCosts(context.Background(), group, upstream.Client()))
 					require.NoError(t, db.First(&record, "id = ?", record.ID).Error)
-					assert.Equal(t, "matched", record.Status)
-					assert.InDelta(t, 0.004, record.CostUSD, 1e-12)
+					assert.Equal(t, "estimated", record.Status)
+					assert.InDelta(t, 0.000516, record.CostUSD, 1e-12)
 					stored.Other = fmt.Sprintf(`{"large_number":9007199254740993,"admin_info":{"upstream_cost":{"id":%q}}}`, record.ID)
 					require.NoError(t, model.RefreshChannelProfitLogCosts([]*model.Log{&stored}))
 					assert.Contains(t, stored.Other, `"large_number":9007199254740993`)
-					assert.Contains(t, stored.Other, `"status":"matched"`)
-					// A late sibling splits the single upstream charge instead of charging it twice.
+					assert.Contains(t, stored.Other, `"status":"estimated"`)
+					assert.NotContains(t, stored.Other, `"reconciliation"`)
+					assert.NotContains(t, stored.Other, `"matched_at"`)
+					// Historical records remain intact even if the upstream charge changes.
 					sibling := record
 					sibling.ID = "late"
 					sibling.RequestID = "local-two"
-					sibling.Status = "estimated"
-					sibling.CostUSD = 0
+					sibling.UpstreamRequestID = "upstream-one"
+					sibling.Status = "matched"
+					sibling.Reconciliation = "matched"
+					sibling.CostUSD = 0.004
 					require.NoError(t, db.Create(&sibling).Error)
-					// Same upstream ID under another key must never be matched.
+					// An unknown record must not be filled from upstream request logs.
 					unrelated := record
 					unrelated.ID = "other-key"
 					unrelated.Scope = "another-key"
@@ -264,23 +270,36 @@ func TestChannelProfitDatabaseAndReconciliation(t *testing.T) {
 					require.NoError(t, db.Create(&unrelated).Error)
 					require.NoError(t, syncChannelProfitRequestCosts(context.Background(), group, upstream.Client()))
 					require.NoError(t, db.First(&record, "id = ?", record.ID).Error)
-					assert.InDelta(t, 0.002, record.CostUSD, 1e-12)
+					assert.InDelta(t, 0.000516, record.CostUSD, 1e-12)
 					require.NoError(t, db.First(&sibling, "id = ?", "late").Error)
-					assert.InDelta(t, 0.002, sibling.CostUSD, 1e-12)
+					assert.Equal(t, "matched", sibling.Status)
+					assert.InDelta(t, 0.004, sibling.CostUSD, 1e-12)
 					require.NoError(t, db.First(&unrelated, "id = ?", "other-key").Error)
 					assert.Equal(t, "unknown", unrelated.Status)
 					coverages, err := model.ChannelProfitRequestCoverageByChannel([]int{920182}, 0, time.Now().Unix()+1)
 					require.NoError(t, err)
 					coverage := coverages[920182]
 					assert.EqualValues(t, 3, coverage.Total)
-					assert.EqualValues(t, 2, coverage.Matched)
+					assert.EqualValues(t, 1, coverage.Matched)
+					assert.EqualValues(t, 1, coverage.Estimated)
 					assert.EqualValues(t, 1, coverage.Unknown)
-					assert.InDelta(t, 0.004, coverage.CostUSD, 1e-12)
+					assert.InDelta(t, 0.004516, coverage.CostUSD, 1e-12)
 					upstreamCost = 0
 					require.NoError(t, syncChannelProfitRequestCosts(context.Background(), group, upstream.Client()))
 					require.NoError(t, db.First(&record, "id = ?", record.ID).Error)
-					assert.Equal(t, "matched", record.Status)
-					assert.Zero(t, record.CostUSD)
+					assert.Equal(t, "estimated", record.Status)
+					assert.InDelta(t, 0.000516, record.CostUSD, 1e-12)
+					ctx.Set(common.RequestIdKey, "estimated-no-id")
+					ctx.Set(common.UpstreamRequestIdKey, "")
+					model.CaptureChannelProfitConfig(ctx, 920182)
+					noIDOther := model.NewLogOther()
+					noIDOther.SetPublic("group_ratio", 0.13)
+					noIDOther.SetPublic("cache_tokens", 900)
+					model.RecordConsumeLog(ctx, 920140, model.RecordConsumeLogParams{ChannelId: 920182, ModelName: "test-model", PromptTokens: 1000, CompletionTokens: 100, Quota: 5000, Other: noIDOther})
+					var noID model.ChannelProfitRecord
+					require.NoError(t, db.Where("request_id = ?", "estimated-no-id").First(&noID).Error)
+					assert.Equal(t, "estimated", noID.Status)
+					assert.InDelta(t, 0.00129, noID.CostUSD, 1e-12)
 					zero := 0.0
 					_, err = model.UpdateChannelProfitConfigs([]int{920182}, model.ChannelProfitConfigUpdate{ManualRatio: &zero})
 					require.NoError(t, err)
@@ -293,18 +312,18 @@ func TestChannelProfitDatabaseAndReconciliation(t *testing.T) {
 					config = model.ChannelProfitConfig{}
 					require.NoError(t, db.Where("channel_id = ?", 920182).First(&config).Error)
 					assert.Nil(t, config.ManualRatio)
-					// Neither an upstream failure nor conflicting IDs can overwrite a matched charge.
+					// Neither a failed ratio refresh nor duplicate IDs can reprice requests.
 					logFailed = true
 					require.Error(t, syncChannelProfitRequestCosts(context.Background(), group, upstream.Client()))
 					logFailed, conflicting = false, true
-					require.Error(t, syncChannelProfitRequestCosts(context.Background(), group, upstream.Client()))
+					require.NoError(t, syncChannelProfitRequestCosts(context.Background(), group, upstream.Client()))
 					require.NoError(t, db.First(&record, "id = ?", record.ID).Error)
-					assert.Equal(t, "matched", record.Status)
-					assert.Zero(t, record.CostUSD)
+					assert.Equal(t, "estimated", record.Status)
+					assert.InDelta(t, 0.000516, record.CostUSD, 1e-12)
 					conflicting = false
 					var pricing model.ChannelProfitPricing
 					require.NoError(t, db.First(&pricing, "id = ?", model.ProfitCostSiteID(upstream.URL)).Error)
-					assert.Equal(t, "conflicting upstream request costs", pricing.LastError)
+					assert.Empty(t, pricing.LastError)
 					var keyState model.ChannelProfitKeyState
 					require.NoError(t, db.First(&keyState, "id = ?", record.Scope).Error)
 					keyState.UpdatedAt = time.Now().Add(-48 * time.Hour).Unix()
@@ -319,9 +338,9 @@ func TestChannelProfitDatabaseAndReconciliation(t *testing.T) {
 					require.NoError(t, db.Where("request_id = ?", "stale-no-id").First(&unknown).Error)
 					assert.Equal(t, "unknown", unknown.Status)
 					assert.Equal(t, "ratio_unavailable", unknown.Reason)
-					assert.Equal(t, "missing_request_id", unknown.Reconciliation)
+					assert.Empty(t, unknown.Reconciliation)
 					assert.Nil(t, unknown.EstimatedUSD)
-					// A fixed zero is an explicit configuration and never waits for reconciliation.
+					// A fixed zero is an explicit configuration, not missing cost data.
 					fixedMode := "request"
 					_, err = model.UpdateChannelProfitConfigs([]int{920182}, model.ChannelProfitConfigUpdate{CostMode: &fixedMode, RequestCostUSD: &zero})
 					require.NoError(t, err)
@@ -332,7 +351,7 @@ func TestChannelProfitDatabaseAndReconciliation(t *testing.T) {
 					require.NoError(t, db.Where("request_id = ?", "fixed-zero").First(&fixed).Error)
 					assert.Equal(t, "estimated", fixed.Status)
 					assert.Equal(t, "fixed_request", fixed.Source)
-					assert.Equal(t, "not_applicable", fixed.Reconciliation)
+					assert.Empty(t, fixed.Reconciliation)
 					require.NotNil(t, fixed.EstimatedUSD)
 					assert.Zero(t, *fixed.EstimatedUSD)
 					testChannelProfitMonitorIntegration(t, db)
@@ -344,12 +363,17 @@ func TestChannelProfitDatabaseAndReconciliation(t *testing.T) {
 
 func testChannelProfitMonitorIntegration(t *testing.T, db *gorm.DB) {
 	for _, tc := range []struct {
-		name         string
-		provider     string
-		missingUnit  bool
-		missingKey   bool
-		logRatio     bool
-		freshMonitor bool
+		name              string
+		provider          string
+		missingUnit       bool
+		missingKey        bool
+		logRatio          bool
+		freshMonitor      bool
+		logStatus         int
+		staleToken        bool
+		incompleteLogs    bool
+		incompleteKeys    bool
+		groupsUnavailable bool
 	}{
 		{name: "monitor credentials and live group ratio", provider: UpstreamMonitorProviderNewAPI},
 		{name: "fresh monitor group snapshot reused after key verification", provider: UpstreamMonitorProviderNewAPI, freshMonitor: true},
@@ -357,6 +381,12 @@ func testChannelProfitMonitorIntegration(t *testing.T, db *gorm.DB) {
 		{name: "unrelated account cannot supply ratio", provider: UpstreamMonitorProviderNewAPI, missingKey: true},
 		{name: "logs work without status or account mapping", provider: UpstreamMonitorProviderNewAPI, missingUnit: true, missingKey: true, logRatio: true},
 		{name: "sub2api key billing supplies ratio without newapi endpoints", provider: UpstreamMonitorProviderSub2API},
+		{name: "account credentials replace stale profit token", provider: UpstreamMonitorProviderNewAPI, staleToken: true},
+		{name: "live group ratio does not depend on request log permissions", provider: UpstreamMonitorProviderNewAPI, logStatus: 429},
+		{name: "ratio fallback rate limiting preserves precise cause and estimate", provider: UpstreamMonitorProviderNewAPI, groupsUnavailable: true, logStatus: 429},
+		{name: "incomplete fallback logs preserve estimated costs", provider: UpstreamMonitorProviderNewAPI, groupsUnavailable: true, incompleteLogs: true},
+		{name: "incomplete key catalogue cannot authorize account ratio logs", provider: UpstreamMonitorProviderNewAPI, incompleteKeys: true},
+		{name: "group catalogue failure uses verified account logs for ratio", provider: UpstreamMonitorProviderNewAPI, groupsUnavailable: true, logRatio: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			key := "integration-key-123456789"
@@ -378,6 +408,7 @@ func testChannelProfitMonitorIntegration(t *testing.T, db *gorm.DB) {
 					return
 				}
 				if r.URL.Path == "/api/log/token" {
+					assert.True(t, tc.missingKey || tc.incompleteKeys, "verified account key should use account logs instead of the critically rate-limited token route")
 					assert.Equal(t, "Bearer "+key, r.Header.Get("Authorization"))
 					assert.Empty(t, r.Header.Get("New-Api-User"))
 					if tc.logRatio {
@@ -390,6 +421,22 @@ func testChannelProfitMonitorIntegration(t *testing.T, db *gorm.DB) {
 				assert.Equal(t, "Bearer monitor-access", r.Header.Get("Authorization"))
 				assert.Equal(t, "42", r.Header.Get("New-Api-User"))
 				switch r.URL.Path {
+				case "/api/log/self":
+					assert.True(t, tc.groupsUnavailable, "a verified live ratio must not depend on request logs")
+					assert.Equal(t, "key-name", r.URL.Query().Get("token_name"))
+					if tc.logStatus != 0 {
+						w.WriteHeader(tc.logStatus)
+						return
+					}
+					if r.URL.Query().Get("p") == "1" {
+						fmt.Fprint(w, `{"success":true,"data":{"total":2,"page_size":1,"items":[{"token_name":"another-key","type":2,"quota":9000,"request_id":"integration-request"}]}}`)
+					} else if tc.incompleteLogs {
+						fmt.Fprint(w, `{"success":true,"data":{"total":2,"page_size":1,"items":[]}}`)
+					} else if tc.logRatio {
+						fmt.Fprintf(w, `{"success":true,"data":{"total":2,"page_size":1,"items":[{"token_name":"key-name","type":2,"created_at":%d,"other":"{\"group_ratio\":0.08}"}]}}`, time.Now().Unix())
+					} else {
+						fmt.Fprint(w, `{"success":true,"data":{"total":2,"page_size":1,"items":[{"token_name":"key-name","type":2,"quota":1000,"request_id":"integration-request"}]}}`)
+					}
 				case "/api/status":
 					if tc.missingUnit {
 						w.WriteHeader(503)
@@ -399,12 +446,22 @@ func testChannelProfitMonitorIntegration(t *testing.T, db *gorm.DB) {
 				case "/api/pricing":
 					fmt.Fprint(w, `{"success":true,"data":[{"model_name":"test-model","quota_type":1,"model_price":0.5}]}`)
 				case "/api/token/":
-					if tc.missingKey {
+					if tc.incompleteKeys {
+						if r.URL.Query().Get("p") == "1" {
+							fmt.Fprintf(w, `{"success":true,"data":{"items":[{"key":%q,"name":"key-name","group":"upstream-group"}],"total":2,"page_size":1}}`, model.MaskTokenKey(key))
+						} else {
+							fmt.Fprint(w, `{"success":true,"data":{"items":[],"total":2,"page_size":1}}`)
+						}
+					} else if tc.missingKey {
 						fmt.Fprint(w, `{"success":true,"data":{"items":[],"total":0}}`)
 					} else {
 						fmt.Fprintf(w, `{"success":true,"data":{"items":[{"key":%q,"name":"key-name","group":"upstream-group"}],"total":1}}`, model.MaskTokenKey(key))
 					}
 				case "/api/user/self/groups":
+					if tc.groupsUnavailable {
+						w.WriteHeader(503)
+						return
+					}
 					if tc.freshMonitor {
 						t.Error("fresh monitor snapshot should supply group ratios")
 					}
@@ -421,6 +478,9 @@ func testChannelProfitMonitorIntegration(t *testing.T, db *gorm.DB) {
 			}
 			require.NoError(t, model.CreateUpstreamMonitor(monitor))
 			group := &channelProfitGroup{BaseURL: upstream.URL, Keys: []*channelProfitGroupKey{{Value: key, Fingerprint: channelProfitKeyFingerprint(key)}}}
+			if tc.staleToken {
+				group.AccessToken = "obsolete-profit-token"
+			}
 			siteID := model.ProfitCostSiteID(upstream.URL)
 			pending := model.ChannelProfitRecord{ID: fmt.Sprint(time.Now().UnixNano()), Scope: model.ProfitCostFingerprint(siteID + ":" + model.ProfitCostFingerprint(key)), UpstreamRequestID: "integration-request", Status: "estimated", CostMode: "ratio", CostUSD: 0.04, CostFactor: 1}
 			require.NoError(t, db.Create(&pending).Error)
@@ -440,23 +500,21 @@ func testChannelProfitMonitorIntegration(t *testing.T, db *gorm.DB) {
 			}
 			for range 2 {
 				err := syncChannelProfitRequestCosts(context.Background(), group, upstream.Client())
-				if tc.missingUnit {
-					assert.ErrorContains(t, err, "actual request cost reconciliation unavailable")
+				if tc.logStatus != 0 && tc.groupsUnavailable {
+					assert.ErrorContains(t, err, "/api/log/self")
+					assert.ErrorContains(t, err, "HTTP 429")
+				} else if tc.incompleteLogs {
+					assert.ErrorContains(t, err, "incomplete request logs")
 				} else {
 					require.NoError(t, err)
 				}
 			}
 			require.NoError(t, db.First(&pending, "id = ?", pending.ID).Error)
-			if tc.missingUnit || tc.provider == UpstreamMonitorProviderSub2API {
-				assert.Equal(t, "estimated", pending.Status)
-				assert.Equal(t, 0.04, pending.CostUSD)
-			} else {
-				assert.Equal(t, "matched", pending.Status)
-				assert.InDelta(t, 0.002, pending.CostUSD, 1e-12)
-			}
+			assert.Equal(t, "estimated", pending.Status)
+			assert.Equal(t, 0.04, pending.CostUSD)
 			var state model.ChannelProfitKeyState
 			require.NoError(t, db.Where("id = ?", model.ProfitCostFingerprint(siteID+":"+model.ProfitCostFingerprint(key))).First(&state).Error)
-			if tc.missingKey && !tc.logRatio {
+			if (tc.groupsUnavailable && !tc.logRatio) || tc.incompleteKeys || (tc.missingKey && !tc.logRatio) {
 				assert.Nil(t, state.Ratio, "an account catalogue alone cannot identify this key's group")
 			} else {
 				require.NotNil(t, state.Ratio)

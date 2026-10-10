@@ -308,7 +308,6 @@ export interface RequestUpstreamCost {
   estimated_usd?: number
   source?: string
   reason?: string
-  reconciliation?: string
   cost_factor?: number
   upstream_ratio?: number
   recording_failed?: boolean

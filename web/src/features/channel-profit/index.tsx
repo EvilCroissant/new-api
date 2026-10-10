@@ -17,7 +17,11 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 
-import { RefreshIcon, Settings02Icon } from '@hugeicons/core-free-icons'
+import {
+  Add01Icon,
+  RefreshIcon,
+  Settings02Icon,
+} from '@hugeicons/core-free-icons'
 import { HugeiconsIcon } from '@hugeicons/react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import dayjs from 'dayjs'
@@ -34,8 +38,23 @@ import {
   UpstreamManagementLayout,
   type UpstreamManagementPageProps,
 } from '@/features/upstream-management/components/upstream-management-layout'
+import {
+  createUpstreamMonitor,
+  deleteUpstreamMonitor,
+  listUpstreamMonitors,
+  syncUpstreamMonitor,
+  updateUpstreamMonitor,
+} from '@/features/upstream-monitor/api'
+import { UpstreamMonitorAddDialog } from '@/features/upstream-monitor/components/upstream-monitor-add-dialog'
+import { UpstreamMonitorTable } from '@/features/upstream-monitor/components/upstream-monitor-table'
+import type {
+  UpstreamMonitor,
+  UpstreamMonitorProvider,
+  UpstreamMonitorUpdateInput,
+} from '@/features/upstream-monitor/types'
 import { formatTimestampRelative } from '@/lib/format'
 import { ROLE } from '@/lib/roles'
+import { requireServerSuccess } from '@/lib/server-error-message'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
 
@@ -57,11 +76,21 @@ function getErrorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback
 }
 
+function upstreamSite(baseURL: string): string {
+  try {
+    const url = new URL(baseURL)
+    return `${url.protocol}//${url.host}${url.pathname.replace(/\/+$/, '').replace(/\/v1$/, '')}`
+  } catch {
+    return baseURL
+  }
+}
+
 export function ChannelProfit(props: UpstreamManagementPageProps) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [usageDate, setUsageDate] = useState(() => dayjs().format('YYYY-MM-DD'))
   const [syncSettingsOpen, setSyncSettingsOpen] = useState(false)
+  const [addMonitorOpen, setAddMonitorOpen] = useState(false)
   const todayStr = dayjs().format('YYYY-MM-DD')
 
   const isRoot = useAuthStore(
@@ -84,8 +113,22 @@ export function ChannelProfit(props: UpstreamManagementPageProps) {
     refetchInterval: PROFIT_REFRESH_INTERVAL_MS,
   })
 
+  const monitorQuery = useQuery({
+    queryKey: ['upstream-monitors'],
+    queryFn: async () => {
+      const response = requireServerSuccess(await listUpstreamMonitors())
+      if (!response.data) throw new Error(t('Could not load upstream monitors'))
+      return response.data
+    },
+    retry: false,
+    refetchInterval: PROFIT_REFRESH_INTERVAL_MS,
+  })
+
   const invalidateProfitQueries = useCallback(async () => {
-    await queryClient.invalidateQueries({ queryKey: ['channel-profit'] })
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['channel-profit'] }),
+      queryClient.invalidateQueries({ queryKey: ['upstream-monitors'] }),
+    ])
   }, [queryClient])
 
   const monitoringMutation = useMutation({
@@ -135,7 +178,48 @@ export function ChannelProfit(props: UpstreamManagementPageProps) {
     mutationFn: async (variables: {
       channelId: number
       input: ChannelProfitConfigInput
+      account?: UpstreamMonitorUpdateInput & {
+        provider: UpstreamMonitorProvider
+      }
     }) => {
+      if (variables.account) {
+        const row = profitQuery.data?.rows.find(
+          (item) => item.channel_id === variables.channelId
+        )
+        if (!row || !monitorQuery.data) {
+          throw new Error(t('Could not load upstream monitors'))
+        }
+        const monitors =
+          queryClient.getQueryData<UpstreamMonitor[]>(['upstream-monitors']) ??
+          monitorQuery.data
+        const existing = monitors.find(
+          (item) => upstreamSite(item.base_url) === upstreamSite(row.base_url)
+        )
+        const { provider, ...credentials } = variables.account
+        const response = existing
+          ? await updateUpstreamMonitor(existing.id, credentials)
+          : await createUpstreamMonitor({
+              ...credentials,
+              access_token: credentials.access_token || '',
+              provider,
+              base_url: row.base_url,
+              name: variables.input.display_name,
+            })
+        requireServerSuccess(response)
+        if (!response.data) throw new Error(t('Credential update failed'))
+        const saved = response.data
+        // Keep the created account available if the following pricing save fails.
+        queryClient.setQueryData<UpstreamMonitor[]>(
+          ['upstream-monitors'],
+          (current) => [
+            ...(current ?? []).filter((item) => item.id !== saved.id),
+            saved,
+          ]
+        )
+        if (saved.last_error) {
+          toast.warning(t('Credentials saved, but synchronization failed'))
+        }
+      }
       const response = await updateChannelProfitConfig(
         variables.channelId,
         variables.input
@@ -154,7 +238,44 @@ export function ChannelProfit(props: UpstreamManagementPageProps) {
     },
   })
 
+  const accountMutation = useMutation({
+    mutationFn: async (variables: {
+      id: number
+      action: 'sync' | 'delete' | 'update'
+      input?: UpstreamMonitorUpdateInput
+    }) => {
+      if (variables.action === 'sync') {
+        requireServerSuccess(await syncUpstreamMonitor(variables.id))
+      } else if (variables.action === 'delete') {
+        requireServerSuccess(await deleteUpstreamMonitor(variables.id))
+      } else {
+        requireServerSuccess(
+          await updateUpstreamMonitor(variables.id, variables.input ?? {})
+        )
+      }
+    },
+    onSuccess: invalidateProfitQueries,
+    onError: (error) => toast.error(getErrorMessage(error, t('Update failed'))),
+  })
+
   const summary = profitQuery.data
+  const monitorsBySite = new Map(
+    (monitorQuery.data ?? []).map((monitor) => [
+      upstreamSite(monitor.base_url),
+      monitor,
+    ])
+  )
+  const rowMonitors: Record<number, UpstreamMonitor> = {}
+  for (const row of summary?.rows ?? []) {
+    const monitor = monitorsBySite.get(upstreamSite(row.base_url))
+    if (monitor) rowMonitors[row.channel_id] = monitor
+  }
+  const profitSites = new Set(
+    (summary?.rows ?? []).map((row) => upstreamSite(row.base_url))
+  )
+  const orphanMonitors = (monitorQuery.data ?? []).filter(
+    (monitor) => !profitSites.has(upstreamSite(monitor.base_url))
+  )
   const togglingChannelId = monitoringMutation.isPending
     ? monitoringMutation.variables?.channelId
     : undefined
@@ -195,6 +316,20 @@ export function ChannelProfit(props: UpstreamManagementPageProps) {
       />
       {isRoot && (
         <>
+          <Button
+            type='button'
+            variant='outline'
+            size='sm'
+            onClick={() => setAddMonitorOpen(true)}
+          >
+            <HugeiconsIcon
+              icon={Add01Icon}
+              strokeWidth={2}
+              data-icon='inline-start'
+              aria-hidden='true'
+            />
+            {t('Add monitor')}
+          </Button>
           <Button
             type='button'
             variant='outline'
@@ -268,16 +403,61 @@ export function ChannelProfit(props: UpstreamManagementPageProps) {
           <ProfitSummaryCards summary={summary} />
           <ProfitTable
             rows={summary.rows}
-            isRoot={isRoot}
+            monitors={rowMonitors}
+            isRoot={isRoot && monitorQuery.isSuccess}
             syncingChannelId={syncingChannelId}
             savingChannelId={savingChannelId}
             onSync={(channelId) => syncMutation.mutate(channelId)}
-            onSaveSettings={async (channelId, input) => {
-              await configMutation.mutateAsync({ channelId, input })
+            onSaveSettings={async (channelId, input, account) => {
+              await configMutation.mutateAsync({ channelId, input, account })
             }}
           />
         </div>
       )}
+      {monitorQuery.isError && (
+        <ErrorState
+          title={t('Could not load upstream monitors')}
+          description={getErrorMessage(
+            monitorQuery.error,
+            t('Could not load upstream monitors')
+          )}
+          onRetry={() => void monitorQuery.refetch()}
+        />
+      )}
+      {orphanMonitors.length > 0 && (
+        <UpstreamMonitorTable
+          monitors={orphanMonitors}
+          isRoot={isRoot}
+          syncingId={
+            accountMutation.isPending &&
+            accountMutation.variables.action === 'sync'
+              ? accountMutation.variables.id
+              : undefined
+          }
+          deletingId={
+            accountMutation.isPending &&
+            accountMutation.variables.action === 'delete'
+              ? accountMutation.variables.id
+              : undefined
+          }
+          updatingId={
+            accountMutation.isPending &&
+            accountMutation.variables.action === 'update'
+              ? accountMutation.variables.id
+              : undefined
+          }
+          onSync={(id) => accountMutation.mutate({ id, action: 'sync' })}
+          onDelete={(id) => accountMutation.mutate({ id, action: 'delete' })}
+          onUpdateCredentials={async (id, input) => {
+            await accountMutation.mutateAsync({ id, input, action: 'update' })
+          }}
+        />
+      )}
+      <UpstreamMonitorAddDialog
+        open={addMonitorOpen}
+        onOpenChange={setAddMonitorOpen}
+        onCreated={invalidateProfitQueries}
+      />
       {syncSettingsOpen && summary && (
         <SyncMonitoringDialog
           rows={summary.rows}

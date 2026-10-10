@@ -1,16 +1,23 @@
 import { useTranslation } from 'react-i18next'
 
+import { toIntlLocale } from '@/i18n/languages'
 import { formatBillingCurrencyFromUSD } from '@/lib/currency'
 
 import type { RequestUpstreamCost } from '../../types'
 import { DetailRow, DetailSection } from './log-detail-layout'
 
 export function RequestCostDetails(props: { cost?: RequestUpstreamCost }) {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
+  const currencyOptions = {
+    digitsLarge: 6,
+    digitsSmall: 6,
+    abbreviate: false,
+    locale: toIntlLocale(i18n.resolvedLanguage || i18n.language),
+  }
   if (!props.cost) return null
   const cost = props.cost
   let status = t('Unknown')
-  if (cost.status === 'matched') status = t('Reconciled')
+  if (cost.status === 'matched') status = t('Recorded cost')
   if (cost.status === 'estimated') status = t('Estimated cost')
   const reasons: Record<string, string> = {
     monitoring_disabled: t('Profit monitoring is disabled'),
@@ -19,9 +26,7 @@ export function RequestCostDetails(props: { cost?: RequestUpstreamCost }) {
     ratio_unavailable: t('Upstream ratio unavailable or expired'),
     pricing_unavailable: t('Upstream pricing unavailable'),
     fixed_cost_missing: t('Fixed request cost is missing'),
-    usage_unsupported: t(
-      'Usage cannot be estimated; waiting for reconciliation'
-    ),
+    usage_unsupported: t('Usage cannot be estimated'),
     pricing_unsupported: t(
       'Upstream pricing requires unavailable request facts'
     ),
@@ -35,13 +40,6 @@ export function RequestCostDetails(props: { cost?: RequestUpstreamCost }) {
     upstream_ratio: t('Upstream group ratio'),
     fixed_request: t('Fixed request cost (USD)'),
     upstream_log: t('Upstream consumption log'),
-  }
-  const reconciliation: Record<string, string> = {
-    pending: t('Waiting for upstream log match'),
-    scope_unavailable: t('Cost configuration unavailable'),
-    missing_request_id: t('No upstream request ID; cannot reconcile'),
-    not_applicable: t('Fixed cost does not use reconciliation'),
-    matched: t('Reconciled'),
   }
   return (
     <DetailSection label={t('Per-request upstream cost')}>
@@ -61,13 +59,16 @@ export function RequestCostDetails(props: { cost?: RequestUpstreamCost }) {
       {cost.status !== 'unknown' && cost.cost_usd != null && (
         <DetailRow
           label={t('Upstream cost')}
-          value={formatBillingCurrencyFromUSD(cost.cost_usd)}
+          value={formatBillingCurrencyFromUSD(cost.cost_usd, currencyOptions)}
         />
       )}
       {cost.status === 'matched' && cost.estimated_usd != null && (
         <DetailRow
           label={t('Original estimate')}
-          value={formatBillingCurrencyFromUSD(cost.estimated_usd)}
+          value={formatBillingCurrencyFromUSD(
+            cost.estimated_usd,
+            currencyOptions
+          )}
         />
       )}
       {cost.cost_factor != null && (
@@ -80,12 +81,6 @@ export function RequestCostDetails(props: { cost?: RequestUpstreamCost }) {
         <DetailRow
           label={t('Upstream group ratio')}
           value={String(cost.upstream_ratio)}
-        />
-      )}
-      {cost.reconciliation && (
-        <DetailRow
-          label={t('Reconciliation status')}
-          value={reconciliation[cost.reconciliation] || cost.reconciliation}
         />
       )}
     </DetailSection>

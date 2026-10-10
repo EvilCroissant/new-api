@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 
 import { type FormEvent, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { toast } from 'sonner'
 
 import { Button } from '@/components/ui/button'
 import {
@@ -32,20 +33,37 @@ import {
 import {
   Field,
   FieldDescription,
+  FieldError,
   FieldGroup,
   FieldLabel,
 } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { Spinner } from '@/components/ui/spinner'
+import { detectUpstreamMonitor } from '@/features/upstream-monitor/api'
+import { UpstreamAccountFields } from '@/features/upstream-monitor/components/upstream-account-fields'
+import {
+  upstreamMonitorFormSchema,
+  upstreamMonitorCredentialFormSchema,
+} from '@/features/upstream-monitor/lib/schema'
+import type {
+  UpstreamMonitor,
+  UpstreamMonitorProvider,
+  UpstreamMonitorUpdateInput,
+} from '@/features/upstream-monitor/types'
 
 import type { ChannelProfitConfigInput, ChannelProfitRow } from '../types'
 
 type ProfitSettingsDialogProps = {
   row: ChannelProfitRow
+  monitor?: UpstreamMonitor
   saving: boolean
   onClose: () => void
-  onSave: (channelId: number, input: ChannelProfitConfigInput) => Promise<void>
+  onSave: (
+    channelId: number,
+    input: ChannelProfitConfigInput,
+    account?: UpstreamMonitorUpdateInput & { provider: UpstreamMonitorProvider }
+  ) => Promise<void>
 }
 
 export function ProfitSettingsDialog(props: ProfitSettingsDialogProps) {
@@ -68,7 +86,36 @@ export function ProfitSettingsDialog(props: ProfitSettingsDialogProps) {
       parsedManualRatio >= 0 &&
       parsedManualRatio <= 100)
   const [accessToken, setAccessToken] = useState('')
-  const [accessTokenChanged, setAccessTokenChanged] = useState(false)
+  const [refreshToken, setRefreshToken] = useState('')
+  const [userID, setUserID] = useState(
+    String(props.monitor?.new_api_user_id || '')
+  )
+  const [provider, setProvider] = useState<UpstreamMonitorProvider | ''>(
+    props.monitor?.provider || ''
+  )
+  const [detecting, setDetecting] = useState(false)
+  const [accountErrors, setAccountErrors] = useState<string[]>([])
+
+  const handleDetect = async () => {
+    setDetecting(true)
+    try {
+      const response = await detectUpstreamMonitor(props.row.base_url)
+      if (!response.success) {
+        throw new Error(response.message || t('Detection failed'))
+      }
+      if (response.data?.detected && response.data.provider) {
+        setProvider(response.data.provider)
+      } else {
+        toast.info(t('Could not identify this site. Select its type manually.'))
+      }
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : t('Detection failed')
+      )
+    } finally {
+      setDetecting(false)
+    }
+  }
   const [costFactor, setCostFactor] = useState(
     String(props.row.cost_factor || 1)
   )
@@ -102,7 +149,7 @@ export function ProfitSettingsDialog(props: ProfitSettingsDialogProps) {
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault()
-    if (!isFormValid || props.saving) return
+    if (!isFormValid || props.saving || detecting) return
 
     const input: ChannelProfitConfigInput = {
       display_name: displayName.trim(),
@@ -119,12 +166,45 @@ export function ProfitSettingsDialog(props: ProfitSettingsDialogProps) {
       else input.manual_ratio = parsedManualRatio
     }
 
-    if (accessTokenChanged) {
-      input.access_token = accessToken.trim()
+    let account:
+      | (UpstreamMonitorUpdateInput & { provider: UpstreamMonitorProvider })
+      | undefined
+    const credentialsChanged =
+      accessToken.trim() !== '' ||
+      refreshToken.trim() !== '' ||
+      (props.monitor?.provider === 'newapi' &&
+        Number(userID) !== props.monitor.new_api_user_id)
+    if (provider && (!props.monitor || credentialsChanged)) {
+      const values = {
+        provider,
+        new_api_user_id: provider === 'newapi' ? Number(userID) : undefined,
+        access_token: accessToken.trim(),
+        refresh_token: refreshToken.trim(),
+      }
+      const result = props.monitor
+        ? upstreamMonitorCredentialFormSchema.safeParse(values)
+        : upstreamMonitorFormSchema.safeParse({
+            ...values,
+            base_url: props.row.base_url,
+          })
+      if (!result.success) {
+        setAccountErrors(result.error.issues.map((issue) => issue.message))
+        return
+      }
+      account = {
+        provider,
+        ...(provider === 'newapi' ? { new_api_user_id: Number(userID) } : {}),
+        ...(accessToken.trim() ? { access_token: accessToken.trim() } : {}),
+        ...(provider === 'sub2api' && refreshToken.trim()
+          ? { refresh_token: refreshToken.trim() }
+          : {}),
+      }
     }
+    setAccountErrors([])
 
     try {
-      await props.onSave(props.row.channel_id, input)
+      if (account) await props.onSave(props.row.channel_id, input, account)
+      else await props.onSave(props.row.channel_id, input)
       props.onClose()
     } catch {
       // The mutation displays the error; keep the form open for correction.
@@ -134,7 +214,9 @@ export function ProfitSettingsDialog(props: ProfitSettingsDialogProps) {
   return (
     <Dialog
       open
-      onOpenChange={(open) => !open && !props.saving && props.onClose()}
+      onOpenChange={(open) =>
+        !open && !props.saving && !detecting && props.onClose()
+      }
     >
       <DialogContent className='max-h-[85dvh] overflow-y-auto rounded-xl sm:max-w-md'>
         <form onSubmit={(e) => void handleSubmit(e)}>
@@ -148,6 +230,69 @@ export function ProfitSettingsDialog(props: ProfitSettingsDialogProps) {
           </DialogHeader>
 
           <FieldGroup className='my-4 space-y-3.5'>
+            <Field>
+              <FieldLabel htmlFor='profit-account-provider'>
+                {t('Site type')}
+              </FieldLabel>
+              <div className='flex flex-wrap gap-2'>
+                <NativeSelect
+                  id='profit-account-provider'
+                  value={provider}
+                  disabled={props.saving || detecting || !!props.monitor}
+                  onChange={(event) => {
+                    setProvider(event.target.value as UpstreamMonitorProvider)
+                    setAccessToken('')
+                    setRefreshToken('')
+                  }}
+                >
+                  <NativeSelectOption value=''>
+                    {t('Not configured')}
+                  </NativeSelectOption>
+                  <NativeSelectOption value='newapi'>
+                    New API
+                  </NativeSelectOption>
+                  <NativeSelectOption value='sub2api'>
+                    Sub2API
+                  </NativeSelectOption>
+                </NativeSelect>
+                {!props.monitor && (
+                  <Button
+                    type='button'
+                    variant='outline'
+                    disabled={props.saving || detecting}
+                    onClick={() => void handleDetect()}
+                  >
+                    {detecting && <Spinner aria-hidden='true' />}
+                    {t('Detect site')}
+                  </Button>
+                )}
+              </div>
+            </Field>
+            {provider && (
+              <UpstreamAccountFields
+                provider={provider}
+                id='profit-account'
+                disabled={props.saving || detecting}
+                existing={!!props.monitor}
+                accessTokenConfigured={props.monitor?.access_token_configured}
+                refreshTokenConfigured={props.monitor?.refresh_token_configured}
+                userID={{
+                  value: userID,
+                  onChange: (event) => setUserID(event.target.value),
+                }}
+                accessToken={{
+                  value: accessToken,
+                  onChange: (event) => setAccessToken(event.target.value),
+                }}
+                refreshToken={{
+                  value: refreshToken,
+                  onChange: (event) => setRefreshToken(event.target.value),
+                }}
+              />
+            )}
+            {accountErrors.map((message) => (
+              <FieldError key={message}>{t(message)}</FieldError>
+            ))}
             <Field>
               <FieldLabel htmlFor='profit-cost-mode'>
                 {t('Cost calculation mode')}
@@ -168,9 +313,7 @@ export function ProfitSettingsDialog(props: ProfitSettingsDialogProps) {
                 </NativeSelectOption>
               </NativeSelect>
               <FieldDescription>
-                {t(
-                  'Cost settings apply to new requests. Reconciliation preserves their purchase cost factor.'
-                )}
+                {t('Cost settings apply to new requests.')}
               </FieldDescription>
             </Field>
             {costMode === 'ratio' && (
@@ -276,48 +419,6 @@ export function ProfitSettingsDialog(props: ProfitSettingsDialogProps) {
                 </span>
               </div>
             </Field>
-
-            {props.row.provider === 'new_api' && (
-              <Field>
-                <FieldLabel
-                  htmlFor='profit-access-token'
-                  className='text-xs font-medium'
-                >
-                  {t('Access token')}
-                </FieldLabel>
-                <Input
-                  id='profit-access-token'
-                  type='password'
-                  value={accessToken}
-                  autoComplete='off'
-                  placeholder={
-                    props.row.access_token_configured && !accessTokenChanged
-                      ? t('Access token configured')
-                      : t('Enter access token')
-                  }
-                  onChange={(event) => {
-                    setAccessToken(event.target.value)
-                    setAccessTokenChanged(true)
-                  }}
-                  disabled={props.saving}
-                />
-                {props.row.access_token_configured && !accessTokenChanged && (
-                  <Button
-                    type='button'
-                    variant='link'
-                    size='xs'
-                    className='text-muted-foreground hover:text-foreground mt-1 h-auto px-0 text-[11px]'
-                    onClick={() => {
-                      setAccessToken('')
-                      setAccessTokenChanged(true)
-                    }}
-                    disabled={props.saving}
-                  >
-                    {t('Clear access token')}
-                  </Button>
-                )}
-              </Field>
-            )}
           </FieldGroup>
 
           <DialogFooter className='pt-2'>
@@ -325,11 +426,14 @@ export function ProfitSettingsDialog(props: ProfitSettingsDialogProps) {
               type='button'
               variant='outline'
               onClick={props.onClose}
-              disabled={props.saving}
+              disabled={props.saving || detecting}
             >
               {t('Cancel')}
             </Button>
-            <Button type='submit' disabled={props.saving || !isFormValid}>
+            <Button
+              type='submit'
+              disabled={props.saving || detecting || !isFormValid}
+            >
               {props.saving && (
                 <Spinner data-icon='inline-start' aria-label={t('Loading')} />
               )}

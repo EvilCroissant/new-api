@@ -26,7 +26,7 @@ import { useAuthStore } from '@/stores/auth-store'
 
 export const Route = createFileRoute('/_authenticated/upstream-monitor/')({
   validateSearch: z.object({
-    tab: z.enum(['accounts', 'profit']).catch('accounts'),
+    tab: z.enum(['accounts', 'profit']).catch('profit'),
   }),
   beforeLoad: () => {
     const { auth } = useAuthStore.getState()

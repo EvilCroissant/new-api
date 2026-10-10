@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"math"
 	"net/url"
 	"strings"
@@ -15,11 +14,10 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
-// Costs live in the primary DB. Reconciliation never updates ClickHouse logs.
+// Costs live in the primary DB, independently of the configured log database.
 type ChannelProfitRecord struct {
 	ID                string   `json:"id" gorm:"primaryKey;type:varchar(36)"`
 	RequestID         string   `json:"-" gorm:"type:varchar(64);index"`
@@ -37,8 +35,9 @@ type ChannelProfitRecord struct {
 	Status            string   `json:"status" gorm:"type:varchar(16);index"`
 	Source            string   `json:"source" gorm:"type:varchar(32)"`
 	Reason            string   `json:"reason,omitempty" gorm:"type:varchar(64)"`
-	Reconciliation    string   `json:"reconciliation" gorm:"type:varchar(32)"`
-	MatchedAt         int64    `json:"matched_at,omitempty"`
+	// Retain legacy columns so upgrades preserve historical financial records.
+	Reconciliation string `json:"-" gorm:"type:varchar(32)"`
+	MatchedAt      int64  `json:"-"`
 }
 
 type ChannelProfitCoverage struct {
@@ -223,9 +222,9 @@ func recordChannelProfit(c *gin.Context, log *Log, other *LogOther) {
 		factor = 1
 	}
 	record := &ChannelProfitRecord{
-		ID: uuid.NewString(), RequestID: log.RequestId, UpstreamRequestID: log.UpstreamRequestId,
+		ID: uuid.NewString(), RequestID: log.RequestId,
 		ChannelID: log.ChannelId, KeyFingerprint: snapshot.KeyFingerprint, Scope: snapshot.Scope, CreatedAt: log.CreatedAt,
-		RevenueUSD: float64(log.Quota) / common.QuotaPerUnit, CostFactor: factor, CostMode: ChannelProfitCostMode(config), Status: "unknown", Reconciliation: "pending",
+		RevenueUSD: float64(log.Quota) / common.QuotaPerUnit, CostFactor: factor, CostMode: ChannelProfitCostMode(config), Status: "unknown",
 	}
 	record.UpstreamRatio = config.ManualRatio
 	if record.UpstreamRatio == nil && snapshot.KeyState != nil {
@@ -233,7 +232,6 @@ func recordChannelProfit(c *gin.Context, log *Log, other *LogOther) {
 	}
 	cost, source, reason := 0.0, "", "pricing_unavailable"
 	if record.CostMode == "request" {
-		record.Reconciliation = "not_applicable"
 		if config.RequestCostUSD != nil {
 			cost, source, reason = *config.RequestCostUSD*factor, "fixed_request", ""
 		} else {
@@ -241,14 +239,6 @@ func recordChannelProfit(c *gin.Context, log *Log, other *LogOther) {
 		}
 	} else if EstimateChannelProfitCost != nil {
 		cost, source, reason = EstimateChannelProfitCost(snapshot, log, other)
-	}
-	if record.CostMode != "request" {
-		if record.UpstreamRequestID == "" {
-			record.Reconciliation = "missing_request_id"
-		}
-		if snapshot.SiteID == "" {
-			record.Reconciliation = "scope_unavailable"
-		}
 	}
 	if reason == "" && (cost < 0 || math.IsNaN(cost) || math.IsInf(cost, 0)) {
 		reason = "invalid_cost"
@@ -349,46 +339,4 @@ func ChannelProfitRequestCoverageByChannel(channelIDs []int, start, end int64) (
 		coverages[row.ChannelID] = coverage
 	}
 	return coverages, err
-}
-
-// Match only exact upstream request IDs within the same site/key scope. Re-read
-// previously matched siblings so late local records cannot double-count a charge.
-func ReconcileChannelProfitCost(scope, requestID string, costUSD float64) error {
-	if scope == "" || requestID == "" || costUSD < 0 || math.IsNaN(costUSD) || math.IsInf(costUSD, 0) {
-		return errors.New("invalid upstream cost")
-	}
-	return DB.Transaction(func(tx *gorm.DB) error {
-		var state ChannelProfitKeyState
-		if err := lockForUpdate(tx).Where("id = ?", scope).First(&state).Error; err != nil {
-			return err
-		}
-		var records []ChannelProfitRecord
-		if err := tx.Where("scope = ? AND upstream_request_id = ? AND cost_mode = ?", scope, requestID, "ratio").Order("id ASC").Find(&records).Error; err != nil {
-			return err
-		}
-		total := 0.0
-		for _, r := range records {
-			total += max(r.RevenueUSD, 0)
-		}
-		remaining := costUSD
-		for i, r := range records {
-			share := remaining
-			if i < len(records)-1 {
-				share = costUSD / float64(len(records))
-				if total > 0 {
-					share = costUSD * max(r.RevenueUSD, 0) / total
-				}
-				share = min(share, remaining)
-				remaining -= share
-			}
-			cost := share * r.CostFactor
-			if cost < 0 || math.IsNaN(cost) || math.IsInf(cost, 0) {
-				return errors.New("invalid reconciled cost")
-			}
-			if err := tx.Model(&ChannelProfitRecord{}).Where("id = ?", r.ID).Updates(map[string]any{"cost_usd": cost, "status": "matched", "source": "upstream_log", "reason": "", "reconciliation": "matched", "matched_at": time.Now().Unix()}).Error; err != nil {
-				return err
-			}
-		}
-		return nil
-	})
 }

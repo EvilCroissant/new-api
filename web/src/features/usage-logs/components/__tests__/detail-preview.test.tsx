@@ -36,6 +36,7 @@ import {
 import type { UsageLog } from '../../data/schema'
 import type { LogOtherData } from '../../types'
 import { useCommonLogsColumns } from '../columns/common-logs-columns'
+import { RequestCostDetails } from '../dialogs/request-cost-details'
 
 vi.mock('@lobehub/icons', () => ({}))
 vi.hoisted(() => {
@@ -480,7 +481,7 @@ test('does not invent an upstream error for a transport-only disconnect', async 
   expect(dialog.queryByText('Upstream Error')).not.toBeInTheDocument()
 })
 
-test('reconciled cost shows its source, original estimate and precise ratio', async () => {
+test('historical cost preserves its amounts without reconciliation controls', async () => {
   fireEvent.click(
     renderPreview({
       admin_info: {
@@ -490,7 +491,6 @@ test('reconciled cost shows its source, original estimate and precise ratio', as
           estimated_usd: 0.003,
           source: 'upstream_log',
           upstream_ratio: 0.005,
-          reconciliation: 'matched',
         },
       },
     })
@@ -499,8 +499,49 @@ test('reconciled cost shows its source, original estimate and precise ratio', as
   expect(dialog.getByText('Upstream consumption log')).toBeVisible()
   expect(dialog.getByText('Original estimate')).toBeVisible()
   expect(dialog.getByText('0.005')).toBeVisible()
-  expect(dialog.getAllByText('Reconciled')).toHaveLength(2)
+  expect(dialog.getByText('Recorded cost')).toBeVisible()
+  expect(dialog.queryByText('Reconciled')).not.toBeInTheDocument()
+  expect(dialog.queryByText('Reconciliation status')).not.toBeInTheDocument()
 })
+test.each([
+  ['zhCN', '0.000078', '1.000078'],
+  ['zhTW', '0.000078', '1.000078'],
+  ['en', '0.000078', '1.000078'],
+  ['fr', '0,000078', '1,000078'],
+  ['ja', '0.000078', '1.000078'],
+  ['ru', '0,000078', '1,000078'],
+  ['vi', '0,000078', '1,000078'],
+  ['invalid_locale', '0.000078', '1.000078'],
+])(
+  'request cost preserves six decimal places in %s',
+  async (language, expectedCost, expectedEstimate) => {
+    await i18n.changeLanguage(language)
+    const { container } = render(
+      <I18nextProvider i18n={i18n}>
+        <RequestCostDetails
+          cost={{
+            status: 'matched',
+            cost_usd: 0.000078,
+            estimated_usd: 1.000078,
+          }}
+        />
+      </I18nextProvider>
+    )
+    const dialog = within(container)
+    expect(dialog.getByText('Upstream cost').parentElement).toHaveTextContent(
+      expectedCost
+    )
+    expect(
+      dialog.getByText('Original estimate').parentElement
+    ).toHaveTextContent(expectedEstimate)
+    if (language === 'en') {
+      await act(() => i18n.changeLanguage('fr'))
+      expect(dialog.getByText('Upstream cost').parentElement).toHaveTextContent(
+        '0,000078'
+      )
+    }
+  }
+)
 test('unknown cost explains missing data without displaying a zero charge', async () => {
   fireEvent.click(
     renderPreview({
@@ -509,7 +550,6 @@ test('unknown cost explains missing data without displaying a zero charge', asyn
           status: 'unknown',
           cost_usd: 0,
           reason: 'ratio_unavailable',
-          reconciliation: 'missing_request_id',
         },
       },
     })
@@ -518,8 +558,9 @@ test('unknown cost explains missing data without displaying a zero charge', asyn
   expect(
     dialog.getByText('Upstream ratio unavailable or expired')
   ).toBeVisible()
+  expect(dialog.queryByText('Reconciliation status')).not.toBeInTheDocument()
   expect(
-    dialog.getByText('No upstream request ID; cannot reconcile')
-  ).toBeVisible()
+    dialog.queryByText('No upstream request ID; cannot reconcile')
+  ).not.toBeInTheDocument()
   expect(dialog.queryByText('Upstream cost')).not.toBeInTheDocument()
 })

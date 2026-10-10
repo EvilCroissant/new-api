@@ -25,14 +25,7 @@ import { useTranslation } from 'react-i18next'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import {
-  Field,
-  FieldDescription,
-  FieldError,
-  FieldGroup,
-  FieldLabel,
-} from '@/components/ui/field'
-import { Input } from '@/components/ui/input'
+import { FieldError, FieldGroup } from '@/components/ui/field'
 import { Spinner } from '@/components/ui/spinner'
 
 import {
@@ -41,6 +34,7 @@ import {
   type UpstreamMonitorCredentialFormValues,
 } from '../lib/schema'
 import type { UpstreamMonitor, UpstreamMonitorUpdateInput } from '../types'
+import { UpstreamAccountFields } from './upstream-account-fields'
 
 type UpstreamMonitorCredentialPanelProps = {
   monitor: UpstreamMonitor
@@ -123,104 +117,31 @@ export function UpstreamMonitorCredentialPanel(
         </div>
 
         <FieldGroup className='gap-4 md:grid md:grid-cols-2'>
-          {props.monitor.provider === 'newapi' && (
-            <Field
-              data-invalid={Boolean(form.formState.errors.new_api_user_id)}
-            >
-              <FieldLabel
-                htmlFor={`upstream-monitor-user-id-${props.monitor.id}`}
-              >
-                {t('New API user ID')}
-              </FieldLabel>
-              <Input
-                id={`upstream-monitor-user-id-${props.monitor.id}`}
-                type='number'
-                min={1}
-                step={1}
-                inputMode='numeric'
-                disabled={props.isSaving}
-                {...form.register('new_api_user_id')}
-              />
-              <FieldError errors={[form.formState.errors.new_api_user_id]}>
-                {form.formState.errors.new_api_user_id?.message &&
-                  t(form.formState.errors.new_api_user_id.message)}
-              </FieldError>
-            </Field>
-          )}
-
-          <Field data-invalid={Boolean(form.formState.errors.access_token)}>
-            <div className='flex items-center justify-between gap-2'>
-              <FieldLabel
-                htmlFor={`upstream-monitor-access-token-${props.monitor.id}`}
-              >
-                {props.monitor.provider === 'newapi'
-                  ? t('Personal access token')
-                  : t('JWT')}
-              </FieldLabel>
-              <Badge
-                variant={
-                  props.monitor.access_token_configured ? 'outline' : 'warning'
-                }
-                className='h-5 font-normal'
-              >
-                {props.monitor.access_token_configured
-                  ? t('Configured')
-                  : t('Not configured')}
-              </Badge>
-            </div>
-            <Input
-              id={`upstream-monitor-access-token-${props.monitor.id}`}
-              type='password'
-              autoComplete='off'
-              disabled={props.isSaving}
-              {...form.register('access_token')}
-            />
-            <FieldDescription>
-              {t('Leave blank to keep the existing credential')}
-            </FieldDescription>
-            <FieldError errors={[form.formState.errors.access_token]}>
-              {form.formState.errors.access_token?.message &&
-                t(form.formState.errors.access_token.message)}
+          <UpstreamAccountFields
+            provider={props.monitor.provider}
+            id={`upstream-monitor-${props.monitor.id}`}
+            disabled={props.isSaving}
+            existing
+            accessTokenConfigured={props.monitor.access_token_configured}
+            refreshTokenConfigured={props.monitor.refresh_token_configured}
+            userID={{
+              ...form.register('new_api_user_id'),
+              'aria-invalid': Boolean(form.formState.errors.new_api_user_id),
+            }}
+            accessToken={{
+              ...form.register('access_token'),
+              'aria-invalid': Boolean(form.formState.errors.access_token),
+            }}
+            refreshToken={{
+              ...form.register('refresh_token'),
+              'aria-invalid': Boolean(form.formState.errors.refresh_token),
+            }}
+          />
+          {Object.values(form.formState.errors).map((error) => (
+            <FieldError key={error.message}>
+              {error.message && t(error.message)}
             </FieldError>
-          </Field>
-
-          {props.monitor.provider === 'sub2api' && (
-            <Field data-invalid={Boolean(form.formState.errors.refresh_token)}>
-              <div className='flex items-center justify-between gap-2'>
-                <FieldLabel
-                  htmlFor={`upstream-monitor-refresh-token-${props.monitor.id}`}
-                >
-                  {t('Refresh token')}
-                </FieldLabel>
-                <Badge
-                  variant={
-                    props.monitor.refresh_token_configured
-                      ? 'outline'
-                      : 'warning'
-                  }
-                  className='h-5 font-normal'
-                >
-                  {props.monitor.refresh_token_configured
-                    ? t('Configured')
-                    : t('Not configured')}
-                </Badge>
-              </div>
-              <Input
-                id={`upstream-monitor-refresh-token-${props.monitor.id}`}
-                type='password'
-                autoComplete='off'
-                disabled={props.isSaving}
-                {...form.register('refresh_token')}
-              />
-              <FieldDescription>
-                {t('Leave blank to keep the existing credential')}
-              </FieldDescription>
-              <FieldError errors={[form.formState.errors.refresh_token]}>
-                {form.formState.errors.refresh_token?.message &&
-                  t(form.formState.errors.refresh_token.message)}
-              </FieldError>
-            </Field>
-          )}
+          ))}
         </FieldGroup>
 
         <div className='mt-4 flex justify-end gap-2'>
