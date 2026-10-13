@@ -293,9 +293,9 @@ describe('upstream management navigation', () => {
       const warning = vi.spyOn(toast, 'warning')
       vi.spyOn(api, 'post').mockImplementation(async (url) => {
         if (url === '/api/upstream-monitors/10/sync') {
-        if (failure === 'network error') {
+          if (failure === 'network error') {
             throw new Error('Network unavailable')
-        }
+          }
           return { data: { success: false, message: 'Account unavailable' } }
         }
         if (url === '/api/upstream-monitors/9/sync') {
@@ -334,11 +334,16 @@ describe('upstream management navigation', () => {
     expect(screen.queryByText('Sync failed')).not.toBeInTheDocument()
   })
 
-  it('shows a disabled key in an active site without presenting its old error as a sync failure', async () => {
+  it('shows a disabled key without financial amounts or a sync failure while keeping the site profit visible', async () => {
     profitRows = [
       {
         ...row,
         status: 'synced',
+        revenue_usd: 4,
+        cost_usd: 0.2,
+        cost_available: true,
+        profit_usd: 3.8,
+        profit_available: true,
         keys: [
           {
             key_id: 'cancelled',
@@ -352,12 +357,12 @@ describe('upstream management navigation', () => {
             upstream_group: '',
             upstream_group_ratio: 0,
             ratio_available: false,
-            revenue_usd: 1,
-            revenue_available: true,
-            cost_usd: 0.1,
-            cost_available: true,
-            profit_usd: 0.9,
-            profit_available: true,
+            revenue_usd: 0,
+            revenue_available: false,
+            cost_usd: 0,
+            cost_available: false,
+            profit_usd: 0,
+            profit_available: false,
             partial: false,
             last_synced_at: 1,
             last_error: 'old upstream error',
@@ -371,7 +376,9 @@ describe('upstream management navigation', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Expand' }))
     await screen.findByText('Channel disabled')
     expect(screen.queryByLabelText('Sync failed')).not.toBeInTheDocument()
-    expect(screen.getByText('$0.1')).toBeInTheDocument()
+    expect(screen.queryByText('Partial data')).not.toBeInTheDocument()
+    expect(screen.getAllByText('-')).toHaveLength(3)
+    expect(screen.getByText('$3.8')).toBeInTheDocument()
   })
 
   it('shows profit sites and unmatched accounts in one table without inventing account profit', async () => {

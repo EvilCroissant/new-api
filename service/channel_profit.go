@@ -772,7 +772,7 @@ func GetChannelProfitSummary(usageDate string, includeDisabled bool) (*ChannelPr
 		if !group.Enabled && !includeDisabled {
 			continue
 		}
-		for _, channel := range group.Channels {
+		for _, channel := range group.ActiveChannels {
 			channelIDs = append(channelIDs, channel.Id)
 		}
 	}
@@ -803,11 +803,11 @@ func GetChannelProfitSummary(usageDate string, includeDisabled bool) (*ChannelPr
 			groupSnapshots = append(groupSnapshots, snapshotsByChannel[channel.Id]...)
 		}
 		row := buildChannelProfitGroupRow(group, quotaByChannel, groupSnapshots)
-		if group.CostMode == "ratio" {
+		if group.CostMode == "ratio" && len(group.ActiveChannels) > 0 {
 			row.CostSyncError = costErrors[model.ProfitCostSiteID(group.BaseURL)]
 		}
-		for _, id := range row.ChannelIds {
-			coverage := coverageByChannel[id]
+		for _, channel := range group.ActiveChannels {
+			coverage := coverageByChannel[channel.Id]
 			row.RequestCoverage.Total += coverage.Total
 			row.RequestCoverage.Estimated += coverage.Estimated
 			row.RequestCoverage.Matched += coverage.Matched
@@ -816,7 +816,7 @@ func GetChannelProfitSummary(usageDate string, includeDisabled bool) (*ChannelPr
 			row.RequestCoverage.CostUSD += coverage.CostUSD
 		}
 		summary.Rows = append(summary.Rows, row)
-		if !group.Enabled {
+		if !group.Enabled || len(group.ActiveChannels) == 0 {
 			continue
 		}
 		enabledRows++
@@ -852,7 +852,9 @@ func buildChannelProfitGroupRow(group *channelProfitGroup, quotaByChannel map[in
 	for _, channel := range group.Channels {
 		channelIds = append(channelIds, channel.Id)
 		channelNames = append(channelNames, channel.Name)
-		revenueQuota += quotaByChannel[channel.Id]
+		if channel.Status == common.ChannelStatusEnabled {
+			revenueQuota += quotaByChannel[channel.Id]
+		}
 	}
 	row := ChannelProfitRow{
 		CostMode: group.CostMode, ManualRatio: group.ManualRatio,
@@ -904,8 +906,9 @@ func buildChannelProfitGroupRow(group *channelProfitGroup, quotaByChannel map[in
 		}
 	}
 
-	row.CostAvailable = group.Enabled && len(group.Keys) > 0
+	row.CostAvailable = group.Enabled && len(group.ActiveKeys) > 0
 	row.Status = "synced"
+	hasActiveSnapshot := false
 	activeKeys := make(map[string]bool, len(group.ActiveKeys))
 	for _, key := range group.ActiveKeys {
 		activeKeys[key.Fingerprint] = true
@@ -925,6 +928,10 @@ func buildChannelProfitGroupRow(group *channelProfitGroup, quotaByChannel map[in
 		keyRevenueQuota := int64(0)
 		keyRevenueAvailable := true
 		for _, channelId := range groupKey.ChannelIds {
+			channel := channelsById[channelId]
+			if channel == nil || channel.Status != common.ChannelStatusEnabled {
+				continue
+			}
 			if keyCountByChannel[channelId] != 1 {
 				keyRevenueAvailable = false
 				break
@@ -939,6 +946,9 @@ func buildChannelProfitGroupRow(group *channelProfitGroup, quotaByChannel map[in
 			ChannelDisabled:  !activeKeys[groupKey.Fingerprint],
 			DownstreamRates:  make([]ChannelProfitGroupRatio, 0),
 			RevenueAvailable: keyRevenueAvailable,
+		}
+		if len(groupKey.ChannelNames) > 0 {
+			key.KeyName = groupKey.ChannelNames[0]
 		}
 		if keyRevenueAvailable {
 			key.RevenueUSD = float64(keyRevenueQuota) / common.QuotaPerUnit
@@ -966,12 +976,22 @@ func buildChannelProfitGroupRow(group *channelProfitGroup, quotaByChannel map[in
 				Ratio: keyRateByGroup[channelGroup],
 			})
 		}
+		if key.ChannelDisabled {
+			key.RevenueUSD = 0
+			key.RevenueAvailable = false
+			if snapshot != nil && snapshot.UpstreamKeyName != "" {
+				key.KeyName = snapshot.UpstreamKeyName
+			}
+			row.Keys = append(row.Keys, key)
+			continue
+		}
 		if snapshot == nil {
 			row.CostAvailable = false
 			row.Partial = true
 			row.Keys = append(row.Keys, key)
 			continue
 		}
+		hasActiveSnapshot = true
 
 		provider := channelProfitSnapshotProvider(snapshot)
 		if row.Provider == "" {
@@ -1026,7 +1046,7 @@ func buildChannelProfitGroupRow(group *channelProfitGroup, quotaByChannel map[in
 		if snapshot.LastSyncedAt > row.LastSyncedAt {
 			row.LastSyncedAt = snapshot.LastSyncedAt
 		}
-		if snapshot.LastError != "" && !key.ChannelDisabled {
+		if snapshot.LastError != "" {
 			row.Status = "error"
 			if row.LastError == "" {
 				row.LastError = snapshot.LastError
@@ -1040,14 +1060,15 @@ func buildChannelProfitGroupRow(group *channelProfitGroup, quotaByChannel map[in
 		row.MarginAvailable = false
 		return row
 	}
-	if len(snapshotByKey) == 0 {
+	if len(group.ActiveChannels) == 0 {
+		row.Status = "channel_disabled"
+		return row
+	}
+	if !hasActiveSnapshot {
 		row.Status = "pending"
 		row.Partial = true
 	} else if row.Status != "error" && row.Partial {
 		row.Status = "partial"
-	}
-	if len(group.ActiveChannels) == 0 {
-		row.Status = "channel_disabled"
 	}
 	row.ProfitAvailable = row.CostAvailable
 	if row.ProfitAvailable {
