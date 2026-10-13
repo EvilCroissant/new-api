@@ -109,7 +109,7 @@ func TestStructuredLogsDatabaseMatrix(t *testing.T) {
 			coverage := coverages[182]
 			assert.EqualValues(t, 1, coverage.Estimated)
 			assert.InDelta(t, 0.3, coverage.CostUSD, 0.000001)
-			rows, total, err := GetUserLogs(910001, LogTypeUnknown, 0, 0, "", "", 0, 10, "", "", "")
+			rows, total, err := GetUserLogs(910001, LogFilter{}, 0, 10)
 			require.NoError(t, err)
 			require.EqualValues(t, 2, total)
 			require.Len(t, rows, 2)

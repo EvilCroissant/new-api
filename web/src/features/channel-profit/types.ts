@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 
 export type ChannelProfitStatus =
   | 'disabled'
+  | 'channel_disabled'
   | 'pending'
   | 'synced'
   | 'partial'
@@ -37,6 +38,7 @@ export type ChannelProfitKey = {
   key_name: string
   channel_ids: number[]
   channel_names: string[]
+  channel_disabled: boolean
   downstream_rates: ChannelProfitGroupRatio[]
   provider: ChannelProfitProvider
   upstream_group: string

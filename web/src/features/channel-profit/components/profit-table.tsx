@@ -62,6 +62,7 @@ const STATUS_VARIANT: Record<
   'outline' | 'secondary' | 'warning' | 'destructive'
 > = {
   disabled: 'outline',
+  channel_disabled: 'outline',
   pending: 'secondary',
   synced: 'secondary',
   partial: 'warning',
@@ -156,6 +157,16 @@ function ProfitSubRows({ row }: { row: ChannelProfitRow }) {
             </Tooltip>
           )
         }
+        if (key.channel_disabled) {
+          statusContent = (
+            <Badge
+              variant='outline'
+              className='h-4 px-1.5 py-0 text-[10px] font-normal'
+            >
+              {t('Channel disabled')}
+            </Badge>
+          )
+        }
 
         return (
           <div
@@ -244,6 +255,7 @@ export function ProfitTable(props: ProfitTableProps) {
 
   const statusLabel: Record<ChannelProfitStatus, string> = {
     disabled: t('Monitoring disabled'),
+    channel_disabled: t('Channel disabled'),
     pending: t('Waiting for first sync'),
     synced: t('Synchronized'),
     partial: t('Partial data'),
@@ -302,6 +314,8 @@ export function ProfitTable(props: ProfitTableProps) {
               let syncTooltip = t('Sync this channel')
               if (!row.enabled) {
                 syncTooltip = t('Enable monitoring to sync')
+              } else if (row.status === 'channel_disabled') {
+                syncTooltip = t('Channel disabled')
               } else if (isSyncing) {
                 syncTooltip = t('Syncing...')
               }
@@ -396,7 +410,11 @@ export function ProfitTable(props: ProfitTableProps) {
                                       onClick={() =>
                                         props.onSync(row.channel_id)
                                       }
-                                      disabled={!row.enabled || isSyncing}
+                                      disabled={
+                                        !row.enabled ||
+                                        row.status === 'channel_disabled' ||
+                                        isSyncing
+                                      }
                                       aria-label={t('Sync this channel')}
                                     >
                                       <HugeiconsIcon

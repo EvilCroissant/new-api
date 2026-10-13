@@ -33,6 +33,7 @@ import {
 } from '@testing-library/react'
 import { createInstance } from 'i18next'
 import { I18nextProvider, initReactI18next } from 'react-i18next'
+import { toast } from 'sonner'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChannelProfitRow } from '@/features/channel-profit/types'
@@ -203,6 +204,176 @@ async function renderPage(path = '/upstream-monitor') {
 }
 
 describe('upstream management navigation', () => {
+  it('refreshes profit and all account balances together and waits for balance synchronization', async () => {
+    profitRows = [row]
+    accountMonitors = [
+      monitor,
+      {
+        ...monitor,
+        id: 10,
+        name: 'Standalone',
+        base_url: 'https://other.example.com',
+      },
+    ]
+    let finishBalance: () => void = () => {}
+    const balancePending = new Promise<void>((resolve) => {
+      finishBalance = resolve
+    })
+    const sync = vi.spyOn(api, 'post').mockImplementation(async (url) => {
+      if (url === '/api/upstream-monitors/9/sync') {
+        await balancePending
+        accountMonitors = accountMonitors.map((item) =>
+          item.id === 9 ? { ...item, balance_usd: 23 } : item
+        )
+      }
+      return { data: { success: true } }
+    })
+    await renderPage()
+    await screen.findByText('Standalone')
+    const refresh = screen.getAllByRole('button', { name: 'Sync now' })[0]
+    fireEvent.click(refresh)
+    await waitFor(() => {
+      expect(sync.mock.calls.map(([url]) => url)).toEqual(
+        expect.arrayContaining([
+          '/api/channel-profit/sync',
+          '/api/upstream-monitors/9/sync',
+          '/api/upstream-monitors/10/sync',
+        ])
+      )
+      expect(refresh).toBeDisabled()
+    })
+    finishBalance()
+    await waitFor(() =>
+      expect(
+        screen.getAllByLabelText('Available balance')[0]
+      ).toHaveTextContent('$23')
+    )
+    await waitFor(() => expect(refresh).toBeEnabled())
+  })
+
+  it('refreshes only the matching account when one profit site is synchronized', async () => {
+    profitRows = [row]
+    accountMonitors = [
+      monitor,
+      {
+        ...monitor,
+        id: 10,
+        name: 'Standalone',
+        base_url: 'https://other.example.com',
+      },
+    ]
+    const sync = vi
+      .spyOn(api, 'post')
+      .mockResolvedValue({ data: { success: true } })
+    await renderPage()
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Sync this channel' })
+    )
+    await waitFor(() =>
+      expect(sync.mock.calls.map(([url]) => url)).toEqual([
+        '/api/channel-profit/182/sync',
+        '/api/upstream-monitors/9/sync',
+      ])
+    )
+  })
+
+  it.each(['business error', 'network error'])(
+    'keeps successful balance updates and reports a warning when another account returns a %s',
+    async (failure) => {
+      profitRows = [row]
+      accountMonitors = [
+        monitor,
+        {
+          ...monitor,
+          id: 10,
+          name: 'Standalone',
+          base_url: 'https://other.example.com',
+        },
+      ]
+      const warning = vi.spyOn(toast, 'warning')
+      vi.spyOn(api, 'post').mockImplementation(async (url) => {
+        if (url === '/api/upstream-monitors/10/sync') {
+        if (failure === 'network error') {
+            throw new Error('Network unavailable')
+        }
+          return { data: { success: false, message: 'Account unavailable' } }
+        }
+        if (url === '/api/upstream-monitors/9/sync') {
+          accountMonitors = accountMonitors.map((item) =>
+            item.id === 9 ? { ...item, balance_usd: 23 } : item
+          )
+        }
+        return { data: { success: true } }
+      })
+      await renderPage()
+      await screen.findByText('Standalone')
+      fireEvent.click(screen.getAllByRole('button', { name: 'Sync now' })[0])
+      await waitFor(() =>
+        expect(
+          screen.getAllByLabelText('Available balance')[0]
+        ).toHaveTextContent('$23')
+      )
+      await waitFor(() =>
+        expect(
+          screen.getAllByRole('button', { name: 'Sync now' })[0]
+        ).toBeEnabled()
+      )
+      expect(warning).toHaveBeenCalledWith(
+        'Profit sync started, but some account balances failed to refresh'
+      )
+    }
+  )
+
+  it('shows disabled channels without a sync error and prevents channel synchronization', async () => {
+    profitRows = [{ ...row, status: 'channel_disabled' }]
+    await renderPage()
+    await screen.findByText('Channel disabled')
+    expect(
+      screen.getByRole('button', { name: 'Sync this channel' })
+    ).toBeDisabled()
+    expect(screen.queryByText('Sync failed')).not.toBeInTheDocument()
+  })
+
+  it('shows a disabled key in an active site without presenting its old error as a sync failure', async () => {
+    profitRows = [
+      {
+        ...row,
+        status: 'synced',
+        keys: [
+          {
+            key_id: 'cancelled',
+            key_hint: 'cancelled',
+            key_name: 'Cancelled key',
+            channel_ids: [182],
+            channel_names: ['Cancelled key'],
+            channel_disabled: true,
+            downstream_rates: [],
+            provider: 'sub2api',
+            upstream_group: '',
+            upstream_group_ratio: 0,
+            ratio_available: false,
+            revenue_usd: 1,
+            revenue_available: true,
+            cost_usd: 0.1,
+            cost_available: true,
+            profit_usd: 0.9,
+            profit_available: true,
+            partial: false,
+            last_synced_at: 1,
+            last_error: 'old upstream error',
+            upstream_quota_per_unit: 0,
+            upstream_consumed_quota: 0,
+          },
+        ],
+      },
+    ]
+    await renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Expand' }))
+    await screen.findByText('Channel disabled')
+    expect(screen.queryByLabelText('Sync failed')).not.toBeInTheDocument()
+    expect(screen.getByText('$0.1')).toBeInTheDocument()
+  })
+
   it('shows profit sites and unmatched accounts in one table without inventing account profit', async () => {
     profitRows = [row]
     accountMonitors = [
@@ -288,7 +459,7 @@ describe('upstream management navigation', () => {
     const confirmation = await screen.findByRole('alertdialog')
     expect(remove).not.toHaveBeenCalled()
     fireEvent.click(
-      within(confirmation).getByRole('button', { name: 'Delete', exact: true })
+      within(confirmation).getByRole('button', { name: /^Delete$/ })
     )
     await waitFor(() =>
       expect(remove).toHaveBeenCalledWith(

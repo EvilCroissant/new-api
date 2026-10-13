@@ -46,6 +46,7 @@ type ChannelProfitKeySummary struct {
 	KeyName               string                    `json:"key_name"`
 	ChannelIds            []int                     `json:"channel_ids"`
 	ChannelNames          []string                  `json:"channel_names"`
+	ChannelDisabled       bool                      `json:"channel_disabled"`
 	DownstreamRates       []ChannelProfitGroupRatio `json:"downstream_rates"`
 	Provider              string                    `json:"provider"`
 	UpstreamGroup         string                    `json:"upstream_group"`
@@ -164,6 +165,8 @@ type channelProfitGroup struct {
 	BaseURL             string
 	Channels            []*model.Channel
 	Keys                []*channelProfitGroupKey
+	ActiveChannels      []*model.Channel
+	ActiveKeys          []*channelProfitGroupKey
 	Enabled             bool
 	DisplayName         string
 	SyncIntervalMinutes int
@@ -316,11 +319,16 @@ func SyncChannelProfits(ctx context.Context, syncOptions ...ChannelProfitSyncOpt
 	}
 	now := common.GetTimestamp()
 	selected := make([]*channelProfitGroup, 0, len(groups))
+	matched := false
 	for _, group := range groups {
 		if !group.Enabled {
 			continue
 		}
 		if options.ChannelId > 0 && !channelProfitGroupContainsChannel(group, options.ChannelId) {
+			continue
+		}
+		matched = true
+		if len(group.ActiveChannels) == 0 {
 			continue
 		}
 
@@ -331,10 +339,10 @@ func SyncChannelProfits(ctx context.Context, syncOptions ...ChannelProfitSyncOpt
 	}
 	result := ChannelProfitSyncResult{Channels: len(selected)}
 	for _, group := range selected {
-		result.Keys += len(group.Keys)
+		result.Keys += len(group.ActiveKeys)
 	}
 	if len(selected) == 0 {
-		if options.ChannelId > 0 {
+		if options.ChannelId > 0 && !matched {
 			return result, errors.New("monitored channel group not found")
 		}
 		return result, nil
@@ -359,7 +367,7 @@ func SyncChannelProfits(ctx context.Context, syncOptions ...ChannelProfitSyncOpt
 
 			// Cost logs need frequent polling even when daily balance sync is infrequent.
 			if options.DueOnly && group.LastSyncAttemptAt > 0 && now-group.LastSyncAttemptAt < int64(group.SyncIntervalMinutes*60) {
-				client, clientErr := GetHttpClientWithProxySettings(group.Channels[0].GetSetting().Proxy, group.Channels[0].GetSetting())
+				client, clientErr := GetHttpClientWithProxySettings(group.ActiveChannels[0].GetSetting().Proxy, group.ActiveChannels[0].GetSetting())
 				if clientErr == nil {
 					clientErr = syncChannelProfitRequestCosts(ctx, group, client)
 				}
@@ -401,28 +409,28 @@ func SyncChannelProfits(ctx context.Context, syncOptions ...ChannelProfitSyncOpt
 }
 
 func syncChannelProfitGroup(ctx context.Context, group *channelProfitGroup, usageDate string) (int, int) {
-	if len(group.Keys) == 0 {
-		return 0, 1
+	if len(group.ActiveKeys) == 0 {
+		return 0, 0
 	}
-	channel := group.Channels[0]
+	channel := group.ActiveChannels[0]
 	settings := channel.GetSetting()
 	client, err := GetHttpClientWithProxySettings(settings.Proxy, settings)
 	if err != nil {
-		for _, key := range group.Keys {
+		for _, key := range group.ActiveKeys {
 			saveChannelProfitFailure(key.Owner.Id, usageDate, key.Value, err)
 		}
-		return 0, len(group.Keys)
+		return 0, len(group.ActiveKeys)
 	}
-	keyValues := make([]string, 0, len(group.Keys))
-	for _, key := range group.Keys {
+	keyValues := make([]string, 0, len(group.ActiveKeys))
+	for _, key := range group.ActiveKeys {
 		keyValues = append(keyValues, key.Value)
 	}
 	client, monitor, err := channelProfitMonitorClient(group, client)
 	if err != nil {
-		for _, key := range group.Keys {
+		for _, key := range group.ActiveKeys {
 			saveChannelProfitFailure(key.Owner.Id, usageDate, key.Value, err)
 		}
-		return 0, len(group.Keys)
+		return 0, len(group.ActiveKeys)
 	}
 	if monitor != nil && time.Now().Unix()-monitor.LastSyncedAt >= int64(group.SyncIntervalMinutes)*60 {
 		_, saveErr := syncAndSaveUpstreamMonitorWithClient(ctx, monitor, upstreamMonitorHTTPClient())
@@ -431,7 +439,7 @@ func syncChannelProfitGroup(ctx context.Context, group *channelProfitGroup, usag
 		}
 		client, monitor, err = channelProfitMonitorClient(group, client)
 		if err != nil {
-			return 0, len(group.Keys)
+			return 0, len(group.ActiveKeys)
 		}
 	}
 	backend, err := detectChannelProfitBackend(ctx, client, group.BaseURL, keyValues, usageDate)
@@ -440,10 +448,10 @@ func syncChannelProfitGroup(ctx context.Context, group *channelProfitGroup, usag
 		if costErr := syncChannelProfitRequestCosts(ctx, group, client); costErr != nil {
 			common.SysError("channel request cost sync: " + costErr.Error())
 		}
-		for _, key := range group.Keys {
+		for _, key := range group.ActiveKeys {
 			saveChannelProfitFailure(key.Owner.Id, usageDate, key.Value, err)
 		}
-		return 0, len(group.Keys)
+		return 0, len(group.ActiveKeys)
 	}
 
 	costSyncErr := syncChannelProfitRequestCosts(ctx, group, client, backend.Provider)
@@ -460,14 +468,14 @@ func syncChannelProfitGroup(ctx context.Context, group *channelProfitGroup, usag
 			client,
 			group.BaseURL,
 			group.AccessToken,
-			group.Keys,
+			group.ActiveKeys,
 			monitor,
 		)
-		if err != nil && len(newAPIMetadata) != len(group.Keys) {
-			for _, key := range group.Keys {
+		if err != nil && len(newAPIMetadata) != len(group.ActiveKeys) {
+			for _, key := range group.ActiveKeys {
 				saveChannelProfitFailure(key.Owner.Id, usageDate, key.Value, err)
 			}
-			return 0, len(group.Keys)
+			return 0, len(group.ActiveKeys)
 		}
 		newAPIRatioErr = err
 	}
@@ -475,7 +483,7 @@ func syncChannelProfitGroup(ctx context.Context, group *channelProfitGroup, usag
 	synced := 0
 	failed := 0
 	interval := time.Duration(group.SyncIntervalMinutes) * time.Minute
-	for _, key := range group.Keys {
+	for _, key := range group.ActiveKeys {
 		var updateErr error
 		switch backend.Provider {
 		case channelProfitProviderNewAPI:
@@ -898,6 +906,10 @@ func buildChannelProfitGroupRow(group *channelProfitGroup, quotaByChannel map[in
 
 	row.CostAvailable = group.Enabled && len(group.Keys) > 0
 	row.Status = "synced"
+	activeKeys := make(map[string]bool, len(group.ActiveKeys))
+	for _, key := range group.ActiveKeys {
+		activeKeys[key.Fingerprint] = true
+	}
 	keyCountByChannel := make(map[int]int, len(group.Channels))
 	for _, groupKey := range group.Keys {
 		for _, channelId := range groupKey.ChannelIds {
@@ -924,6 +936,7 @@ func buildChannelProfitGroupRow(group *channelProfitGroup, quotaByChannel map[in
 			KeyHint:          model.MaskTokenKey(groupKey.Value),
 			ChannelIds:       append([]int(nil), groupKey.ChannelIds...),
 			ChannelNames:     append([]string(nil), groupKey.ChannelNames...),
+			ChannelDisabled:  !activeKeys[groupKey.Fingerprint],
 			DownstreamRates:  make([]ChannelProfitGroupRatio, 0),
 			RevenueAvailable: keyRevenueAvailable,
 		}
@@ -1013,7 +1026,7 @@ func buildChannelProfitGroupRow(group *channelProfitGroup, quotaByChannel map[in
 		if snapshot.LastSyncedAt > row.LastSyncedAt {
 			row.LastSyncedAt = snapshot.LastSyncedAt
 		}
-		if snapshot.LastError != "" {
+		if snapshot.LastError != "" && !key.ChannelDisabled {
 			row.Status = "error"
 			if row.LastError == "" {
 				row.LastError = snapshot.LastError
@@ -1032,6 +1045,9 @@ func buildChannelProfitGroupRow(group *channelProfitGroup, quotaByChannel map[in
 		row.Partial = true
 	} else if row.Status != "error" && row.Partial {
 		row.Status = "partial"
+	}
+	if len(group.ActiveChannels) == 0 {
+		row.Status = "channel_disabled"
 	}
 	row.ProfitAvailable = row.CostAvailable
 	if row.ProfitAvailable {
@@ -1121,6 +1137,9 @@ func listChannelProfitGroups() ([]*channelProfitGroup, error) {
 
 		keyByFingerprint := make(map[string]*channelProfitGroupKey)
 		for _, channel := range group.Channels {
+			if channel.Status == common.ChannelStatusEnabled {
+				group.ActiveChannels = append(group.ActiveChannels, channel)
+			}
 			for _, value := range uniqueChannelProfitKeys(channel) {
 				fingerprint := channelProfitKeyFingerprint(value)
 				key := keyByFingerprint[fingerprint]
@@ -1133,8 +1152,17 @@ func listChannelProfitGroups() ([]*channelProfitGroup, error) {
 					keyByFingerprint[fingerprint] = key
 					group.Keys = append(group.Keys, key)
 				}
+				// A shared key must be synchronized through an enabled owner.
+				if channel.Status == common.ChannelStatusEnabled && key.Owner.Status != common.ChannelStatusEnabled {
+					key.Owner = channel
+				}
 				key.ChannelIds = append(key.ChannelIds, channel.Id)
 				key.ChannelNames = append(key.ChannelNames, channel.Name)
+			}
+		}
+		for _, key := range group.Keys {
+			if key.Owner.Status == common.ChannelStatusEnabled {
+				group.ActiveKeys = append(group.ActiveKeys, key)
 			}
 		}
 		groups = append(groups, group)

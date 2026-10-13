@@ -237,7 +237,7 @@ func syncChannelProfitRequestCosts(ctx context.Context, group *channelProfitGrou
 	if err != nil {
 		return err
 	}
-	group.CostLogs = make(map[string]channelProfitTokenLogs, len(group.Keys))
+	group.CostLogs = make(map[string]channelProfitTokenLogs, len(group.ActiveKeys))
 	siteID := model.ProfitCostSiteID(group.BaseURL)
 	pricing := model.ChannelProfitPricing{ID: siteID}
 	if err := model.DB.Where("id = ?", siteID).Limit(1).Find(&pricing).Error; err != nil {
@@ -251,8 +251,8 @@ func syncChannelProfitRequestCosts(ctx context.Context, group *channelProfitGrou
 	var syncErr error
 	isSub2API := monitor != nil && monitor.Provider == UpstreamMonitorProviderSub2API
 	if len(providers) == 0 && !isSub2API {
-		keys := make([]string, 0, len(group.Keys))
-		for _, key := range group.Keys {
+		keys := make([]string, 0, len(group.ActiveKeys))
+		for _, key := range group.ActiveKeys {
 			keys = append(keys, key.Value)
 		}
 		backend, probeErr := detectChannelProfitBackend(ctx, client, group.BaseURL, keys, time.Now().In(time.Local).Format("2006-01-02"))
@@ -279,7 +279,7 @@ func syncChannelProfitRequestCosts(ctx context.Context, group *channelProfitGrou
 		var accountRatios map[string]float64
 		var accountErr error
 		accountLoaded := false
-		for _, key := range group.Keys {
+		for _, key := range group.ActiveKeys {
 			scope := model.ProfitCostFingerprint(siteID + ":" + model.ProfitCostFingerprint(key.Value))
 			state := model.ChannelProfitKeyState{ID: scope, SiteID: siteID}
 			if err := model.DB.Where("id = ?", scope).Limit(1).Find(&state).Error; err != nil {
@@ -371,12 +371,12 @@ func syncChannelProfitRequestCosts(ctx context.Context, group *channelProfitGrou
 	metadata := map[string]channelProfitNewAPIKeyMetadata{}
 	ratios := map[string]float64{}
 	if group.AccessToken != "" {
-		metadata, ratios, err = fetchChannelProfitNewAPIMetadata(ctx, client, group.BaseURL, group.AccessToken, group.Keys, monitor)
+		metadata, ratios, err = fetchChannelProfitNewAPIMetadata(ctx, client, group.BaseURL, group.AccessToken, group.ActiveKeys, monitor)
 		if err != nil {
 			ratios = nil
 		}
 	}
-	for _, key := range group.Keys {
+	for _, key := range group.ActiveKeys {
 		scope := model.ProfitCostFingerprint(siteID + ":" + model.ProfitCostFingerprint(key.Value))
 		state := model.ChannelProfitKeyState{ID: scope, SiteID: siteID}
 		if err := model.DB.Where("id = ?", scope).Limit(1).Find(&state).Error; err != nil {

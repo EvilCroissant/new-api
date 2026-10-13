@@ -157,21 +157,47 @@ export function ChannelProfit(props: UpstreamManagementPageProps) {
 
   const syncMutation = useMutation({
     mutationFn: async (channelId?: number) => {
-      const response = channelId
-        ? await syncChannelProfitGroup(channelId)
-        : await syncChannelProfit()
-      if (!response.success) {
-        throw new Error(response.message || t('Sync failed'))
+      const monitors =
+        monitorQuery.data ??
+        requireServerSuccess(await listUpstreamMonitors()).data ??
+        []
+      const row = profitQuery.data?.rows.find(
+        (item) => item.channel_id === channelId
+      )
+      const accounts = channelId
+        ? monitors.filter(
+            (monitor) =>
+              row &&
+              upstreamSite(monitor.base_url) === upstreamSite(row.base_url)
+          )
+        : monitors
+      const profitSync = channelId
+        ? syncChannelProfitGroup(channelId)
+        : syncChannelProfit()
+      const [profitResult, ...balanceResults] = await Promise.allSettled([
+        profitSync.then(requireServerSuccess),
+        ...accounts.map((monitor) =>
+          syncUpstreamMonitor(monitor.id).then(requireServerSuccess)
+        ),
+      ])
+      if (profitResult.status === 'rejected') {
+        throw profitResult.reason
       }
-      return response
+      return balanceResults.some((result) => result.status === 'rejected')
     },
-    onSuccess: async () => {
-      toast.success(t('Profit sync started'))
-      await invalidateProfitQueries()
+    onSuccess: (balanceRefreshFailed) => {
+      if (balanceRefreshFailed) {
+        toast.warning(
+          t('Profit sync started, but some account balances failed to refresh')
+        )
+      } else {
+        toast.success(t('Profit sync started'))
+      }
     },
     onError: (error) => {
       toast.error(getErrorMessage(error, t('Sync failed')))
     },
+    onSettled: invalidateProfitQueries,
   })
 
   const configMutation = useMutation({

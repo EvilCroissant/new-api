@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -140,7 +142,7 @@ func TestChannelProfitDatabaseAndEstimation(t *testing.T) {
 					common.SetMainDatabaseType(common.DatabaseType(dialect))
 					common.SetLogDatabaseType(common.DatabaseTypeSQLite)
 					common.LogConsumeEnabled, common.RedisEnabled, common.DataExportEnabled = true, false, false
-					tables := []any{&model.ChannelProfitConfig{}, &model.ChannelProfitSnapshot{}, &model.ChannelProfitRecord{}, &model.ChannelProfitPricing{}, &model.ChannelProfitKeyState{}, &model.UpstreamMonitor{}, &model.User{}}
+					tables := []any{&model.Channel{}, &model.ChannelProfitConfig{}, &model.ChannelProfitSnapshot{}, &model.ChannelProfitRecord{}, &model.ChannelProfitPricing{}, &model.ChannelProfitKeyState{}, &model.UpstreamMonitor{}, &model.User{}}
 					t.Cleanup(func() {
 						for _, table := range tables {
 							require.NoError(t, db.Migrator().DropTable(table))
@@ -213,7 +215,7 @@ func TestChannelProfitDatabaseAndEstimation(t *testing.T) {
 					_, err = model.UpdateChannelProfitConfigs([]int{920182}, model.ChannelProfitConfigUpdate{Enabled: &enabled, CostMode: &mode, ManualRatio: &ratio, CostFactor: &factor})
 					require.NoError(t, err)
 					require.Error(t, db.Create(&model.ChannelProfitConfig{ChannelId: 920182}).Error, "channel uniqueness must survive migration")
-					group := &channelProfitGroup{BaseURL: upstream.URL, Keys: []*channelProfitGroupKey{{Value: "test-key"}}}
+					group := &channelProfitGroup{BaseURL: upstream.URL, ActiveKeys: []*channelProfitGroupKey{{Value: "test-key"}}}
 					require.NoError(t, syncChannelProfitRequestCosts(context.Background(), group, upstream.Client()))
 					ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
 					ctx.Request = httptest.NewRequest("POST", "/v1/chat/completions", nil)
@@ -356,10 +358,107 @@ func TestChannelProfitDatabaseAndEstimation(t *testing.T) {
 					assert.Zero(t, *fixed.EstimatedUSD)
 					testChannelProfitMonitorIntegration(t, db)
 					testChannelProfitSub2APICostSync(t, db)
+					t.Run("disabled channels", func(t *testing.T) { testChannelProfitDisabledChannels(t, db) })
 				})
 			}
 		})
 	}
+}
+
+func testChannelProfitDisabledChannels(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	var mu sync.Mutex
+	var queriedKeys []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		mu.Lock()
+		queriedKeys = append(queriedKeys, key)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if key == "cancelled-key" {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		switch r.URL.Path {
+		case "/api/status":
+			w.WriteHeader(http.StatusNotFound)
+		case "/v1/usage":
+			fmt.Fprintf(w, `{"daily_usage":[{"date":%q,"actual_cost":0.2}]}`, time.Now().Format("2006-01-02"))
+		case "/v1/sub2api/billing":
+			fmt.Fprint(w, `{"object":"sub2api.key_billing","group_rate_multiplier":0.07}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	channels := []*model.Channel{
+		{Name: "Cancelled", Key: "cancelled-key", Setting: common.GetPointer(`{"proxy":"http://127.0.0.1:1"}`), Status: common.ChannelStatusManuallyDisabled, BaseURL: &upstream.URL},
+		{Name: "Disabled shared owner", Key: "shared-key", Status: common.ChannelStatusAutoDisabled, BaseURL: &upstream.URL},
+		{Name: "Enabled shared owner", Key: "shared-key", Status: common.ChannelStatusEnabled, BaseURL: &upstream.URL},
+	}
+	for _, channel := range channels {
+		require.NoError(t, db.Create(channel).Error)
+		require.NoError(t, db.Create(&model.ChannelProfitConfig{ChannelId: channel.Id, Enabled: true, SyncIntervalMinutes: 60, CostMode: "ratio", CostFactor: 1}).Error)
+	}
+	date := time.Now().Format("2006-01-02")
+	snapshot := &model.ChannelProfitSnapshot{
+		ChannelId: channels[0].Id, UsageDate: date, KeyFingerprint: channelProfitKeyFingerprint(channels[0].Key),
+		KeyHint: "cancelled", Provider: channelProfitProviderSub2API, DirectCostAvailable: true,
+		DirectCostUSD: 0.1, LastSyncedAt: 1, LastError: "old upstream error",
+	}
+	require.NoError(t, model.SaveChannelProfitSnapshot(snapshot))
+	for _, dueOnly := range []bool{false, true} {
+		mu.Lock()
+		queriedKeys = nil
+		mu.Unlock()
+		result, err := SyncChannelProfits(context.Background(), ChannelProfitSyncOptions{DueOnly: dueOnly})
+		require.NoError(t, err)
+		assert.Zero(t, result.Failed)
+		mu.Lock()
+		assert.NotContains(t, queriedKeys, "cancelled-key")
+		assert.Contains(t, queriedKeys, "shared-key")
+		mu.Unlock()
+		stored, err := model.GetChannelProfitSnapshot(channels[0].Id, date, snapshot.KeyFingerprint)
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), stored.LastSyncedAt, "disabled snapshots must not be overwritten")
+		assert.Equal(t, 0.1, stored.DirectCostUSD)
+	}
+	groups, err := listChannelProfitGroups()
+	require.NoError(t, err)
+	require.Len(t, groups, 1)
+	row := buildChannelProfitGroupRow(groups[0], map[int]int64{channels[0].Id: 500000}, []*model.ChannelProfitSnapshot{snapshot})
+	assert.Equal(t, 1.0, row.RevenueUSD, "disabled channel revenue stays in historical reports")
+	assert.Equal(t, 0.1, row.CostUSD)
+	assert.NotEqual(t, "error", row.Status, "disabled key errors must not fail the active site")
+	require.Len(t, row.Keys, 2)
+	assert.True(t, row.Keys[0].ChannelDisabled)
+	assert.False(t, row.Keys[1].ChannelDisabled)
+	shared, err := model.GetChannelProfitSnapshot(channels[2].Id, date, channelProfitKeyFingerprint("shared-key"))
+	require.NoError(t, err)
+	assert.Equal(t, 0.2, shared.DirectCostUSD, "shared keys must use an enabled owner")
+	require.NoError(t, db.Model(channels[2]).Update("status", common.ChannelStatusManuallyDisabled).Error)
+	mu.Lock()
+	queriedKeys = nil
+	mu.Unlock()
+	result, err := SyncChannelProfits(context.Background())
+	require.NoError(t, err)
+	assert.Zero(t, result.Channels)
+	mu.Lock()
+	assert.Empty(t, queriedKeys, "a site with no enabled channels must not be probed")
+	mu.Unlock()
+	groups, err = listChannelProfitGroups()
+	require.NoError(t, err)
+	row = buildChannelProfitGroupRow(groups[0], map[int]int64{channels[0].Id: 500000}, []*model.ChannelProfitSnapshot{snapshot})
+	assert.Equal(t, "channel_disabled", row.Status)
+	assert.True(t, row.Enabled, "channel disabling must preserve the monitoring preference")
+	assert.Equal(t, 0.1, row.CostUSD)
+	assert.Empty(t, row.LastError)
+	result, err = SyncChannelProfits(context.Background(), ChannelProfitSyncOptions{ChannelId: channels[0].Id})
+	require.NoError(t, err)
+	assert.Zero(t, result.Channels)
+	mu.Lock()
+	assert.Empty(t, queriedKeys)
+	mu.Unlock()
 }
 
 func testChannelProfitSub2APICostSync(t *testing.T, db *gorm.DB) {
@@ -444,7 +543,7 @@ func testChannelProfitSub2APICostSync(t *testing.T, db *gorm.DB) {
 				require.NoError(t, model.CreateUpstreamMonitor(monitor))
 			}
 			channel := &model.Channel{Id: 930000 + i}
-			group := &channelProfitGroup{BaseURL: upstream.URL, SyncIntervalMinutes: 60, Channels: []*model.Channel{channel}, Keys: []*channelProfitGroupKey{{Value: key, Fingerprint: channelProfitKeyFingerprint(key), Owner: channel}}}
+			group := &channelProfitGroup{BaseURL: upstream.URL, SyncIntervalMinutes: 60, ActiveChannels: []*model.Channel{channel}, ActiveKeys: []*channelProfitGroupKey{{Value: key, Fingerprint: channelProfitKeyFingerprint(key), Owner: channel}}}
 			if tc.manual {
 				group.ManualRatio = &special
 			}
@@ -603,7 +702,7 @@ func testChannelProfitMonitorIntegration(t *testing.T, db *gorm.DB) {
 				monitor.LastSyncedAt = time.Now().Unix()
 			}
 			require.NoError(t, model.CreateUpstreamMonitor(monitor))
-			group := &channelProfitGroup{BaseURL: upstream.URL, Keys: []*channelProfitGroupKey{{Value: key, Fingerprint: channelProfitKeyFingerprint(key)}}}
+			group := &channelProfitGroup{BaseURL: upstream.URL, ActiveKeys: []*channelProfitGroupKey{{Value: key, Fingerprint: channelProfitKeyFingerprint(key)}}}
 			if tc.staleToken {
 				group.AccessToken = "obsolete-profit-token"
 			}
@@ -612,8 +711,8 @@ func testChannelProfitMonitorIntegration(t *testing.T, db *gorm.DB) {
 			require.NoError(t, db.Create(&pending).Error)
 			if tc.missingUnit && !tc.missingKey {
 				channel := &model.Channel{Id: 920199}
-				group.Channels = []*model.Channel{channel}
-				group.Keys[0].Owner = channel
+				group.ActiveChannels = []*model.Channel{channel}
+				group.ActiveKeys[0].Owner = channel
 				// Exercise the full scheduler path: daily totals fail, but request
 				// prices and ratios must still be populated for the next relay.
 				synced, failed := syncChannelProfitGroup(context.Background(), group, time.Now().Format("2006-01-02"))
