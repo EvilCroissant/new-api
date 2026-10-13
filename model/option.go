@@ -194,7 +194,7 @@ func InitOptionMap() {
 }
 
 func MigrateInvitationRewardOptions() error {
-	return DB.Where("key IN ?", []string{"QuotaForInviter", "QuotaForInvitee"}).Delete(&Option{}).Error
+	return DB.Where(map[string]any{"key": []string{"QuotaForInviter", "QuotaForInvitee"}}).Delete(&Option{}).Error
 }
 
 func loadOptionsFromDatabase() {

@@ -42,9 +42,9 @@ function Fixture() {
         <QuotaSettingsSection
           defaultValues={{
             QuotaForNewUser: 0,
-            QuotaForInviter: 0,
-            QuotaForInvitee: 0,
+            InvitationRewardRatePercent: 0,
             TopUpLink: '',
+            general_setting: { docs_link: '' },
             quota_setting: {
               enable_free_model_pre_consume: true,
               trust_quota_usd: 10,
@@ -145,3 +145,18 @@ test.each(['', '-1'])(
     expect(api.put).not.toHaveBeenCalled()
   }
 )
+
+test('saving a referral reward percentage keeps the basis-point option alongside pre-consume settings', async () => {
+  await renderSettings()
+  const input = screen.getByRole('spinbutton', {
+    name: 'Referral Reward Rate',
+  })
+  fireEvent.change(input, { target: { value: '12.5' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }))
+  await waitFor(() =>
+    expect(api.put).toHaveBeenCalledWith('/api/option/', {
+      key: 'InvitationRewardRateBps',
+      value: 1250,
+    })
+  )
+})

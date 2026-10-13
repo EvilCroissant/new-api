@@ -1073,10 +1073,27 @@ func TestAuditDatabaseMatrix(t *testing.T) {
 						legacy := "released-token"
 						require.NoError(t, db.Create(&releasedAuditUser{Username: "released-owner", Password: "placeholder", AccessToken: &legacy, AffCode: "released-aff", Quota: 1234}).Error)
 						require.NoError(t, db.Create(&releasedAuditLog{UserId: 1, Type: model.LogTypeLogin, Content: "historical login", CreatedAt: 100, RequestId: "legacy-request"}).Error)
+						require.NoError(t, db.AutoMigrate(&model.Option{}))
+						require.NoError(t, db.Create(&[]model.Option{
+							{Key: "QuotaForInviter", Value: "1000"},
+							{Key: "QuotaForInvitee", Value: "500"},
+							{Key: "InvitationRewardRateBps", Value: "1250"},
+							{Key: "QuotaForNewUser", Value: "2000"},
+						}).Error)
 					}
 					for range 2 {
 						require.NoError(t, model.InitDB())
 						require.NoError(t, model.InitLogDB())
+					}
+					if upgrade {
+						var options []model.Option
+						require.NoError(t, model.DB.Where(map[string]any{
+							"key": []string{"QuotaForInviter", "QuotaForInvitee", "InvitationRewardRateBps", "QuotaForNewUser"},
+						}).Find(&options).Error)
+						assert.ElementsMatch(t, []model.Option{
+							{Key: "InvitationRewardRateBps", Value: "1250"},
+							{Key: "QuotaForNewUser", Value: "2000"},
+						}, options, "startup must remove only retired invitation rewards and preserve current settings")
 					}
 					if !upgrade {
 						require.NoError(t, db.Create(&model.User{Username: "fresh-owner", Password: "placeholder", AffCode: "fresh-aff"}).Error)
