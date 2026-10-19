@@ -1,13 +1,19 @@
 package model
 
 import (
+	"os"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/driver/mysql"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
+	"gorm.io/gorm/schema"
 )
 
 func TestTaskPluginChannelSelectionFiltersBothCachePaths(t *testing.T) {
@@ -116,4 +122,126 @@ func TestNewAPIChannelServesExtendedTaskPlugins(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, selected)
 	assert.Equal(t, "gateway", selected.Name, "requests without a pinned plugin keep using the gateway")
+}
+
+func TestModelModifierNamesRouteWithAndWithoutMemoryCache(t *testing.T) {
+	truncateTables(t)
+	originalMemoryCache := common.MemoryCacheEnabled
+	t.Cleanup(func() { common.MemoryCacheEnabled = originalMemoryCache; InitChannelCache() })
+	channel := Channel{Id: 930001, Type: constant.ChannelTypeDeepSeek, Status: common.ChannelStatusEnabled, Name: "deepseek", Models: "deepseek-flash", Group: "default"}
+	require.NoError(t, channel.Insert())
+
+	for _, memoryCache := range []bool{false, true} {
+		common.MemoryCacheEnabled = memoryCache
+		InitChannelCache()
+		selected, err := GetRandomSatisfiedChannel("default", "deepseek-flash@effort:max", 0, nil)
+		require.NoError(t, err)
+		require.NotNil(t, selected, "memory cache %v", memoryCache)
+		assert.Equal(t, "deepseek", selected.Name)
+		selected, err = GetRandomSatisfiedChannel("default", "deepseek-pro@effort:max", 0, nil)
+		require.NoError(t, err)
+		assert.Nil(t, selected, "memory cache %v", memoryCache)
+	}
+}
+
+func TestChannelSelectionDatabaseMatrix(t *testing.T) {
+	for _, dialect := range []string{"sqlite", "mysql", "postgres"} {
+		t.Run(dialect, func(t *testing.T) {
+			var driver gorm.Dialector
+			switch dialect {
+			case "sqlite":
+				driver = sqlite.Open(":memory:")
+			case "mysql":
+				dsn := os.Getenv("TEST_MYSQL_DSN")
+				if dsn == "" {
+					t.Skip("TEST_MYSQL_DSN not configured")
+				}
+				driver = mysql.Open(dsn)
+			case "postgres":
+				dsn := os.Getenv("TEST_POSTGRES_DSN")
+				if dsn == "" {
+					t.Skip("TEST_POSTGRES_DSN not configured")
+				}
+				driver = postgres.Open(dsn)
+			}
+			db, err := gorm.Open(driver, &gorm.Config{NamingStrategy: schema.NamingStrategy{TablePrefix: "selection_test_"}})
+			require.NoError(t, err)
+			sqlDB, err := db.DB()
+			require.NoError(t, err)
+			sqlDB.SetMaxOpenConns(1)
+			previousDB, previousType, previousCache := DB, common.MainDatabaseType(), common.MemoryCacheEnabled
+			DB = db
+			common.SetMainDatabaseType(common.DatabaseType(dialect))
+			initCol()
+			t.Cleanup(func() {
+				assert.NoError(t, db.Migrator().DropTable(&Ability{}, &Channel{}))
+				DB = previousDB
+				common.SetMainDatabaseType(previousType)
+				common.MemoryCacheEnabled = previousCache
+				initCol()
+				InitChannelCache()
+				assert.NoError(t, sqlDB.Close())
+			})
+			require.NoError(t, db.AutoMigrate(&Channel{}, &Ability{}))
+			versionQuery := "SELECT version()"
+			if dialect == "sqlite" {
+				versionQuery = "SELECT sqlite_version()"
+			}
+			var version string
+			require.NoError(t, db.Raw(versionQuery).Scan(&version).Error)
+			t.Logf("database version: %s", version)
+			high, middle, low := int64(20), int64(10), int64(0)
+			websocket := `{"responses_websocket_enabled":true}`
+			channels := []Channel{
+				{Name: "high", Priority: &high},
+				{Name: "middle-failed", Priority: &middle, Setting: &websocket},
+				{Name: "middle-ready", Priority: &middle, Setting: &websocket},
+				{Name: "low", Priority: &low, Setting: &websocket},
+			}
+			for i := range channels {
+				channels[i].Type = constant.ChannelTypeOpenAI
+				channels[i].Status = common.ChannelStatusEnabled
+				channels[i].Models = "deepseek-flash"
+				channels[i].Group = "default"
+				require.NoError(t, db.Create(&channels[i]).Error)
+				require.NoError(t, channels[i].AddAbilities(db))
+			}
+			for _, memoryCache := range []bool{false, true} {
+				common.MemoryCacheEnabled = memoryCache
+				InitChannelCache()
+				for _, tc := range []struct {
+					name    string
+					model   string
+					retry   int
+					skipped *int64
+					filters []dto.ChannelFilter
+					failed  map[int]struct{}
+					want    []string
+				}{
+					{name: "highest priority", model: "deepseek-flash", want: []string{"high"}},
+					{name: "normalized model", model: "deepseek-flash@effort:max", want: []string{"high"}},
+					{name: "normalized retry", model: "deepseek-flash@effort:max", retry: 1, want: []string{"middle-failed", "middle-ready"}},
+					{name: "skip highest priority", model: "deepseek-flash@effort:max", skipped: &high, want: []string{"middle-failed", "middle-ready"}},
+					{name: "retry after skip", model: "deepseek-flash@effort:max", retry: 1, skipped: &high, want: []string{"low"}},
+					{name: "retry clamps to lowest", model: "deepseek-flash@effort:max", retry: 99, skipped: &high, want: []string{"low"}},
+					{name: "avoid failed peer", model: "deepseek-flash@effort:max", retry: 1, failed: map[int]struct{}{channels[1].Id: {}}, want: []string{"middle-ready"}},
+					{name: "reuse exhausted priority", model: "deepseek-flash", retry: 1, failed: map[int]struct{}{channels[1].Id: {}, channels[2].Id: {}}, want: []string{"middle-failed", "middle-ready"}},
+					{name: "filters before priority", model: "deepseek-flash", filters: []dto.ChannelFilter{{Kind: dto.FilterResponsesWebSocket}}, want: []string{"middle-failed", "middle-ready"}},
+					{name: "filtered retry priority", model: "deepseek-flash", retry: 1, filters: []dto.ChannelFilter{{Kind: dto.FilterResponsesWebSocket}}, want: []string{"low"}},
+					{name: "missing normalized model", model: "deepseek-pro@effort:max"},
+				} {
+					t.Run(tc.name+"/cache="+map[bool]string{false: "off", true: "on"}[memoryCache], func(t *testing.T) {
+						selected, err := GetRandomSatisfiedChannelSkippingPriorityAndChannels("default", tc.model, tc.retry, tc.filters, tc.skipped, tc.failed)
+						require.NoError(t, err)
+						if len(tc.want) == 0 {
+							assert.Nil(t, selected)
+							return
+						}
+						require.NotNil(t, selected)
+						assert.Contains(t, tc.want, selected.Name)
+					})
+				}
+			}
+		})
+	}
 }
