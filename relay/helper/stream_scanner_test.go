@@ -606,7 +606,7 @@ func TestStreamScannerHandler_PreservesUpstreamErrorAfterClientCancel(t *testing
 		})
 		close(done)
 	}()
-	_, err := fmt.Fprintln(pw, `data: {"type":"error","error":{"message":"`+message+`"}}`)
+	_, err := fmt.Fprintln(pw, `data: {"type":"error","error":{"code":"server_is_overloaded","type":"overloaded_error","param":"model","message":"`+message+`"}}`)
 	require.NoError(t, err)
 	select {
 	case <-done:
@@ -624,10 +624,27 @@ func TestStreamScannerHandler_PreservesUpstreamErrorAfterClientCancel(t *testing
 	assert.Equal(t, "client_gone", stream["end_reason"])
 	assert.Equal(t, "context canceled", stream["end_error"])
 	assert.Equal(t, message, stream["upstream_error"])
+	assert.Equal(t, &relaycommon.UpstreamErrorDetails{
+		Code: "server_is_overloaded", Type: "overloaded_error", Param: "model", Message: message,
+	}, stream["upstream_error_details"])
 	assert.NotContains(t, other, "upstream_error")
 	errorOther := model.NewLogOther()
 	service.AppendRelayErrorLogAdminInfo(c, info, errorOther)
 	assert.Equal(t, stream, errorOther.Snapshot()["stream_status"])
+}
+
+func TestStreamScannerHandler_CodeOnlyErrorReachesLog(t *testing.T) {
+	c, resp, info := setupStreamTest(t, strings.NewReader("event: error\ndata: {\"code\":\"future_provider_error\"}\n\n"))
+	info.IsStream = true
+	StreamScannerHandler(c, resp, info, func(string, *StreamResult) {})
+	other := model.NewLogOther()
+	service.AppendRelayErrorLogAdminInfo(c, info, other)
+	stream, ok := other.Snapshot()["stream_status"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "error", stream["status"])
+	assert.Equal(t, "eof", stream["end_reason"])
+	assert.Equal(t, &relaycommon.UpstreamErrorDetails{Code: "future_provider_error"}, stream["upstream_error_details"])
+	assert.NotContains(t, stream, "upstream_error", "do not invent a message")
 }
 
 func TestStreamScannerHandler_UpstreamErrorEnvelopes(t *testing.T) {
@@ -643,7 +660,6 @@ func TestStreamScannerHandler_UpstreamErrorEnvelopes(t *testing.T) {
 		{"content is not an error", `{"type":"response.output_text.delta","delta":"Selected model is at capacity"}`, ""},
 		{"nested content is not an error", `{"choices":[{"delta":{"content":"overloaded","error":{"message":"fictional"}}}]}`, ""},
 		{"echoed channel key", `{"error":{"message":"Incorrect API key provided: channel-secret"}}`, "Incorrect API key provided: ***"},
-		{"no message", `{"type":"error","code":"overloaded"}`, ""},
 		{"malformed", `{"type":"error","message":"incomplete"`, ""},
 		{"bounded unicode", `{"error":{"message":"` + strings.Repeat("慢", 2100) + `"}}`, strings.Repeat("慢", 2048) + "…"},
 		{"masked and normalized", `{"error":{"message":" api_key:secret\nretry\u0000later "}}`, "api_key:*** retry later"},

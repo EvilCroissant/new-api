@@ -76,6 +76,14 @@ export interface TaskLogFilters extends CommonFilters {
  */
 export type LogFilters = CommonLogFilters | DrawingLogFilters | TaskLogFilters
 
+export interface UpstreamErrorDetails {
+  code?: string
+  type?: string
+  message?: string
+  param?: string
+  status_code?: number
+}
+
 // ============================================================================
 // Common Logs Additional Types
 // ============================================================================
@@ -261,8 +269,10 @@ export interface LogOtherData {
   po?: string[]
   billing_source?: string
   group?: string
+  upstream_error_details?: UpstreamErrorDetails
   stream_status?: {
     upstream_error?: string
+    upstream_error_details?: UpstreamErrorDetails
     status?: string
     end_reason?: string
     error_count?: number

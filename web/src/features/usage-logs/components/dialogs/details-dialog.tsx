@@ -483,6 +483,9 @@ export function DetailsDialog(props: DetailsDialogProps) {
   const { t } = useTranslation()
   const { copiedText, copyToClipboard } = useCopyToClipboard({ notify: false })
   const other = parseLogOther(props.log.other)
+  const upstreamError =
+    other?.stream_status?.upstream_error_details ??
+    other?.upstream_error_details
   const typeConfig = getLogTypeConfig(props.log.type)
 
   const isViolation = isViolationFeeLog(other)
@@ -1222,6 +1225,45 @@ export function DetailsDialog(props: DetailsDialogProps) {
             />
           )}
 
+        {upstreamError && (
+          <DetailSection label={t('Upstream Error')} variant='danger'>
+            {upstreamError.code && (
+              <DetailRow
+                label={t('Error Code')}
+                value={upstreamError.code}
+                mono
+              />
+            )}
+            {upstreamError.type && (
+              <DetailRow
+                label={t('Error Type')}
+                value={upstreamError.type}
+                mono
+              />
+            )}
+            {upstreamError.message && (
+              <DetailRow
+                label={t('Error Message')}
+                value={upstreamError.message}
+              />
+            )}
+            {upstreamError.param && (
+              <DetailRow
+                label={t('Parameter')}
+                value={upstreamError.param}
+                mono
+              />
+            )}
+            {upstreamError.status_code != null && (
+              <DetailRow
+                label={t('Status Code')}
+                value={String(upstreamError.status_code)}
+                mono
+              />
+            )}
+          </DetailSection>
+        )}
+
         {/* Stream status details */}
         {other?.stream_status && other.stream_status.status !== 'ok' && (
           <DetailSection label={t('Stream Status')}>
@@ -1254,7 +1296,7 @@ export function DetailsDialog(props: DetailsDialogProps) {
                 value={other.stream_status.end_error}
               />
             )}
-            {other.stream_status.upstream_error && (
+            {!upstreamError && other.stream_status.upstream_error && (
               <DetailRow
                 label={t('Upstream Error')}
                 value={other.stream_status.upstream_error}

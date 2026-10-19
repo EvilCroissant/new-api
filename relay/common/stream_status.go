@@ -5,10 +5,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode"
-
-	"github.com/QuantumNous/new-api/common"
-	"github.com/tidwall/gjson"
 )
 
 type StreamEndReason string
@@ -53,13 +49,13 @@ type StreamStatus struct {
 	Errors     []StreamErrorEntry
 	ErrorCount int
 
-	response             ResponseOutcome
-	errorCode            string
-	errorType            string
-	errorStatus          int
-	incompleteReason     string
-	expectsTerminal      bool
-	upstreamErrorMessage string
+	response         ResponseOutcome
+	errorCode        string
+	errorType        string
+	errorStatus      int
+	incompleteReason string
+	expectsTerminal  bool
+	upstreamError    *UpstreamErrorDetails
 }
 
 // StreamOutcome holds classification facts only; upstream messages never
@@ -113,64 +109,18 @@ func (s *StreamStatus) CaptureUpstreamError(data string, secrets ...string) {
 // CaptureUpstreamSSEError also recognizes errors identified by the SSE event
 // field when the JSON payload omits its own type.
 func (s *StreamStatus) CaptureUpstreamSSEError(data, eventType string, secrets ...string) {
-	if s == nil || s.UpstreamErrorMessage() != "" {
+	if s == nil || s.UpstreamErrorDetails() != nil {
 		return
 	}
-	event := gjson.Parse(data)
-	if payloadType := event.Get("type").String(); payloadType != "" {
-		eventType = payloadType
-	}
-	message := event.Get("error.message")
-	if message.Type != gjson.String {
-		message = event.Get("error")
-	}
-	if message.Type != gjson.String {
-		message = event.Get("response.error.message")
-	}
-	if message.Type != gjson.String {
-		switch eventType {
-		case "error", "response.error", "upstream_error":
-			message = event.Get("message")
-			if message.Type != gjson.String {
-				message = event.Get("response.error.message")
-			}
-			if message.Type != gjson.String {
-				message = event.Get("response.error")
-			}
-		case "response.failed", "response.done", "response.completed":
-			if eventType == "response.failed" || event.Get("response.status").String() == "failed" {
-				message = event.Get("response.error.message")
-				if message.Type != gjson.String {
-					message = event.Get("response.error")
-				}
-			}
-		}
-	}
-	if message.Type != gjson.String || !gjson.Valid(data) {
+	details := ParseUpstreamError(data, eventType, secrets...)
+	if details == nil {
 		return
 	}
-	text := message.String()
-	for _, secret := range secrets {
-		if secret != "" {
-			text = strings.ReplaceAll(text, secret, "***")
-		}
-	}
-	text = strings.TrimSpace(strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) {
-			return ' '
-		}
-		return r
-	}, common.MaskSensitiveInfo(text)))
-	if text == "" {
-		return
-	}
-	if runes := []rune(text); len(runes) > 2048 {
-		text = string(runes[:2048]) + "…"
-	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.upstreamErrorMessage == "" {
-		s.upstreamErrorMessage = text
+	if s.upstreamError == nil {
+		s.upstreamError = details
 	}
 }
 
@@ -182,7 +132,23 @@ func (s *StreamStatus) UpstreamErrorMessage() string {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.upstreamErrorMessage
+	if s.upstreamError == nil {
+		return ""
+	}
+	return s.upstreamError.Message
+}
+
+func (s *StreamStatus) UpstreamErrorDetails() *UpstreamErrorDetails {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.upstreamError == nil {
+		return nil
+	}
+	details := *s.upstreamError
+	return &details
 }
 
 // RequireTerminal declares that the protocol always ends with an explicit

@@ -12,10 +12,13 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	taskdto "github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/logger"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/gin-gonic/gin"
 )
 
 func MidjourneyErrorWrapper(code int, desc string) *taskdto.MidjourneyResponse {
@@ -84,6 +87,15 @@ func ClaudeErrorWrapperLocal(err error, code string, statusCode int) *dto.Claude
 	return claudeErr
 }
 
+// Keep the upstream diagnostic on this error, so retries and HTTP status
+// mappings cannot replace it with a later attempt or a host-generated error.
+type upstreamResponseError struct {
+	error
+	details *relaycommon.UpstreamErrorDetails
+}
+
+func (e *upstreamResponseError) Unwrap() error { return e.error }
+
 func RelayErrorHandler(ctx context.Context, resp *http.Response, showBodyWhenFail bool) (newApiErr *types.NewAPIError) {
 	newApiErr = types.InitOpenAIError(types.ErrorCodeBadResponseStatusCode, resp.StatusCode)
 
@@ -94,6 +106,16 @@ func RelayErrorHandler(ctx context.Context, resp *http.Response, showBodyWhenFai
 	CloseResponseBodyGracefully(resp)
 	var errResponse dto.GeneralErrorResponse
 	responseBodyText := string(responseBody)
+	var secrets []string
+	if c, ok := ctx.(*gin.Context); ok {
+		secrets = append(common.UpstreamAddresses(c), common.GetContextKeyString(c, constant.ContextKeyChannelKey))
+	}
+	if details := relaycommon.ParseUpstreamError(responseBodyText, "error", secrets...); details != nil {
+		details.StatusCode = resp.StatusCode
+		defer func() {
+			newApiErr.Err = &upstreamResponseError{error: newApiErr.Err, details: details}
+		}()
+	}
 	responseBodyPreview := common.LocalLogPreview(responseBodyText)
 	buildErrWithBody := func(message string) error {
 		if message == "" {

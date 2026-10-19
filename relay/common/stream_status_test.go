@@ -2,11 +2,68 @@ package common
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+func TestStreamStatus_CaptureStructuredUpstreamError(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, data, event string
+		want              *UpstreamErrorDetails
+	}{
+		{"chat error", `{"error":{"code":"context_length_exceeded","type":"invalid_request_error","message":"Too many tokens","param":"messages"}}`, "", &UpstreamErrorDetails{Code: "context_length_exceeded", Type: "invalid_request_error", Message: "Too many tokens", Param: "messages"}},
+		{"flat responses error", `{"type":"error","code":"rate_limit_exceeded","message":"Slow down","param":null}`, "", &UpstreamErrorDetails{Code: "rate_limit_exceeded", Message: "Slow down"}},
+		{"failed response", `{"type":"response.failed","response":{"status":"failed","error":{"code":"server_error","message":"Try again"}}}`, "", &UpstreamErrorDetails{Code: "server_error", Message: "Try again"}},
+		{"done failed response", `{"type":"response.done","response":{"status":"failed","error":{"code":"new_provider_error"}}}`, "", &UpstreamErrorDetails{Code: "new_provider_error"}},
+		{"completed failed response", `{"type":"response.completed","response":{"status":"failed","error":{"type":"provider_failure"}}}`, "", &UpstreamErrorDetails{Type: "provider_failure"}},
+		{"named event", `{"code":"new_provider_error","message":"Unavailable","status_code":503}`, "error", &UpstreamErrorDetails{Code: "new_provider_error", Message: "Unavailable", StatusCode: 503}},
+		{"named event with error type", `{"type":"rate_limit_error","code":"quota_exhausted"}`, "error", &UpstreamErrorDetails{Code: "quota_exhausted", Type: "rate_limit_error"}},
+		{"payload identifies error", `{"type":"error","code":"server_error"}`, "message", &UpstreamErrorDetails{Code: "server_error"}},
+		{"raw nested error type", `{"error":{"type":"upstream_error","message":"Unavailable"}}`, "", &UpstreamErrorDetails{Type: "upstream_error", Message: "Unavailable"}},
+		{"numeric code and envelope status", `{"error":{"code":429,"message":"Slow down"},"status":429}`, "", &UpstreamErrorDetails{Code: "429", Message: "Slow down", StatusCode: 429}},
+		{"code only", `{"type":"error","code":"server_is_overloaded"}`, "", &UpstreamErrorDetails{Code: "server_is_overloaded"}},
+		{"string error", `{"error":"Unavailable"}`, "", &UpstreamErrorDetails{Message: "Unavailable"}},
+		{"no fabricated status", `{"type":"error","code":"rate_limit_exceeded","status_code":200}`, "", &UpstreamErrorDetails{Code: "rate_limit_exceeded"}},
+		{"no object fields", `{"error":{"code":{"secret":"hidden"},"message":["hidden"],"param":{"secret":"hidden"}}}`, "", nil},
+		{"null error", `{"error":null}`, "", nil},
+		{"successful response", `{"type":"response.completed","response":{"status":"completed","error":null}}`, "", nil},
+		{"ordinary message", `{"type":"response.output_text.delta","message":"at capacity","delta":"hello"}`, "", nil},
+		{"malformed payload", `{"error":{"message":"truncated"}`, "", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := NewStreamStatus()
+			s.CaptureUpstreamSSEError(tc.data, tc.event)
+			assert.Equal(t, tc.want, s.UpstreamErrorDetails())
+			if tc.want == nil {
+				assert.Empty(t, s.UpstreamErrorMessage())
+				return
+			}
+			assert.Equal(t, tc.want.Message, s.UpstreamErrorMessage())
+			s.CaptureUpstreamError(`{"type":"error","message":"context canceled"}`)
+			assert.Equal(t, tc.want, s.UpstreamErrorDetails(), "retain the first upstream cause, including code-only errors")
+			snapshot := s.UpstreamErrorDetails()
+			snapshot.Message = "changed outside the stream"
+			assert.Equal(t, tc.want, s.UpstreamErrorDetails(), "return a detached snapshot")
+		})
+	}
+}
+
+func TestStreamStatus_UpstreamErrorFieldsAreMaskedAndBounded(t *testing.T) {
+	t.Parallel()
+	s := NewStreamStatus()
+	s.CaptureUpstreamError(`{"error":{"code":"channel-secret","type":"api_key:secret","message":" api_key:secret\nretry\u0000later ","param":"`+strings.Repeat("x", 2100)+`"},"metadata":{"token":"private"}}`, "channel-secret")
+	details := s.UpstreamErrorDetails()
+	require.NotNil(t, details)
+	assert.Equal(t, "***", details.Code)
+	assert.Equal(t, "api_key:***", details.Type)
+	assert.Equal(t, "api_key:*** retry later", details.Message)
+	assert.Equal(t, strings.Repeat("x", 2048)+"…", details.Param)
+}
 
 func TestStreamStatus_SetEndReason_FirstWins(t *testing.T) {
 	t.Parallel()

@@ -23,6 +23,7 @@ import {
   useReactTable,
 } from '@tanstack/react-table'
 import { act, fireEvent, render, screen, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { createInstance } from 'i18next'
 import { I18nextProvider } from 'react-i18next'
 import { afterAll, afterEach, beforeEach, expect, test, vi } from 'vitest'
@@ -38,6 +39,7 @@ import type { UsageLog } from '../../data/schema'
 import type { LogOtherData } from '../../types'
 import { useCommonLogsColumns } from '../columns/common-logs-columns'
 import { RequestCostDetails } from '../dialogs/request-cost-details'
+import { StreamTpsCell } from '../timing-metrics-cell'
 
 vi.mock('@lobehub/icons', () => ({}))
 vi.hoisted(() => {
@@ -573,6 +575,85 @@ test('does not invent an upstream error for a transport-only disconnect', async 
   const dialog = within(await screen.findByRole('dialog'))
   expect(dialog.getByText('context canceled')).toBeVisible()
   expect(dialog.queryByText('Upstream Error')).not.toBeInTheDocument()
+})
+
+test.each(['stream', 'http'])(
+  'shows the actual upstream error fields from a %s response',
+  async (source) => {
+    const details = {
+      code: 'provider_capacity_exceeded',
+      type: 'rate_limit_error',
+      message: 'Please try a different model.',
+      param: 'model',
+      status_code: 503,
+    }
+    const other: LogOtherData =
+      source === 'stream'
+        ? {
+            stream_status: {
+              status: 'error',
+              end_reason: 'eof',
+              upstream_error: details.message,
+              upstream_error_details: details,
+            },
+          }
+        : { upstream_error_details: details }
+    fireEvent.click(renderPreview(other, false, source === 'http' ? 5 : 2))
+    const dialog = within(await screen.findByRole('dialog'))
+    expect(dialog.getByText('Upstream Error')).toBeVisible()
+    expect(dialog.getByText('Error Code')).toBeVisible()
+    expect(dialog.getByText(details.code)).toBeVisible()
+    expect(dialog.getByText('Error Type')).toBeVisible()
+    expect(dialog.getByText(details.type)).toBeVisible()
+    expect(dialog.getByText(details.message)).toBeVisible()
+    expect(dialog.getByText('Parameter')).toBeVisible()
+    expect(dialog.getByText(details.param, { exact: true })).toBeVisible()
+    expect(dialog.getByText('Status Code')).toBeVisible()
+    expect(dialog.getByText('503')).toBeVisible()
+  }
+)
+
+test('shows an unknown upstream code even when the upstream omitted its message', async () => {
+  fireEvent.click(
+    renderPreview({
+      stream_status: {
+        status: 'error',
+        end_reason: 'eof',
+        upstream_error_details: { code: 'future_provider_error' },
+      },
+    })
+  )
+  const dialog = within(await screen.findByRole('dialog'))
+  expect(dialog.getByText('future_provider_error')).toBeVisible()
+  expect(dialog.queryByText('Status Code')).not.toBeInTheDocument()
+  expect(dialog.getByText('eof')).toBeVisible()
+})
+
+test('stream error tooltip shows the upstream cause alongside the transport end reason', async () => {
+  const user = userEvent.setup()
+  render(
+    <I18nextProvider i18n={i18n}>
+      <StreamTpsCell
+        isStream
+        streamStatus={{
+          status: 'error',
+          end_reason: 'eof',
+          upstream_error_details: {
+            code: 'server_is_overloaded',
+            type: 'overloaded_error',
+            message: 'Please try a different model.',
+          },
+        }}
+      />
+    </I18nextProvider>
+  )
+  await user.hover(screen.getByRole('button', { name: 'Upstream Error' }))
+  expect(
+    await screen.findByText('Error Code: server_is_overloaded')
+  ).toBeVisible()
+  expect(screen.getByText('Error Type: overloaded_error')).toBeVisible()
+  expect(screen.getByText('Please try a different model.')).toBeVisible()
+  expect(screen.getByText('eof')).toBeVisible()
 })
 
 test('historical cost preserves its amounts without reconciliation controls', async () => {

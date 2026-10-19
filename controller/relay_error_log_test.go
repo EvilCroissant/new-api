@@ -1,9 +1,10 @@
 package controller
 
 import (
-	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,97 +23,129 @@ import (
 )
 
 func TestProcessChannelErrorUsesSnapshotWithoutLeakingChannelMetadata(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	previousDB, previousLogDB := model.DB, model.LOG_DB
-	previousRedisEnabled := common.RedisEnabled
-	previousMainDatabaseType := common.MainDatabaseType()
-	previousLogDatabaseType := common.LogDatabaseType()
-	previousErrorLogEnabled := constant.ErrorLogEnabled
+	for _, tc := range []struct {
+		name, body string
+		want       map[string]any
+	}{
+		{"structured error", `{"error":{"message":"upstream failed","code":"provider_capacity_exceeded","type":"rate_limit_error","param":"model","metadata":{"token":"private-metadata"}}}`, map[string]any{
+			"code": "provider_capacity_exceeded", "type": "rate_limit_error", "param": "model", "message": "upstream failed", "status_code": float64(http.StatusTooManyRequests),
+		}},
+		{"code only", `{"error":{"code":"new_provider_limit"}}`, map[string]any{
+			"code": "new_provider_limit", "status_code": float64(http.StatusTooManyRequests),
+		}},
+		{"flat HTTP error", `{"code":"provider_limit","type":"rate_limit_error","message":"Slow down"}`, map[string]any{
+			"code": "provider_limit", "type": "rate_limit_error", "message": "Slow down", "status_code": float64(http.StatusTooManyRequests),
+		}},
+		{"non JSON response", `upstream unavailable`, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gin.SetMode(gin.TestMode)
+			previousDB, previousLogDB := model.DB, model.LOG_DB
+			previousRedisEnabled := common.RedisEnabled
+			previousMainDatabaseType := common.MainDatabaseType()
+			previousLogDatabaseType := common.LogDatabaseType()
+			previousErrorLogEnabled := constant.ErrorLogEnabled
 
-	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-	require.NoError(t, err)
-	sqlDB, err := database.DB()
-	require.NoError(t, err)
-	sqlDB.SetMaxOpenConns(1)
-	require.NoError(t, database.AutoMigrate(&model.User{}, &model.Log{}))
-	model.DB, model.LOG_DB = database, database
-	common.RedisEnabled = false
-	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
-	constant.ErrorLogEnabled = true
-	t.Cleanup(func() {
-		model.DB, model.LOG_DB = previousDB, previousLogDB
-		common.RedisEnabled = previousRedisEnabled
-		common.SetDatabaseTypes(previousMainDatabaseType, previousLogDatabaseType)
-		constant.ErrorLogEnabled = previousErrorLogEnabled
-		require.NoError(t, sqlDB.Close())
-	})
+			database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+			require.NoError(t, err)
+			sqlDB, err := database.DB()
+			require.NoError(t, err)
+			sqlDB.SetMaxOpenConns(1)
+			require.NoError(t, database.AutoMigrate(&model.User{}, &model.Log{}))
+			model.DB, model.LOG_DB = database, database
+			common.RedisEnabled = false
+			common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
+			constant.ErrorLogEnabled = true
+			t.Cleanup(func() {
+				model.DB, model.LOG_DB = previousDB, previousLogDB
+				common.RedisEnabled = previousRedisEnabled
+				common.SetDatabaseTypes(previousMainDatabaseType, previousLogDatabaseType)
+				constant.ErrorLogEnabled = previousErrorLogEnabled
+				require.NoError(t, sqlDB.Close())
+			})
 
-	require.NoError(t, database.Create(&model.User{Id: 7, Username: "log-owner", Group: "default"}).Error)
-	recorder := httptest.NewRecorder()
-	ctx, _ := gin.CreateTestContext(recorder)
-	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	ctx.Set("id", 7)
-	ctx.Set("username", "log-owner")
-	ctx.Set("token_name", "test-token")
-	ctx.Set("token_id", 11)
-	ctx.Set("original_model", "gpt-test")
-	ctx.Set("group", "default")
-	ctx.Set("channel_id", 202)
-	ctx.Set("channel_name", "mutable-context-channel")
-	ctx.Set("channel_type", 9)
-	ctx.Set("use_channel", []string{"101"})
-	common.SetContextKey(ctx, constant.ContextKeyRequestStartTime, time.Now().Add(-time.Second))
+			require.NoError(t, database.Create(&model.User{Id: 7, Username: "log-owner", Group: "default"}).Error)
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			ctx.Set("id", 7)
+			ctx.Set("username", "log-owner")
+			ctx.Set("token_name", "test-token")
+			ctx.Set("token_id", 11)
+			ctx.Set("original_model", "gpt-test")
+			ctx.Set("group", "default")
+			ctx.Set("channel_id", 202)
+			ctx.Set("channel_name", "mutable-context-channel")
+			ctx.Set("channel_type", 9)
+			ctx.Set("use_channel", []string{"101"})
+			common.SetContextKey(ctx, constant.ContextKeyRequestStartTime, time.Now().Add(-time.Second))
 
-	affinity := operation_setting.GetChannelAffinitySetting()
-	previousAffinity := *affinity
-	t.Cleanup(func() { *affinity = previousAffinity })
-	affinity.Enabled, affinity.FRTOptimizationEnabled = true, false
-	affinity.Rules = []operation_setting.ChannelAffinityRule{{Name: "error-probe", ModelRegex: []string{".*"}, KeySources: []operation_setting.ChannelAffinityKeySource{{Type: "request_header", Key: "X-Session"}}}}
-	ctx.Request.Header.Set("X-Session", t.Name())
-	service.GetPreferredChannelByAffinity(ctx, "gpt-test", "default")
-	service.ClearCurrentChannelAffinityCache(ctx)
-	service.GetPreferredChannelByAffinity(ctx, "gpt-test", "default")
-	service.RecordChannelAffinity(ctx, 100)
-	service.GetPreferredChannelByAffinity(ctx, "gpt-test", "default")
-	service.MarkChannelAffinityUsed(ctx, "default", 202, 10)
-	ctx.Set("channel_affinity_probe_channel_id", 202)
-	t.Cleanup(func() { service.ClearCurrentChannelAffinityCache(ctx) })
+			affinity := operation_setting.GetChannelAffinitySetting()
+			previousAffinity := *affinity
+			t.Cleanup(func() { *affinity = previousAffinity })
+			affinity.Enabled, affinity.FRTOptimizationEnabled = true, false
+			affinity.Rules = []operation_setting.ChannelAffinityRule{{Name: "error-probe", ModelRegex: []string{".*"}, KeySources: []operation_setting.ChannelAffinityKeySource{{Type: "request_header", Key: "X-Session"}}}}
+			ctx.Request.Header.Set("X-Session", t.Name())
+			service.GetPreferredChannelByAffinity(ctx, "gpt-test", "default")
+			service.ClearCurrentChannelAffinityCache(ctx)
+			service.GetPreferredChannelByAffinity(ctx, "gpt-test", "default")
+			service.RecordChannelAffinity(ctx, 100)
+			service.GetPreferredChannelByAffinity(ctx, "gpt-test", "default")
+			service.MarkChannelAffinityUsed(ctx, "default", 202, 10)
+			ctx.Set("channel_affinity_probe_channel_id", 202)
+			t.Cleanup(func() { service.ClearCurrentChannelAffinityCache(ctx) })
 
-	channelSnapshot := types.ChannelError{
-		ChannelId:   101,
-		ChannelType: 1,
-		ChannelName: "snapshot-channel",
-		AutoBan:     false,
-	}
-	apiErr := types.NewOpenAIError(errors.New("upstream failed"), types.ErrorCodeBadResponseStatusCode, http.StatusBadGateway)
+			channelSnapshot := types.ChannelError{
+				ChannelId:   101,
+				ChannelType: 1,
+				ChannelName: "snapshot-channel",
+				AutoBan:     false,
+			}
+			apiErr := service.RelayErrorHandler(ctx, &http.Response{
+				StatusCode: http.StatusTooManyRequests,
+				Body:       io.NopCloser(strings.NewReader(tc.body)),
+			}, false)
+			service.ResetStatusCode(apiErr, `{"429":502}`)
 
-	processChannelError(ctx, channelSnapshot, apiErr, nil)
+			processChannelError(ctx, channelSnapshot, apiErr, nil)
 
-	var stored model.Log
-	require.NoError(t, database.First(&stored).Error)
-	assert.Equal(t, channelSnapshot.ChannelId, stored.ChannelId)
-	storedOther, err := common.StrToMap(stored.Other)
-	require.NoError(t, err)
-	assert.Equal(t, float64(http.StatusBadGateway), storedOther["status_code"])
-	for _, key := range []string{"channel_id", "channel_name", "channel_type"} {
-		assert.NotContains(t, storedOther, key)
-	}
-	adminInfo, ok := storedOther["admin_info"].(map[string]any)
-	require.True(t, ok)
-	assert.Equal(t, []any{"101"}, adminInfo["use_channel"])
-	affinityInfo := adminInfo["channel_affinity"].(map[string]any)
-	assert.Equal(t, false, affinityInfo["probe_succeeded"])
+			var stored model.Log
+			require.NoError(t, database.First(&stored).Error)
+			assert.Equal(t, channelSnapshot.ChannelId, stored.ChannelId)
+			storedOther, err := common.StrToMap(stored.Other)
+			require.NoError(t, err)
+			assert.Equal(t, float64(http.StatusBadGateway), storedOther["status_code"])
+			if tc.want == nil {
+				assert.NotContains(t, storedOther, "upstream_error_details")
+			} else {
+				assert.Equal(t, tc.want, storedOther["upstream_error_details"])
+			}
+			for _, key := range []string{"channel_id", "channel_name", "channel_type"} {
+				assert.NotContains(t, storedOther, key)
+			}
+			adminInfo, ok := storedOther["admin_info"].(map[string]any)
+			require.True(t, ok)
+			assert.Equal(t, []any{"101"}, adminInfo["use_channel"])
+			affinityInfo := adminInfo["channel_affinity"].(map[string]any)
+			assert.Equal(t, false, affinityInfo["probe_succeeded"])
 
-	logs, total, err := model.GetUserLogs(7, model.LogFilter{Type: model.LogTypeError}, 0, 10)
-	require.NoError(t, err)
-	require.Equal(t, int64(1), total)
-	require.Len(t, logs, 1)
-	assert.Equal(t, channelSnapshot.ChannelId, logs[0].ChannelId)
-	assert.Empty(t, logs[0].ChannelName)
-	userOther, err := common.StrToMap(logs[0].Other)
-	require.NoError(t, err)
-	assert.NotContains(t, userOther, "admin_info")
-	for _, key := range []string{"channel_id", "channel_name", "channel_type"} {
-		assert.NotContains(t, userOther, key)
+			logs, total, err := model.GetUserLogs(7, model.LogFilter{Type: model.LogTypeError}, 0, 10)
+			require.NoError(t, err)
+			require.Equal(t, int64(1), total)
+			require.Len(t, logs, 1)
+			assert.Equal(t, channelSnapshot.ChannelId, logs[0].ChannelId)
+			assert.Empty(t, logs[0].ChannelName)
+			userOther, err := common.StrToMap(logs[0].Other)
+			require.NoError(t, err)
+			assert.NotContains(t, userOther, "admin_info")
+			if tc.want == nil {
+				assert.NotContains(t, userOther, "upstream_error_details")
+			} else {
+				assert.Equal(t, tc.want, userOther["upstream_error_details"])
+			}
+			for _, key := range []string{"channel_id", "channel_name", "channel_type"} {
+				assert.NotContains(t, userOther, key)
+			}
+		})
 	}
 }

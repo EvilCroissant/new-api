@@ -206,6 +206,9 @@ interface StreamTpsCellProps {
 
 export function StreamTpsCell(props: StreamTpsCellProps) {
   const { t } = useTranslation()
+  const upstreamError = props.streamStatus?.upstream_error_details
+  const upstreamMessage =
+    upstreamError?.message || props.streamStatus?.upstream_error
   const showStreamError =
     props.isStream && props.streamStatus && props.streamStatus.status !== 'ok'
   const tpsLabel =
@@ -236,13 +239,27 @@ export function StreamTpsCell(props: StreamTpsCellProps) {
           <TooltipProvider>
             <Tooltip>
               <TooltipTrigger
-                render={<CircleAlert className='text-destructive size-3' />}
-              />
-              <TooltipContent>
-                <div className='space-y-0.5 text-xs'>
+                aria-label={t('Upstream Error')}
+                className='text-destructive inline-flex size-3 shrink-0 items-center justify-center'
+              >
+                <CircleAlert className='size-3' aria-hidden='true' />
+              </TooltipTrigger>
+              <TooltipContent className='max-w-xs'>
+                <div className='space-y-0.5 text-xs wrap-break-word'>
                   <p>
                     {t('Stream Status')}: {t('Error')}
                   </p>
+                  {upstreamError?.code && (
+                    <p>
+                      {t('Error Code')}: {upstreamError.code}
+                    </p>
+                  )}
+                  {upstreamError?.type && (
+                    <p>
+                      {t('Error Type')}: {upstreamError.type}
+                    </p>
+                  )}
+                  {upstreamMessage && <p>{upstreamMessage}</p>}
                   <p>{props.streamStatus?.end_reason || 'unknown'}</p>
                   {(props.streamStatus?.error_count ?? 0) > 0 && (
                     <p>

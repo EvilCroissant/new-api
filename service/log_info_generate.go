@@ -174,7 +174,8 @@ func appendStreamStatus(relayInfo *relaycommon.RelayInfo, other *model.LogOther)
 	status := "ok"
 	outcome := ss.OutcomeSnapshot()
 	upstreamError := ss.UpstreamErrorMessage()
-	if !ss.IsNormalEnd() || ss.HasErrors() || outcome.Response == relaycommon.ResponseOutcomeFailed || upstreamError != "" {
+	upstreamDetails := ss.UpstreamErrorDetails()
+	if !ss.IsNormalEnd() || ss.HasErrors() || outcome.Response == relaycommon.ResponseOutcomeFailed || upstreamDetails != nil {
 		status = "error"
 	}
 	streamInfo := map[string]any{
@@ -183,6 +184,9 @@ func appendStreamStatus(relayInfo *relaycommon.RelayInfo, other *model.LogOther)
 	}
 	if upstreamError != "" {
 		streamInfo["upstream_error"] = upstreamError
+	}
+	if upstreamDetails != nil {
+		streamInfo["upstream_error_details"] = upstreamDetails
 	}
 	if outcome.Response != relaycommon.ResponseOutcomeUnknown {
 		streamInfo["response_status"] = string(outcome.Response)
