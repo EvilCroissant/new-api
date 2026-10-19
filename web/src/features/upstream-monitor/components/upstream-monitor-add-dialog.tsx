@@ -19,8 +19,8 @@ For commercial licensing, please contact support@quantumnous.com
 
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useMutation } from '@tanstack/react-query'
-import { useEffect, useState } from 'react'
-import { useForm } from 'react-hook-form'
+import { useState } from 'react'
+import { useForm, useWatch } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
@@ -58,6 +58,7 @@ import {
   type UpstreamMonitorFormValues,
 } from '../lib/schema'
 import type { UpstreamMonitor, UpstreamMonitorProvider } from '../types'
+import { UpstreamAccountFields } from './upstream-account-fields'
 
 type DetectionState = 'idle' | 'detected' | 'manual'
 
@@ -77,6 +78,12 @@ function getErrorMessage(error: unknown, fallback: string): string {
 }
 
 export function UpstreamMonitorAddDialog(props: UpstreamMonitorAddDialogProps) {
+  return (
+    <UpstreamMonitorAddForm key={props.open ? 'open' : 'closed'} {...props} />
+  )
+}
+
+function UpstreamMonitorAddForm(props: UpstreamMonitorAddDialogProps) {
   const { t } = useTranslation()
   const [detectionState, setDetectionState] = useState<DetectionState>('idle')
   const form = useForm<
@@ -89,25 +96,13 @@ export function UpstreamMonitorAddDialog(props: UpstreamMonitorAddDialogProps) {
       name: '',
       base_url: '',
       provider: undefined,
+      api_key: '',
       new_api_user_id: undefined,
       access_token: '',
       refresh_token: '',
     },
   })
-  const provider = form.watch('provider')
-
-  useEffect(() => {
-    if (!props.open) return
-    form.reset({
-      name: '',
-      base_url: '',
-      provider: undefined,
-      new_api_user_id: undefined,
-      access_token: '',
-      refresh_token: '',
-    })
-    setDetectionState('idle')
-  }, [form, props.open])
+  const provider = useWatch({ control: form.control, name: 'provider' })
 
   const detectMutation = useMutation({
     mutationFn: detectUpstreamMonitor,
@@ -172,6 +167,7 @@ export function UpstreamMonitorAddDialog(props: UpstreamMonitorAddDialogProps) {
     if (values.provider === 'sub2api') {
       createMutation.mutate({
         ...input,
+        api_key: values.api_key?.trim(),
         refresh_token: values.refresh_token?.trim(),
       })
       return
@@ -199,9 +195,11 @@ export function UpstreamMonitorAddDialog(props: UpstreamMonitorAddDialogProps) {
           <DialogHeader>
             <DialogTitle>{t('Add upstream monitor')}</DialogTitle>
             <DialogDescription>
-              {t(
-                'Monitor an independent upstream account without linking local channels or API keys.'
-              )}
+              {provider === 'sub2api'
+                ? t('Monitor upstream account wallet balances.')
+                : t(
+                    'Monitor an independent upstream account without linking local channels or API keys.'
+                  )}
             </DialogDescription>
           </DialogHeader>
 
@@ -312,6 +310,18 @@ export function UpstreamMonitorAddDialog(props: UpstreamMonitorAddDialogProps) {
 
             {provider && (
               <>
+                {provider === 'sub2api' && (
+                  <UpstreamAccountFields
+                    provider={provider}
+                    id='upstream-monitor'
+                    disabled={isBusy}
+                    existing={false}
+                    apiKey={form.register('api_key')}
+                    userID={form.register('new_api_user_id')}
+                    accessToken={form.register('access_token')}
+                    refreshToken={form.register('refresh_token')}
+                  />
+                )}
                 {provider === 'newapi' && (
                   <Field
                     data-invalid={Boolean(
@@ -339,59 +349,29 @@ export function UpstreamMonitorAddDialog(props: UpstreamMonitorAddDialogProps) {
                   </Field>
                 )}
 
-                <Field
-                  data-invalid={Boolean(form.formState.errors.access_token)}
-                >
-                  <FieldLabel htmlFor='upstream-monitor-credential'>
-                    {provider === 'newapi'
-                      ? t('Personal access token')
-                      : t('JWT')}
-                  </FieldLabel>
-                  <Input
-                    id='upstream-monitor-credential'
-                    type='password'
-                    autoComplete='off'
-                    placeholder={
-                      provider === 'newapi'
-                        ? t('Enter access token')
-                        : t('Enter JWT')
-                    }
-                    disabled={isBusy}
-                    {...form.register('access_token')}
-                  />
-                  <FieldDescription>
-                    {t(
-                      'The credential is stored server-side and is never returned to the browser.'
-                    )}
-                  </FieldDescription>
-                  <FieldError errors={[form.formState.errors.access_token]}>
-                    {form.formState.errors.access_token?.message &&
-                      t(form.formState.errors.access_token.message)}
-                  </FieldError>
-                </Field>
-
-                {provider === 'sub2api' && (
+                {provider === 'newapi' && (
                   <Field
-                    data-invalid={Boolean(form.formState.errors.refresh_token)}
+                    data-invalid={Boolean(form.formState.errors.access_token)}
                   >
-                    <FieldLabel htmlFor='upstream-monitor-refresh-token'>
-                      {t('Refresh token')}
+                    <FieldLabel htmlFor='upstream-monitor-credential'>
+                      {t('Personal access token')}
                     </FieldLabel>
                     <Input
-                      id='upstream-monitor-refresh-token'
+                      id='upstream-monitor-credential'
                       type='password'
                       autoComplete='off'
+                      placeholder={t('Enter access token')}
                       disabled={isBusy}
-                      {...form.register('refresh_token')}
+                      {...form.register('access_token')}
                     />
                     <FieldDescription>
                       {t(
-                        'The refresh token renews the Sub2API login session automatically.'
+                        'The credential is stored server-side and is never returned to the browser.'
                       )}
                     </FieldDescription>
-                    <FieldError errors={[form.formState.errors.refresh_token]}>
-                      {form.formState.errors.refresh_token?.message &&
-                        t(form.formState.errors.refresh_token.message)}
+                    <FieldError errors={[form.formState.errors.access_token]}>
+                      {form.formState.errors.access_token?.message &&
+                        t(form.formState.errors.access_token.message)}
                     </FieldError>
                   </Field>
                 )}

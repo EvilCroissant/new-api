@@ -21,6 +21,7 @@ import type { ComponentPropsWithRef } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Badge } from '@/components/ui/badge'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Field, FieldDescription, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 
@@ -31,6 +32,12 @@ type UpstreamAccountFieldsProps = {
   id: string
   disabled: boolean
   existing: boolean
+  apiKeyConfigured?: boolean
+  apiKey?: ComponentPropsWithRef<'input'>
+  automaticKey?: {
+    checked: boolean
+    onCheckedChange: (checked: boolean) => void
+  }
   accessTokenConfigured?: boolean
   refreshTokenConfigured?: boolean
   userID: ComponentPropsWithRef<'input'>
@@ -42,6 +49,48 @@ export function UpstreamAccountFields(props: UpstreamAccountFieldsProps) {
   const { t } = useTranslation()
   return (
     <>
+      {props.provider === 'sub2api' && props.apiKey && (
+        <Field>
+          <div className='flex items-center justify-between gap-2'>
+            <FieldLabel htmlFor={`${props.id}-api-key`}>
+              {t('API key')}
+            </FieldLabel>
+            <Badge variant='outline'>
+              {props.apiKeyConfigured ? t('Configured') : t('Automatic')}
+            </Badge>
+          </div>
+          <Input
+            id={`${props.id}-api-key`}
+            type='password'
+            autoComplete='off'
+            disabled={props.disabled || props.automaticKey?.checked}
+            {...props.apiKey}
+          />
+          {props.existing && (
+            <FieldDescription>
+              {t('Leave blank to keep the existing credential')}
+            </FieldDescription>
+          )}
+          <FieldDescription>
+            {t(
+              'Optional; otherwise a random enabled key from channels at this site is used.'
+            )}
+          </FieldDescription>
+          {props.automaticKey && props.apiKeyConfigured && (
+            <Field orientation='horizontal'>
+              <Checkbox
+                id={`${props.id}-clear-key`}
+                checked={props.automaticKey.checked}
+                disabled={props.disabled}
+                onCheckedChange={props.automaticKey.onCheckedChange}
+              />
+              <FieldLabel htmlFor={`${props.id}-clear-key`}>
+                {t('Use an automatic channel key')}
+              </FieldLabel>
+            </Field>
+          )}
+        </Field>
+      )}
       {props.provider === 'newapi' && (
         <Field>
           <FieldLabel htmlFor={`${props.id}-user-id`}>
@@ -62,7 +111,7 @@ export function UpstreamAccountFields(props: UpstreamAccountFieldsProps) {
           <FieldLabel htmlFor={`${props.id}-access-token`}>
             {props.provider === 'newapi'
               ? t('Personal access token')
-              : t('JWT')}
+              : 'auth_token'}
           </FieldLabel>
           <Badge variant='outline'>
             {props.accessTokenConfigured
@@ -82,12 +131,19 @@ export function UpstreamAccountFields(props: UpstreamAccountFieldsProps) {
             {t('Leave blank to keep the existing credential')}
           </FieldDescription>
         )}
+        {props.provider === 'sub2api' && props.apiKey && (
+          <FieldDescription>
+            {t(
+              'Optional fallback when the API key fails or does not return a wallet balance.'
+            )}
+          </FieldDescription>
+        )}
       </Field>
       {props.provider === 'sub2api' && (
         <Field>
           <div className='flex items-center justify-between gap-2'>
             <FieldLabel htmlFor={`${props.id}-refresh-token`}>
-              {t('Refresh token')}
+              refresh_token
             </FieldLabel>
             <Badge variant='outline'>
               {props.refreshTokenConfigured

@@ -20,7 +20,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { zodResolver } from '@hookform/resolvers/zod'
 import { Key01Icon } from '@hugeicons/core-free-icons'
 import { HugeiconsIcon } from '@hugeicons/react'
-import { useForm } from 'react-hook-form'
+import { useForm, useWatch } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 
 import { Badge } from '@/components/ui/badge'
@@ -56,6 +56,8 @@ export function UpstreamMonitorCredentialPanel(
     resolver: zodResolver(upstreamMonitorCredentialFormSchema),
     defaultValues: {
       provider: props.monitor.provider,
+      api_key: '',
+      clear_api_key: false,
       new_api_user_id:
         props.monitor.provider === 'newapi'
           ? props.monitor.new_api_user_id
@@ -64,6 +66,7 @@ export function UpstreamMonitorCredentialPanel(
       refresh_token: '',
     },
   })
+  const clearAPIKey = useWatch({ control: form.control, name: 'clear_api_key' })
 
   const handleSubmit = async (values: UpstreamMonitorCredentialFormValues) => {
     const input: UpstreamMonitorUpdateInput = {}
@@ -73,8 +76,10 @@ export function UpstreamMonitorCredentialPanel(
     if (values.access_token) {
       input.access_token = values.access_token
     }
-    if (values.provider === 'sub2api' && values.refresh_token) {
-      input.refresh_token = values.refresh_token
+    if (values.provider === 'sub2api') {
+      if (values.clear_api_key) input.api_key = ''
+      else if (values.api_key) input.api_key = values.api_key
+      if (values.refresh_token) input.refresh_token = values.refresh_token
     }
 
     try {
@@ -122,6 +127,13 @@ export function UpstreamMonitorCredentialPanel(
             id={`upstream-monitor-${props.monitor.id}`}
             disabled={props.isSaving}
             existing
+            apiKeyConfigured={props.monitor.api_key_configured}
+            apiKey={{ ...form.register('api_key') }}
+            automaticKey={{
+              checked: Boolean(clearAPIKey),
+              onCheckedChange: (checked) =>
+                form.setValue('clear_api_key', checked),
+            }}
             accessTokenConfigured={props.monitor.access_token_configured}
             refreshTokenConfigured={props.monitor.refresh_token_configured}
             userID={{

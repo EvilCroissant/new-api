@@ -20,6 +20,8 @@ For commercial licensing, please contact support@quantumnous.com
 import { fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, test } from 'vitest'
 
+import type { UpstreamMonitor } from '../types'
+
 const { createInstance } = await import('i18next')
 const { I18nextProvider, initReactI18next } = await import('react-i18next')
 const { QueryClient, QueryClientProvider } =
@@ -28,6 +30,8 @@ const { api } = await import('@/lib/api')
 const { ROLE } = await import('@/lib/roles')
 const { useAuthStore } = await import('@/stores/auth-store')
 const { UpstreamMonitorPage } = await import('..')
+const { UpstreamMonitorTable } =
+  await import('../components/upstream-monitor-table')
 
 const i18n = createInstance()
 await i18n.use(initReactI18next).init({
@@ -36,13 +40,14 @@ await i18n.use(initReactI18next).init({
 })
 
 type ApiMethod = (url: string) => Promise<{ data: unknown }>
-type MockableApi = { get: ApiMethod }
+type MockableApi = { get: ApiMethod; post: ApiMethod }
 
 const apiClient = api as unknown as MockableApi
 const originalGet = apiClient.get
+const originalPost = apiClient.post
 const queryClients: InstanceType<typeof QueryClient>[] = []
 
-function renderPage(): void {
+function renderPage(monitors: UpstreamMonitor[] = []): void {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
@@ -53,7 +58,7 @@ function renderPage(): void {
     role: ROLE.SUPER_ADMIN,
   })
   apiClient.get = async () => ({
-    data: { success: true, data: [] },
+    data: { success: true, data: monitors },
   })
 
   render(
@@ -67,12 +72,100 @@ function renderPage(): void {
 
 afterEach(() => {
   apiClient.get = originalGet
+  apiClient.post = originalPost
   useAuthStore.getState().auth.setUser(null)
   for (const queryClient of queryClients) queryClient.clear()
   queryClients.length = 0
 })
 
 describe('UpstreamMonitorPage', () => {
+  const monitor: UpstreamMonitor = {
+    id: 1,
+    name: 'Upstream',
+    base_url: 'https://monitor.example.com',
+    provider: 'sub2api',
+    new_api_user_id: 0,
+    api_key_configured: true,
+    access_token_configured: true,
+    refresh_token_configured: false,
+    balance_usd: 1,
+    balance_available: true,
+    group_count: 0,
+    pricing_count: 0,
+    last_synced_at: 1,
+    last_error: '',
+    created_at: 1,
+    updated_at: 1,
+  }
+
+  test('uses amber for low wallet balance and red for query failure without stale low-balance warnings', async () => {
+    renderPage([
+      monitor,
+      {
+        ...monitor,
+        id: 2,
+        name: 'Failed upstream',
+        last_error: 'Wallet lookup failed',
+      },
+    ])
+    const warning = await screen.findByText('Low balance')
+    expect(warning).toHaveClass('text-warning')
+    expect(await screen.findByText('Sync failed')).toHaveClass(
+      'text-destructive'
+    )
+    expect(screen.getAllByLabelText('Low balance')).toHaveLength(1)
+  })
+
+  test('reloads the failed synchronization status immediately after a failed manual query', async () => {
+    renderPage([monitor])
+    await screen.findByText('Upstream')
+    apiClient.post = async () => ({
+      data: { success: false, message: 'Wallet lookup failed' },
+    })
+    apiClient.get = async () => ({
+      data: {
+        success: true,
+        data: [{ ...monitor, last_error: 'Wallet lookup failed' }],
+      },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Sync now' }))
+    expect(await screen.findByText('Sync failed')).toHaveClass(
+      'text-destructive'
+    )
+    expect(screen.queryByLabelText('Low balance')).not.toBeInTheDocument()
+  })
+
+  test('shows a red unavailable balance instead of the stale wallet in the embedded channel table', () => {
+    render(
+      <I18nextProvider i18n={i18n}>
+        <UpstreamMonitorTable
+          embedded
+          monitors={[{ ...monitor, last_error: 'Wallet lookup failed' }]}
+          isRoot
+          syncingId={undefined}
+          deletingId={undefined}
+          updatingId={undefined}
+          onSync={() => undefined}
+          onDelete={() => undefined}
+          onUpdateCredentials={async () => undefined}
+        />
+      </I18nextProvider>
+    )
+    expect(screen.getByLabelText('Available balance')).toHaveTextContent('-')
+    expect(screen.getByLabelText('Available balance')).toHaveClass(
+      'text-destructive'
+    )
+    expect(screen.getByText('Sync failed')).toHaveClass('text-destructive')
+    expect(screen.queryByLabelText('Low balance')).not.toBeInTheDocument()
+  })
+
+  test('keeps New API balance display and synchronization status unchanged', async () => {
+    renderPage([{ ...monitor, provider: 'newapi', new_api_user_id: 1 }])
+    expect(await screen.findByText('Synchronized')).toBeInTheDocument()
+    expect(screen.getByLabelText('Low balance')).toBeInTheDocument()
+    expect(screen.queryByText('Low balance')).not.toBeInTheDocument()
+  })
+
   test('opens the add monitor dialog when a super administrator clicks Add monitor', async () => {
     renderPage()
 

@@ -85,8 +85,15 @@ export function UpstreamMonitorPage(props: UpstreamManagementPageProps) {
         queryClient.invalidateQueries({ queryKey: ['upstream-monitor', id] }),
       ])
     },
-    onError: (error) => {
+    onError: async (error, id) => {
       toast.error(getErrorMessage(error, t('Sync failed')))
+      if (
+        monitorQuery.data?.some(
+          (monitor) => monitor.id === id && monitor.provider === 'sub2api'
+        )
+      ) {
+        await refreshMonitors()
+      }
     },
   })
 

@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"sort"
@@ -52,12 +53,14 @@ type UpstreamMonitorCreateInput struct {
 	Name         string
 	BaseURL      string
 	Provider     string
+	APIKey       string
 	NewAPIUserID int
 	AccessToken  string
 	RefreshToken string
 }
 
 type UpstreamMonitorUpdateInput struct {
+	APIKey       *string
 	NewAPIUserID *int
 	AccessToken  *string
 	RefreshToken *string
@@ -76,6 +79,7 @@ type UpstreamMonitorDetail struct {
 	Name                   string  `json:"name"`
 	BaseURL                string  `json:"base_url"`
 	Provider               string  `json:"provider"`
+	APIKeyConfigured       bool    `json:"api_key_configured"`
 	NewAPIUserID           int     `json:"new_api_user_id"`
 	AccessTokenConfigured  bool    `json:"access_token_configured"`
 	RefreshTokenConfigured bool    `json:"refresh_token_configured"`
@@ -270,6 +274,7 @@ func CreateUpstreamMonitor(input UpstreamMonitorCreateInput) (*UpstreamMonitorDe
 		Name:         name,
 		BaseURL:      normalizedURL,
 		Provider:     input.Provider,
+		APIKey:       strings.TrimSpace(input.APIKey),
 		NewAPIUserID: input.NewAPIUserID,
 		AccessToken:  strings.TrimSpace(input.AccessToken),
 		RefreshToken: strings.TrimSpace(input.RefreshToken),
@@ -306,7 +311,7 @@ func UpdateUpstreamMonitorCredentials(ctx context.Context, id int, input Upstrea
 }
 
 func updateUpstreamMonitorCredentialsWithClient(ctx context.Context, id int, input UpstreamMonitorUpdateInput, client *http.Client) (*UpstreamMonitorDetail, error) {
-	if input.NewAPIUserID == nil && input.AccessToken == nil && input.RefreshToken == nil {
+	if input.APIKey == nil && input.NewAPIUserID == nil && input.AccessToken == nil && input.RefreshToken == nil {
 		return nil, errors.New("at least one credential field is required")
 	}
 	monitor, err := model.GetUpstreamMonitorByID(id)
@@ -316,6 +321,9 @@ func updateUpstreamMonitorCredentialsWithClient(ctx context.Context, id int, inp
 
 	switch monitor.Provider {
 	case UpstreamMonitorProviderNewAPI:
+		if input.APIKey != nil {
+			return nil, errors.New("New API monitors use a personal access token")
+		}
 		if input.RefreshToken != nil {
 			return nil, errors.New("New API monitors do not use a refresh token")
 		}
@@ -328,6 +336,10 @@ func updateUpstreamMonitorCredentialsWithClient(ctx context.Context, id int, inp
 	}
 
 	credentialUpdate := model.UpstreamMonitorCredentialUpdate{}
+	if input.APIKey != nil {
+		monitor.APIKey = strings.TrimSpace(*input.APIKey)
+		credentialUpdate.APIKey = &monitor.APIKey
+	}
 	if input.NewAPIUserID != nil {
 		if *input.NewAPIUserID <= 0 {
 			return nil, errors.New("New API user ID is required")
@@ -354,6 +366,7 @@ func updateUpstreamMonitorCredentialsWithClient(ctx context.Context, id int, inp
 
 	if err := validateUpstreamMonitorCreateInput(UpstreamMonitorCreateInput{
 		Provider:     monitor.Provider,
+		APIKey:       monitor.APIKey,
 		NewAPIUserID: monitor.NewAPIUserID,
 		AccessToken:  monitor.AccessToken,
 		RefreshToken: monitor.RefreshToken,
@@ -461,6 +474,7 @@ func syncAndSaveUpstreamMonitorWithClient(ctx context.Context, monitor *model.Up
 	previousAccessToken := monitor.AccessToken
 	previousRefreshToken := monitor.RefreshToken
 	previousNewAPIUserID := monitor.NewAPIUserID
+	previousAPIKey := monitor.APIKey
 	var err error
 	switch monitor.Provider {
 	case UpstreamMonitorProviderNewAPI:
@@ -473,7 +487,7 @@ func syncAndSaveUpstreamMonitorWithClient(ctx context.Context, monitor *model.Up
 
 	monitor.LastSyncedAt = time.Now().Unix()
 	monitor.LastError = upstreamMonitorErrorText(err)
-	saveErr := model.SaveUpstreamMonitorSyncResult(monitor, previousNewAPIUserID, previousAccessToken, previousRefreshToken)
+	saveErr := model.SaveUpstreamMonitorSyncResult(monitor, previousNewAPIUserID, previousAccessToken, previousRefreshToken, previousAPIKey)
 	return err, saveErr
 }
 
@@ -559,11 +573,31 @@ func syncSub2APIUpstreamMonitorWithClient(monitor *model.UpstreamMonitor, client
 }
 
 func syncSub2APIUpstreamMonitorWithContext(ctx context.Context, monitor *model.UpstreamMonitor, client *http.Client) error {
-	if err := validateUpstreamMonitorInput(monitor.Provider, monitor.NewAPIUserID, monitor.AccessToken); err != nil {
-		return err
-	}
+	monitor.BalanceAvailable = false
 	if client == nil {
 		return errors.New("upstream monitor HTTP client is required")
+	}
+	apiKey, keyErr := selectUpstreamMonitorAPIKey(ctx, monitor)
+	if keyErr == nil && apiKey != "" {
+		keyErr = syncSub2APIUpstreamMonitorWithAPIKey(ctx, monitor, client, apiKey)
+		if keyErr == nil {
+			return nil
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
+	if strings.TrimSpace(monitor.AccessToken) == "" && strings.TrimSpace(monitor.RefreshToken) == "" {
+		if keyErr == nil {
+			keyErr = errors.New("no configured API key or enabled channel key matches this upstream")
+		}
+		return fmt.Errorf("%w; auth_token fallback is not configured", keyErr)
+	}
+	if strings.TrimSpace(monitor.AccessToken) == "" {
+		if err := refreshSub2APIUpstreamMonitorAccessToken(ctx, monitor, client); err != nil {
+			return err
+		}
+		return syncSub2APIUpstreamMonitorWithAccessToken(ctx, monitor, client, monitor.AccessToken)
 	}
 
 	err := syncSub2APIUpstreamMonitorWithAccessToken(ctx, monitor, client, monitor.AccessToken)
@@ -579,6 +613,84 @@ func syncSub2APIUpstreamMonitorWithContext(ctx context.Context, monitor *model.U
 	return syncSub2APIUpstreamMonitorWithAccessToken(ctx, monitor, client, monitor.AccessToken)
 }
 
+func selectUpstreamMonitorAPIKey(ctx context.Context, monitor *model.UpstreamMonitor) (string, error) {
+	if apiKey := strings.TrimSpace(monitor.APIKey); apiKey != "" {
+		return apiKey, nil
+	}
+	channels, err := model.ListUpstreamMonitorKeyChannels(ctx)
+	if err != nil {
+		return "", errors.New("could not load upstream channel keys")
+	}
+	keys := make([]string, 0)
+	seen := make(map[string]bool)
+	for _, channel := range channels {
+		baseURL, err := normalizeUpstreamMonitorURL(channel.GetBaseURL(), nil)
+		if err != nil || baseURL != monitor.BaseURL {
+			continue
+		}
+		channelKeys := []string{channel.Key}
+		if channel.ChannelInfo.IsMultiKey {
+			channelKeys = channel.GetKeys()
+		}
+		for index, key := range channelKeys {
+			if channel.ChannelInfo.IsMultiKey {
+				if status, exists := channel.ChannelInfo.MultiKeyStatusList[index]; exists && status != common.ChannelStatusEnabled {
+					continue
+				}
+			}
+			key = strings.TrimSpace(key)
+			if strings.HasPrefix(key, `"`) {
+				var decoded string
+				if common.UnmarshalJsonStr(key, &decoded) != nil {
+					continue
+				}
+				key = strings.TrimSpace(decoded)
+			}
+			if key == "" || strings.ContainsAny(key, "\r\n") || seen[key] {
+				continue
+			}
+			seen[key] = true
+			keys = append(keys, key)
+		}
+	}
+	if len(keys) == 0 {
+		return "", nil
+	}
+	return keys[rand.IntN(len(keys))], nil
+}
+
+func syncSub2APIUpstreamMonitorWithAPIKey(ctx context.Context, monitor *model.UpstreamMonitor, client *http.Client, apiKey string) error {
+	headers := http.Header{}
+	headers.Set("Authorization", "Bearer "+apiKey)
+	body, err := fetchUpstreamMonitorJSON(ctx, client, http.MethodGet, monitor.BaseURL+"/v1/usage", headers, nil)
+	if err != nil {
+		return fmt.Errorf("fetch upstream wallet: %w", err)
+	}
+	response := struct {
+		Mode    string   `json:"mode"`
+		IsValid bool     `json:"isValid"`
+		Unit    string   `json:"unit"`
+		Balance *float64 `json:"balance"`
+	}{}
+	if err := common.Unmarshal(body, &response); err != nil {
+		return errors.New("upstream wallet response is invalid")
+	}
+	// remaining can mean key quota or subscription allowance, never a wallet.
+	if response.Mode != "unrestricted" || !response.IsValid || response.Balance == nil {
+		return errors.New("upstream did not return a wallet balance; use a wallet-group API key without quota or rate limits, or auth_token authentication")
+	}
+	if (response.Unit != "" && response.Unit != "USD") || math.IsNaN(*response.Balance) || math.IsInf(*response.Balance, 0) {
+		return errors.New("upstream did not return a valid USD wallet balance")
+	}
+	monitor.BalanceUSD = *response.Balance
+	monitor.BalanceAvailable = true
+	monitor.GroupCount = 0
+	monitor.GroupsJSON = ""
+	monitor.PricingCount = 0
+	monitor.PricingJSON = ""
+	return nil
+}
+
 func syncSub2APIUpstreamMonitorWithAccessToken(ctx context.Context, monitor *model.UpstreamMonitor, client *http.Client, accessToken string) error {
 	headers := http.Header{}
 	headers.Set("Authorization", "Bearer "+accessToken)
@@ -591,26 +703,28 @@ func syncSub2APIUpstreamMonitorWithAccessToken(ctx context.Context, monitor *mod
 	if err != nil {
 		return err
 	}
+	monitor.BalanceUSD = balance
+	monitor.BalanceAvailable = true
+	monitor.PricingCount = 0
+	monitor.PricingJSON = ""
+	monitor.GroupCount = 0
+	monitor.GroupsJSON = ""
 
 	groupsBody, err := fetchUpstreamMonitorJSON(ctx, client, http.MethodGet, monitor.BaseURL+"/api/v1/groups/available", headers, nil)
 	if err != nil {
-		return fmt.Errorf("fetch upstream groups: %w", err)
+		return ctx.Err()
 	}
 	ratesBody, err := fetchUpstreamMonitorJSON(ctx, client, http.MethodGet, monitor.BaseURL+"/api/v1/groups/rates", headers, nil)
 	if err != nil {
-		return fmt.Errorf("fetch upstream group rates: %w", err)
+		return ctx.Err()
 	}
 	groupCount, groupsSnapshot, err := parseSub2APIGroups(groupsBody, ratesBody)
 	if err != nil {
-		return err
+		return nil
 	}
 
-	monitor.BalanceUSD = balance
-	monitor.BalanceAvailable = true
 	monitor.GroupCount = groupCount
 	monitor.GroupsJSON = groupsSnapshot
-	monitor.PricingCount = 0
-	monitor.PricingJSON = ""
 	return nil
 }
 
@@ -663,6 +777,7 @@ func upstreamMonitorDetail(monitor *model.UpstreamMonitor, includeSnapshots bool
 		Name:                   monitor.Name,
 		BaseURL:                monitor.BaseURL,
 		Provider:               monitor.Provider,
+		APIKeyConfigured:       strings.TrimSpace(monitor.APIKey) != "",
 		NewAPIUserID:           monitor.NewAPIUserID,
 		AccessTokenConfigured:  strings.TrimSpace(monitor.AccessToken) != "",
 		RefreshTokenConfigured: strings.TrimSpace(monitor.RefreshToken) != "",
@@ -706,11 +821,11 @@ func validateUpstreamMonitorInput(provider string, newAPIUserID int, accessToken
 }
 
 func validateUpstreamMonitorCreateInput(input UpstreamMonitorCreateInput) error {
-	if err := validateUpstreamMonitorInput(input.Provider, input.NewAPIUserID, input.AccessToken); err != nil {
-		return err
-	}
-	if input.Provider == UpstreamMonitorProviderSub2API && strings.TrimSpace(input.RefreshToken) == "" {
-		return errors.New("Sub2API refresh token is required")
+	if input.Provider != UpstreamMonitorProviderSub2API {
+		if strings.TrimSpace(input.APIKey) != "" {
+			return errors.New("New API monitors use a personal access token")
+		}
+		return validateUpstreamMonitorInput(input.Provider, input.NewAPIUserID, input.AccessToken)
 	}
 	return nil
 }
@@ -864,7 +979,7 @@ func parseSub2APIBalance(body []byte) (float64, error) {
 		return 0, fmt.Errorf("decode upstream account: %w", err)
 	}
 	balance, ok := upstreamMonitorNumber(response.Data.Balance)
-	if response.Code != 0 || !ok || balance < 0 {
+	if response.Code != 0 || !ok {
 		return 0, errors.New("upstream account did not return a valid balance")
 	}
 	return balance, nil

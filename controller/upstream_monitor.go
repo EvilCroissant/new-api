@@ -37,12 +37,14 @@ type upstreamMonitorCreateRequest struct {
 	Name         string `json:"name"`
 	BaseURL      string `json:"base_url" binding:"required"`
 	Provider     string `json:"provider" binding:"required"`
+	APIKey       string `json:"api_key"`
 	NewAPIUserID int    `json:"new_api_user_id"`
-	AccessToken  string `json:"access_token" binding:"required"`
+	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
 }
 
 type upstreamMonitorUpdateRequest struct {
+	APIKey       *string `json:"api_key"`
 	NewAPIUserID *int    `json:"new_api_user_id"`
 	AccessToken  *string `json:"access_token"`
 	RefreshToken *string `json:"refresh_token"`
@@ -95,6 +97,7 @@ func CreateUpstreamMonitor(c *gin.Context) {
 		Name:         request.Name,
 		BaseURL:      request.BaseURL,
 		Provider:     request.Provider,
+		APIKey:       request.APIKey,
 		NewAPIUserID: request.NewAPIUserID,
 		AccessToken:  request.AccessToken,
 		RefreshToken: request.RefreshToken,
@@ -123,6 +126,7 @@ func UpdateUpstreamMonitor(c *gin.Context) {
 		return
 	}
 	monitor, err := service.UpdateUpstreamMonitorCredentials(c.Request.Context(), id, service.UpstreamMonitorUpdateInput{
+		APIKey:       request.APIKey,
 		NewAPIUserID: request.NewAPIUserID,
 		AccessToken:  request.AccessToken,
 		RefreshToken: request.RefreshToken,
@@ -131,8 +135,9 @@ func UpdateUpstreamMonitor(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	recordManageAudit(c, "upstream_monitor.update_credentials", map[string]interface{}{
+	recordManageAudit(c, "upstream_monitor.update_credentials", map[string]any{
 		"id":                    id,
+		"api_key_changed":       request.APIKey != nil,
 		"new_api_user_changed":  request.NewAPIUserID != nil,
 		"access_token_changed":  request.AccessToken != nil,
 		"refresh_token_changed": request.RefreshToken != nil,

@@ -154,59 +154,69 @@ describe('UpstreamMonitorAddDialog', () => {
     })
   })
 
-  test('submits the access and refresh tokens for a detected Sub2API site', async () => {
-    const requests: Array<{ url: string; data: unknown }> = []
-    apiClient.post = async (url, data) => {
-      requests.push({ url, data })
-      if (url === '/api/upstream-monitors/detect') {
-        return {
-          data: {
-            success: true,
+  test.each(['automatic', 'configured'] as const)(
+    'submits %s key selection with independent JWT fallback for Sub2API',
+    async (keyMode) => {
+      const requests: Array<{ url: string; data: unknown }> = []
+      apiClient.post = async (url, data) => {
+        requests.push({ url, data })
+        if (url === '/api/upstream-monitors/detect') {
+          return {
             data: {
-              base_url: 'https://monitor.example.com',
-              provider: 'sub2api',
-              detected: true,
+              success: true,
+              data: {
+                base_url: 'https://monitor.example.com',
+                provider: 'sub2api',
+                detected: true,
+              },
             },
-          },
+          }
         }
-      }
-      if (url === '/api/upstream-monitors/') {
-        return {
-          data: {
-            success: true,
+        if (url === '/api/upstream-monitors/') {
+          return {
             data: {
-              id: 1,
-              name: 'monitor.example.com',
-              base_url: 'https://monitor.example.com',
-              provider: 'sub2api',
+              success: true,
+              data: {
+                id: 1,
+                name: 'monitor.example.com',
+                base_url: 'https://monitor.example.com',
+                provider: 'sub2api',
+              },
             },
-          },
+          }
         }
+        throw new Error(`Unexpected request: ${url}`)
       }
-      throw new Error(`Unexpected request: ${url}`)
+      const { onCreated } = renderDialog()
+
+      setInput('Upstream URL', 'https://monitor.example.com')
+      fireEvent.click(screen.getByRole('button', { name: 'Detect' }))
+
+      expect(await screen.findByText('Detected: Sub2API')).toBeInTheDocument()
+      expect(screen.queryByLabelText('Credential type')).not.toBeInTheDocument()
+      expect(screen.getByLabelText('refresh_token')).toBeInTheDocument()
+      expect(screen.queryByLabelText('JWT')).not.toBeInTheDocument()
+      if (keyMode === 'configured') {
+        setInput('API key', 'key-example')
+        setInput('auth_token', 'access-example')
+        setInput('refresh_token', 'refresh-example')
+      }
+      fireEvent.click(screen.getByRole('button', { name: 'Sync and add' }))
+
+      await waitFor(() => expect(onCreated).toHaveBeenCalledOnce())
+      expect(requests).toHaveLength(2)
+      expect(requests[1]).toEqual({
+        url: '/api/upstream-monitors/',
+        data: {
+          name: undefined,
+          base_url: 'https://monitor.example.com',
+          provider: 'sub2api',
+          new_api_user_id: undefined,
+          api_key: keyMode === 'configured' ? 'key-example' : '',
+          access_token: keyMode === 'configured' ? 'access-example' : '',
+          refresh_token: keyMode === 'configured' ? 'refresh-example' : '',
+        },
+      })
     }
-    const { onCreated } = renderDialog()
-
-    setInput('Upstream URL', 'https://monitor.example.com')
-    fireEvent.click(screen.getByRole('button', { name: 'Detect' }))
-
-    expect(await screen.findByText('Detected: Sub2API')).toBeInTheDocument()
-    setInput('JWT', 'access-example')
-    setInput('Refresh token', 'refresh-example')
-    fireEvent.click(screen.getByRole('button', { name: 'Sync and add' }))
-
-    await waitFor(() => expect(onCreated).toHaveBeenCalledOnce())
-    expect(requests).toHaveLength(2)
-    expect(requests[1]).toEqual({
-      url: '/api/upstream-monitors/',
-      data: {
-        name: undefined,
-        base_url: 'https://monitor.example.com',
-        provider: 'sub2api',
-        new_api_user_id: undefined,
-        access_token: 'access-example',
-        refresh_token: 'refresh-example',
-      },
-    })
-  })
+  )
 })

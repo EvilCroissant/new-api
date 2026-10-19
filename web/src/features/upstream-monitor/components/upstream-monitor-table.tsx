@@ -121,8 +121,18 @@ export function UpstreamMonitorTable(props: UpstreamMonitorTableProps) {
           expandedPanel.kind === 'credentials'
         const isExpanded = isCredentialsExpanded
         const panelID = `upstream-monitor-panel-${monitor.id}`
+        const isSub2APIQueryFailure =
+          monitor.provider === 'sub2api' && Boolean(monitor.last_error)
         const isLowBalance =
-          monitor.balance_available && monitor.balance_usd < LOW_BALANCE_USD
+          !isSub2APIQueryFailure &&
+          monitor.balance_available &&
+          monitor.balance_usd < LOW_BALANCE_USD
+        let balanceClassName = 'text-muted-foreground text-xs tabular-nums'
+        if (isSub2APIQueryFailure) {
+          balanceClassName = 'text-destructive text-xs tabular-nums'
+        } else if (isLowBalance || monitor.last_error) {
+          balanceClassName = 'text-warning text-xs tabular-nums'
+        }
         let syncStatus = (
           <span className='text-muted-foreground text-sm'>-</span>
         )
@@ -150,6 +160,12 @@ export function UpstreamMonitorTable(props: UpstreamMonitorTableProps) {
                 {monitor.last_error}
               </TooltipContent>
             </Tooltip>
+          )
+        } else if (monitor.provider === 'sub2api' && isLowBalance) {
+          syncStatus = (
+            <Badge variant='warning' className='font-normal'>
+              {t('Low balance')}
+            </Badge>
           )
         } else if (monitor.last_synced_at > 0) {
           syncStatus = (
@@ -200,13 +216,9 @@ export function UpstreamMonitorTable(props: UpstreamMonitorTableProps) {
                     {props.embedded && (
                       <span
                         aria-label={t('Available balance')}
-                        className={
-                          isLowBalance || monitor.last_error
-                            ? 'text-warning text-xs tabular-nums'
-                            : 'text-muted-foreground text-xs tabular-nums'
-                        }
+                        className={balanceClassName}
                       >
-                        {monitor.balance_available
+                        {!isSub2APIQueryFailure && monitor.balance_available
                           ? formatBillingCurrencyFromUSD(monitor.balance_usd, {
                               digitsSmall: 6,
                               digitsLarge: 2,
@@ -254,7 +266,7 @@ export function UpstreamMonitorTable(props: UpstreamMonitorTableProps) {
                   <TableCell className='text-right font-medium tabular-nums'>
                     <div className='flex items-center justify-end gap-1'>
                       <span className={isLowBalance ? 'text-warning' : ''}>
-                        {monitor.balance_available
+                        {!isSub2APIQueryFailure && monitor.balance_available
                           ? formatCurrencyFromUSD(monitor.balance_usd)
                           : '-'}
                       </span>

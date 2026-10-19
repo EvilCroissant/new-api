@@ -28,8 +28,9 @@ export const upstreamMonitorFormSchema = z
       .min(1, 'Upstream URL is required')
       .url('Enter a valid URL'),
     provider: z.enum(['newapi', 'sub2api']).optional(),
+    api_key: z.string().trim().optional(),
     new_api_user_id: z.coerce.number().int().positive().optional(),
-    access_token: z.string().trim().min(1, 'Credential is required'),
+    access_token: z.string().trim(),
     refresh_token: z.string().trim().optional(),
   })
   .superRefine((value, context) => {
@@ -47,11 +48,11 @@ export const upstreamMonitorFormSchema = z
         message: 'New API user ID is required',
       })
     }
-    if (value.provider === 'sub2api' && !value.refresh_token) {
+    if (value.provider === 'newapi' && !value.access_token) {
       context.addIssue({
         code: 'custom',
-        path: ['refresh_token'],
-        message: 'Refresh token is required',
+        path: ['access_token'],
+        message: 'Credential is required',
       })
     }
   })
@@ -64,6 +65,8 @@ export type UpstreamMonitorFormValues = z.output<
 export const upstreamMonitorCredentialFormSchema = z
   .object({
     provider: z.enum(['newapi', 'sub2api']),
+    api_key: z.string().trim().optional(),
+    clear_api_key: z.boolean().default(false),
     new_api_user_id: z.coerce.number().int().positive().optional(),
     access_token: z.string().trim().optional(),
     refresh_token: z.string().trim().optional(),
@@ -74,17 +77,6 @@ export const upstreamMonitorCredentialFormSchema = z
         code: 'custom',
         path: ['new_api_user_id'],
         message: 'New API user ID is required',
-      })
-    }
-    if (
-      value.provider === 'sub2api' &&
-      !value.access_token &&
-      !value.refresh_token
-    ) {
-      context.addIssue({
-        code: 'custom',
-        path: ['access_token'],
-        message: 'Enter a new JWT or refresh token',
       })
     }
   })

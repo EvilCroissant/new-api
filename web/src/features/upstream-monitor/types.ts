@@ -24,6 +24,7 @@ export type UpstreamMonitor = {
   name: string
   base_url: string
   provider: UpstreamMonitorProvider
+  api_key_configured?: boolean
   new_api_user_id: number
   access_token_configured: boolean
   refresh_token_configured: boolean
@@ -49,12 +50,14 @@ export type UpstreamMonitorCreateInput = {
   name?: string
   base_url: string
   provider: UpstreamMonitorProvider
+  api_key?: string
   new_api_user_id?: number
   access_token: string
   refresh_token?: string
 }
 
 export type UpstreamMonitorUpdateInput = {
+  api_key?: string
   new_api_user_id?: number
   access_token?: string
   refresh_token?: string
