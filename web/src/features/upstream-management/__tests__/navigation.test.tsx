@@ -31,6 +31,7 @@ import {
   waitFor,
   within,
 } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { createInstance } from 'i18next'
 import { I18nextProvider, initReactI18next } from 'react-i18next'
 import { toast } from 'sonner'
@@ -204,6 +205,112 @@ async function renderPage(path = '/upstream-monitor') {
 }
 
 describe('upstream management navigation', () => {
+  it('hides inactive and unlinked upstreams by default and reveals them only while show all is pressed', async () => {
+    const activeRows = (['pending', 'synced', 'partial', 'error'] as const).map(
+      (status, index) => ({
+        ...row,
+        group_id: status,
+        channel_id: index + 1,
+        channel_ids: [index + 1],
+        channel_name: `Active ${status}`,
+        base_url: `https://${status}.example.com`,
+        status,
+      })
+    )
+    const hiddenRows: ChannelProfitRow[] = [
+      {
+        ...row,
+        group_id: 'monitoring-off',
+        channel_name: 'Monitoring off',
+        enabled: false,
+        status: 'disabled',
+      },
+      {
+        ...row,
+        group_id: 'channels-off',
+        channel_name: 'Channels off',
+        status: 'channel_disabled',
+      },
+      {
+        ...row,
+        group_id: 'no-channels',
+        channel_name: 'No channels',
+        channel_ids: [],
+      },
+    ]
+    profitRows = [...activeRows, ...hiddenRows]
+    accountMonitors = [
+      monitor,
+      {
+        ...monitor,
+        id: 10,
+        name: 'Unlinked account',
+        base_url: 'https://unlinked.example.com',
+      },
+    ]
+    await renderPage()
+    await screen.findByText('Active pending')
+    const showAll = screen.getByRole('button', { name: 'Show all upstreams' })
+    expect(showAll).toHaveAttribute('aria-pressed', 'false')
+    for (const active of activeRows) {
+      expect(screen.getByText(active.channel_name)).toBeVisible()
+    }
+    for (const hidden of hiddenRows) {
+      expect(screen.queryByText(hidden.channel_name)).not.toBeInTheDocument()
+    }
+    expect(screen.queryByText('Test account')).not.toBeInTheDocument()
+    expect(screen.queryByText('Unlinked account')).not.toBeInTheDocument()
+
+    const user = userEvent.setup()
+    showAll.focus()
+    await user.keyboard(' ')
+    expect(showAll).toHaveAttribute('aria-pressed', 'true')
+    for (const hidden of hiddenRows) {
+      expect(screen.getByText(hidden.channel_name)).toBeVisible()
+    }
+    expect(screen.getByText('Unlinked account')).toBeVisible()
+    expect(screen.queryByText('Test account')).not.toBeInTheDocument()
+
+    fireEvent.click(showAll)
+    expect(showAll).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.queryByText('Unlinked account')).not.toBeInTheDocument()
+    for (const hidden of hiddenRows) {
+      expect(screen.queryByText(hidden.channel_name)).not.toBeInTheDocument()
+    }
+  })
+
+  it('shows an empty state for hidden upstreams and keeps monitoring available to enable in sync settings', async () => {
+    profitRows = [{ ...row, enabled: false, status: 'disabled' }]
+    accountMonitors = [monitor]
+    const update = vi.spyOn(api, 'put').mockImplementation(async () => {
+      profitRows = [row]
+      return { data: { success: true } }
+    })
+    await renderPage()
+    await screen.findByText('No monitored channels')
+    expect(screen.queryByText('Test upstream')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Sync settings' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Sync settings' })
+    expect(within(dialog).getByText('Test upstream')).toBeVisible()
+    fireEvent.click(
+      within(dialog).getByRole('switch', { name: 'Enable monitoring' })
+    )
+    await waitFor(() =>
+      expect(update).toHaveBeenCalledWith(
+        '/api/channel-profit/182',
+        { enabled: true },
+        expect.anything()
+      )
+    )
+    await within(dialog).findByRole('switch', { name: 'Disable monitoring' })
+    fireEvent.click(within(dialog).getAllByRole('button', { name: 'Close' })[0])
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    )
+    expect(screen.getByText('Test upstream')).toBeVisible()
+    expect(screen.queryByText('No monitored channels')).not.toBeInTheDocument()
+  })
+
   it('refreshes profit and all account balances together and waits for balance synchronization', async () => {
     profitRows = [row]
     accountMonitors = [
@@ -229,7 +336,7 @@ describe('upstream management navigation', () => {
       return { data: { success: true } }
     })
     await renderPage()
-    await screen.findByText('Standalone')
+    await screen.findByText('Test upstream')
     const refresh = screen.getAllByRole('button', { name: 'Sync now' })[0]
     fireEvent.click(refresh)
     await waitFor(() => {
@@ -306,7 +413,7 @@ describe('upstream management navigation', () => {
         return { data: { success: true } }
       })
       await renderPage()
-      await screen.findByText('Standalone')
+      await screen.findByText('Test upstream')
       fireEvent.click(screen.getAllByRole('button', { name: 'Sync now' })[0])
       await waitFor(() =>
         expect(
@@ -327,6 +434,8 @@ describe('upstream management navigation', () => {
   it('shows disabled channels without a sync error and prevents channel synchronization', async () => {
     profitRows = [{ ...row, status: 'channel_disabled' }]
     await renderPage()
+    await screen.findByText('No monitored channels')
+    fireEvent.click(screen.getByRole('button', { name: 'Show all upstreams' }))
     await screen.findByText('Channel disabled')
     expect(
       screen.getByRole('button', { name: 'Sync this channel' })
@@ -393,6 +502,9 @@ describe('upstream management navigation', () => {
       },
     ]
     await renderPage()
+    await screen.findByText('Test upstream')
+    expect(screen.queryByText('Standalone account')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Show all upstreams' }))
     await screen.findByText('Standalone account')
     expect(screen.getAllByRole('table')).toHaveLength(1)
     const accountRow = screen.getByText('Standalone account').closest('tr')
@@ -418,6 +530,9 @@ describe('upstream management navigation', () => {
       .spyOn(api, 'put')
       .mockResolvedValue({ data: { success: true, data: monitor } })
     await renderPage()
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Show all upstreams' })
+    )
     await screen.findByText('Test account')
     const accountRow = screen.getByText('Test account').closest('tr')
     if (!accountRow) throw new Error('Account row not found')
@@ -458,6 +573,9 @@ describe('upstream management navigation', () => {
       .spyOn(api, 'delete')
       .mockResolvedValue({ data: { success: true } })
     await renderPage()
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Show all upstreams' })
+    )
     await screen.findByText('Test account')
     fireEvent.click(screen.getByRole('button', { name: 'More' }))
     fireEvent.click(
@@ -569,6 +687,9 @@ describe('upstream management navigation', () => {
     accountMonitors = [monitor]
     profitLoadError = true
     await renderPage()
+    await screen.findByText('Profit unavailable')
+    expect(screen.queryByText('Test account')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Show all upstreams' }))
     expect(await screen.findByText('Test account')).toBeVisible()
     expect(screen.getAllByRole('table')).toHaveLength(1)
     expect(screen.getByText('Profit unavailable')).toBeVisible()
@@ -609,6 +730,7 @@ describe('upstream management navigation', () => {
       .auth.setUser({ id: 2, username: 'admin', role: ROLE.ADMIN })
     await renderPage()
     await screen.findByText('Downstream revenue')
+    fireEvent.click(screen.getByRole('button', { name: 'Show all upstreams' }))
     await screen.findByText('Test account')
     expect(
       screen.queryByRole('button', { name: 'Settings' })

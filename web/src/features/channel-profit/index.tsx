@@ -34,6 +34,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
+import { Toggle } from '@/components/ui/toggle'
 import {
   UpstreamManagementLayout,
   type UpstreamManagementPageProps,
@@ -91,6 +92,7 @@ export function ChannelProfit(props: UpstreamManagementPageProps) {
   const [usageDate, setUsageDate] = useState(() => dayjs().format('YYYY-MM-DD'))
   const [syncSettingsOpen, setSyncSettingsOpen] = useState(false)
   const [addMonitorOpen, setAddMonitorOpen] = useState(false)
+  const [showAllUpstreams, setShowAllUpstreams] = useState(false)
   const todayStr = dayjs().format('YYYY-MM-DD')
 
   const isRoot = useAuthStore(
@@ -285,6 +287,14 @@ export function ChannelProfit(props: UpstreamManagementPageProps) {
   })
 
   const summary = profitQuery.data
+  const visibleRows = (summary?.rows ?? []).filter(
+    (row) =>
+      showAllUpstreams ||
+      (row.enabled &&
+        row.channel_ids.length > 0 &&
+        row.status !== 'disabled' &&
+        row.status !== 'channel_disabled')
+  )
   const monitorsBySite = new Map(
     (monitorQuery.data ?? []).map((monitor) => [
       upstreamSite(monitor.base_url),
@@ -299,9 +309,11 @@ export function ChannelProfit(props: UpstreamManagementPageProps) {
   const profitSites = new Set(
     (summary?.rows ?? []).map((row) => upstreamSite(row.base_url))
   )
-  const orphanMonitors = (monitorQuery.data ?? []).filter(
-    (monitor) => !profitSites.has(upstreamSite(monitor.base_url))
-  )
+  const orphanMonitors = showAllUpstreams
+    ? (monitorQuery.data ?? []).filter(
+        (monitor) => !profitSites.has(upstreamSite(monitor.base_url))
+      )
+    : []
   const togglingChannelId = monitoringMutation.isPending
     ? monitoringMutation.variables?.channelId
     : undefined
@@ -340,6 +352,14 @@ export function ChannelProfit(props: UpstreamManagementPageProps) {
         className='h-9 w-[140px] font-mono text-xs shadow-2xs'
         aria-label={t('Usage date')}
       />
+      <Toggle
+        variant='outline'
+        size='lg'
+        pressed={showAllUpstreams}
+        onPressedChange={setShowAllUpstreams}
+      >
+        {t('Show all upstreams')}
+      </Toggle>
       {isRoot && (
         <>
           <Button
@@ -431,7 +451,7 @@ export function ChannelProfit(props: UpstreamManagementPageProps) {
             <ProfitSummaryCards summary={summary} />
           )}
           <ProfitTable
-            rows={summary?.rows ?? []}
+            rows={visibleRows}
             accountRows={
               orphanMonitors.length > 0 ? (
                 <UpstreamMonitorTable
