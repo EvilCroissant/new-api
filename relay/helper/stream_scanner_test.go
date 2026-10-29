@@ -218,15 +218,36 @@ func TestStreamScannerHandler_OrderPreserved(t *testing.T) {
 func TestStreamScannerHandler_DoneStopsScanner(t *testing.T) {
 	t.Parallel()
 
-	body := buildSSEBody(50) + "data: should_not_appear\n"
-	c, resp, info := setupStreamTest(t, strings.NewReader(body))
+	for _, test := range []struct {
+		name string
+		line string
+		want []string
+	}{
+		{name: "bare", line: "[DONE]", want: []string{"before"}},
+		{name: "bare with whitespace", line: " \t[DONE] \t\r", want: []string{"before"}},
+		{name: "data prefixed", line: "data: [DONE]", want: []string{"before"}},
+		{name: "data without space", line: "data:[DONE]", want: []string{"before"}},
+		{name: "data with whitespace", line: "data: \t[DONE] \t\r", want: []string{"before"}},
+		{name: "bare prefix is not done", line: "[DONE]extra", want: []string{"before", "after"}},
+		{name: "data prefix is not done", line: "data: [DONE]extra", want: []string{"before", "[DONE]extra", "after"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			body := "data: before\n" + test.line + "\ndata: after\ndata: [DONE]\n"
+			c, resp, info := setupStreamTest(t, strings.NewReader(body))
+			info.DisablePing = true
 
-	var count atomic.Int64
-	StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {
-		count.Add(1)
-	})
+			var received []string
+			StreamScannerHandler(c, resp, info, func(data string, _ *StreamResult) {
+				received = append(received, data)
+			})
 
-	assert.Equal(t, int64(50), count.Load(), "data after [DONE] must not be processed")
+			assert.Equal(t, test.want, received)
+			require.NotNil(t, info.StreamStatus)
+			assert.Equal(t, relaycommon.StreamEndReasonDone, info.StreamStatus.EndReason)
+			assert.NoError(t, info.StreamStatus.EndError)
+			assert.Equal(t, len(test.want), info.ReceivedResponseCount)
+		})
+	}
 }
 
 func TestStreamScannerHandler_StopStopsStream(t *testing.T) {
@@ -743,15 +764,18 @@ func TestStreamScannerHandler_UpstreamErrorEnvelopes(t *testing.T) {
 			c, resp, info := setupStreamTest(t, strings.NewReader("data: "+tc.event+"\ndata: [DONE]\n"))
 			info.IsStream = true
 			info.ApiKey = "channel-secret"
+			info.BeginAttempt()
 			StreamScannerHandler(c, resp, info, func(string, *StreamResult) {})
 			assert.Equal(t, tc.message, info.StreamStatus.UpstreamErrorMessage())
 			other := service.GenerateTextOtherInfo(c, info, 1, 1, 1, 0, 1, 0, 1).Snapshot()
 			stream := other["stream_status"].(map[string]any)
 			if tc.message == "" {
+				assert.False(t, info.FirstResponseTime.IsZero(), "ordinary data must record first response time")
 				assert.Equal(t, "ok", stream["status"])
 				assert.True(t, service.RequestPolicy(c).Successful)
 				assert.NotContains(t, stream, "upstream_error")
 			} else {
+				assert.True(t, info.FirstResponseTime.IsZero(), "an upstream error must not record first response time")
 				assert.Equal(t, "error", stream["status"])
 				assert.Equal(t, "done", stream["end_reason"])
 				assert.False(t, service.RequestPolicy(c).Successful)

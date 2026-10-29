@@ -81,12 +81,14 @@ func (p *RetryParam) GetRetry() int {
 
 func (p *RetryParam) getPriorityRetry(group string) (int, *int64) {
 	retry := p.GetRetry()
-	selection, ok := getChannelAffinitySelection(p.Ctx)
-	if !ok {
+	if p.Ctx == nil {
 		return retry, nil
 	}
-	if retry > 0 {
-		retry--
+	affinityRetryOffset := p.Ctx.GetInt(ginKeyChannelAffinityRetryOffset)
+	retry = max(retry-affinityRetryOffset, 0)
+	selection, ok := getChannelAffinitySelection(p.Ctx)
+	if !ok || !selection.AffinityHit {
+		return retry, nil
 	}
 	if selection.Group != group {
 		return retry, nil
@@ -244,14 +246,17 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 
 		for i := startGroupIndex; i < len(autoGroups); i++ {
 			autoGroup := autoGroups[i]
-			retryBudgetIndex := param.GetRetry()
+			groupRetry := param.GetRetry()
+			if i > startGroupIndex {
+				groupRetry = 0
+				param.Ctx.Set(ginKeyChannelAffinityRetryOffset, 0)
+			}
 			retrySelection := false
 			channel, retrySelection, _ = param.selectRetryChannel(autoGroup, filters)
 			if !retrySelection {
 				priorityRetry, skippedPriority := param.getPriorityRetry(autoGroup)
 				if i > startGroupIndex {
 					priorityRetry = 0
-					retryBudgetIndex = 0
 				}
 				channel, _ = model.GetRandomSatisfiedChannelSkippingPriorityAndChannels(
 					autoGroup,
@@ -269,17 +274,19 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 				common.SetContextKey(param.Ctx, constant.ContextKeyAutoGroupIndex, i+1)
 				common.SetContextKey(param.Ctx, constant.ContextKeyAutoGroupRetryIndex, 0)
 				param.SetRetry(0)
+				param.Ctx.Set(ginKeyChannelAffinityRetryOffset, 0)
 				continue
 			}
 			common.SetContextKey(param.Ctx, constant.ContextKeyAutoGroup, autoGroup)
 			selectGroup = autoGroup
 			logger.LogDebug(param.Ctx, "Auto selected group: %s", autoGroup)
 
-			if crossGroupRetry && retryBudgetIndex >= common.RetryTimes {
-				logger.LogDebug(param.Ctx, "Current group %s retries exhausted (retry=%d >= RetryTimes=%d), preparing switch to next group", autoGroup, retryBudgetIndex, common.RetryTimes)
+			if crossGroupRetry && groupRetry >= common.RetryTimes {
+				logger.LogDebug(param.Ctx, "Current group %s retries exhausted (retry=%d >= RetryTimes=%d), preparing switch to next group", autoGroup, groupRetry, common.RetryTimes)
 				common.SetContextKey(param.Ctx, constant.ContextKeyAutoGroupIndex, i+1)
 				param.SetRetry(0)
 				param.ResetRetryNextTry()
+				param.Ctx.Set(ginKeyChannelAffinityRetryOffset, 0)
 			} else {
 				common.SetContextKey(param.Ctx, constant.ContextKeyAutoGroupIndex, i)
 			}

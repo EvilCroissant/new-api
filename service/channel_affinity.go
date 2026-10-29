@@ -23,15 +23,16 @@ import (
 )
 
 const (
-	ginKeyChannelAffinityCacheKey   = "channel_affinity_cache_key"
-	ginKeyChannelAffinityTTLSeconds = "channel_affinity_ttl_seconds"
-	ginKeyChannelAffinityMeta       = "channel_affinity_meta"
-	ginKeyChannelAffinityLogInfo    = "channel_affinity_log_info"
-	ginKeyChannelAffinitySkipRetry  = "channel_affinity_skip_retry_on_failure"
-	ginKeyChannelAffinitySelection  = "channel_affinity_selection"
-	ginKeyChannelAffinityState      = "channel_affinity_state"
-	ginKeyChannelAffinityProbeID    = "channel_affinity_probe_channel_id"
-	ginKeyChannelAffinityFirstFRT   = "channel_affinity_first_frt"
+	ginKeyChannelAffinityCacheKey    = "channel_affinity_cache_key"
+	ginKeyChannelAffinityTTLSeconds  = "channel_affinity_ttl_seconds"
+	ginKeyChannelAffinityMeta        = "channel_affinity_meta"
+	ginKeyChannelAffinityLogInfo     = "channel_affinity_log_info"
+	ginKeyChannelAffinitySkipRetry   = "channel_affinity_skip_retry_on_failure"
+	ginKeyChannelAffinitySelection   = "channel_affinity_selection"
+	ginKeyChannelAffinityState       = "channel_affinity_state"
+	ginKeyChannelAffinityProbeID     = "channel_affinity_probe_channel_id"
+	ginKeyChannelAffinityFirstFRT    = "channel_affinity_first_frt"
+	ginKeyChannelAffinityRetryOffset = "channel_affinity_retry_offset"
 
 	channelAffinityUsageCacheStatsNamespace = "new-api:channel_affinity_usage_cache_stats:v1"
 )
@@ -81,8 +82,9 @@ type channelAffinityMeta struct {
 }
 
 type channelAffinitySelection struct {
-	Group    string
-	Priority int64
+	Group       string
+	Priority    int64
+	AffinityHit bool
 }
 
 type ChannelAffinityStatsContext struct {
@@ -675,6 +677,7 @@ func ClearCurrentChannelAffinityCache(c *gin.Context) bool {
 	c.Set(ginKeyChannelAffinitySelection, nil)
 	c.Set(ginKeyChannelAffinityProbeID, 0)
 	c.Set(ginKeyChannelAffinitySkipRetry, false)
+	c.Set(ginKeyChannelAffinityRetryOffset, 0)
 	return deleted
 }
 
@@ -698,11 +701,18 @@ func MarkChannelAffinityUsed(c *gin.Context, selectedGroup string, channelID int
 	if !ok {
 		return
 	}
-	c.Set(ginKeyChannelAffinitySelection, channelAffinitySelection{
-		Group:    selectedGroup,
-		Priority: priority,
-	})
+	requestState, hasRequestState := getChannelAffinityRequestState(c)
+	selection := channelAffinitySelection{
+		Group:       selectedGroup,
+		Priority:    priority,
+		AffinityHit: hasRequestState && requestState.Found && requestState.State.ChannelID == channelID,
+	}
+	c.Set(ginKeyChannelAffinitySelection, selection)
 	c.Set(ginKeyChannelAffinitySkipRetry, meta.SkipRetry)
+	if selection.AffinityHit {
+		// The affinity attempt consumes retry budget without visiting a priority tier.
+		c.Set(ginKeyChannelAffinityRetryOffset, 1)
+	}
 	info := map[string]any{
 		"reason":         meta.RuleName,
 		"rule_name":      meta.RuleName,

@@ -22,6 +22,8 @@ func TestRetryParamPriorityRetry(t *testing.T) {
 		retry         int
 		affinityMatch bool
 		affinityUsed  bool
+		cacheMiss     bool
+		probe         bool
 		group         string
 		priority      int64
 		wantRetry     int
@@ -30,6 +32,8 @@ func TestRetryParamPriorityRetry(t *testing.T) {
 		{name: "initial selection", retry: 0, group: "default", wantRetry: 0},
 		{name: "ordinary retry", retry: 1, group: "default", wantRetry: 1},
 		{name: "affinity cache miss", retry: 1, group: "default", affinityMatch: true, wantRetry: 1},
+		{name: "ordinary selection after affinity miss", retry: 1, group: "default", priority: 2, affinityMatch: true, affinityUsed: true, cacheMiss: true, wantRetry: 1},
+		{name: "higher priority probe after affinity hit", retry: 1, group: "default", priority: 2, affinityMatch: true, affinityUsed: true, probe: true, wantRetry: 1},
 		{name: "first retry after affinity hit", retry: 1, group: "default", priority: 2, affinityMatch: true, affinityUsed: true, wantRetry: 0, wantSkipped: common.GetPointer(int64(2))},
 		{name: "second retry after affinity hit", retry: 2, group: "default", priority: 2, affinityMatch: true, affinityUsed: true, wantRetry: 1, wantSkipped: common.GetPointer(int64(2))},
 		{name: "third retry after affinity hit", retry: 3, group: "default", priority: 2, affinityMatch: true, affinityUsed: true, wantRetry: 2, wantSkipped: common.GetPointer(int64(2))},
@@ -49,6 +53,14 @@ func TestRetryParamPriorityRetry(t *testing.T) {
 				})
 			}
 			if tt.affinityUsed {
+				boundChannelID := 123
+				if tt.probe {
+					boundChannelID = 456
+				}
+				ctx.Set(ginKeyChannelAffinityState, channelAffinityRequestState{
+					State: channelAffinityState{ChannelID: boundChannelID},
+					Found: !tt.cacheMiss,
+				})
 				MarkChannelAffinityUsed(ctx, "default", 123, tt.priority)
 			}
 
@@ -118,6 +130,10 @@ func TestAutoGroupRetryAfterAffinityHit(t *testing.T) {
 		ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
 		common.SetContextKey(ctx, constant.ContextKeyUserGroup, firstGroup)
 		setChannelAffinityContext(ctx, channelAffinityMeta{RuleName: "test-rule", UsingGroup: "auto", ModelName: restartModel})
+		ctx.Set(ginKeyChannelAffinityState, channelAffinityRequestState{
+			State: channelAffinityState{ChannelID: 930002},
+			Found: true,
+		})
 		MarkChannelAffinityUsed(ctx, affinityGroup, 930002, priorityHigh)
 		retry := 1
 
@@ -135,6 +151,10 @@ func TestAutoGroupRetryAfterAffinityHit(t *testing.T) {
 		ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
 		common.SetContextKey(ctx, constant.ContextKeyUserGroup, firstGroup)
 		setChannelAffinityContext(ctx, channelAffinityMeta{RuleName: "test-rule", UsingGroup: "auto", ModelName: fallbackModel})
+		ctx.Set(ginKeyChannelAffinityState, channelAffinityRequestState{
+			State: channelAffinityState{ChannelID: 930003},
+			Found: true,
+		})
 		MarkChannelAffinityUsed(ctx, affinityGroup, 930003, priorityHigh)
 		retry := 1
 

@@ -79,8 +79,13 @@ func TestPerfMetricsRespectUserGroupsAndRecentModels(t *testing.T) {
 		require.True(t, response.Success)
 		require.NotNil(t, response.Data.Summary)
 		assert.Equal(t, 100.0, response.Data.Summary.SuccessRate)
-		require.Len(t, response.Data.Models, 1)
-		assert.Equal(t, "merge-current", response.Data.Models[0].ModelName)
+		require.Len(t, response.Data.Models, 2)
+		modelNames := make([]string, 0, len(response.Data.Models))
+		for _, summary := range response.Data.Models {
+			modelNames = append(modelNames, summary.ModelName)
+			assert.Equal(t, 100.0, summary.SuccessRate)
+		}
+		assert.ElementsMatch(t, []string{"merge-current", "merge-history"}, modelNames)
 		require.Len(t, response.Data.RecentSuccessSeries["merge-history"], 1)
 		assert.Equal(t, 100.0, response.Data.RecentSuccessSeries["merge-history"][0].SuccessRate)
 		assert.NotContains(t, response.Data.RecentSuccessSeries, "merge-hidden-only")
