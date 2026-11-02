@@ -85,10 +85,10 @@ test('Sub2API credentials and pricing can be saved together', async () => {
     access_token_configured: true,
     refresh_token_configured: true,
   } as UpstreamMonitor)
-  fireEvent.change(screen.getByLabelText('JWT'), {
+  fireEvent.change(screen.getByLabelText('auth_token'), {
     target: { value: 'new-jwt' },
   })
-  fireEvent.change(screen.getByLabelText('Refresh token'), {
+  fireEvent.change(screen.getByLabelText('refresh_token'), {
     target: { value: 'new-refresh' },
   })
   fireEvent.click(screen.getByRole('button', { name: 'Save' }))
@@ -112,35 +112,26 @@ test('unchanged existing credentials are omitted when only pricing is saved', as
   expect(onSave.mock.calls[0]).toHaveLength(2)
 })
 
-test('detects the channel base URL and validates credentials before saving a new account', async () => {
-  const detect = vi
-    .spyOn(api, 'post')
-    .mockResolvedValue({
-      data: { success: true, data: { detected: true, provider: 'sub2api' } },
-    })
+test('detects the channel base URL and saves Sub2API credentials without a refresh token', async () => {
+  const detect = vi.spyOn(api, 'post').mockResolvedValue({
+    data: { success: true, data: { detected: true, provider: 'sub2api' } },
+  })
   const { onSave } = showDialog()
   fireEvent.click(screen.getByRole('button', { name: 'Detect site' }))
-  await screen.findByLabelText('JWT')
+  await screen.findByLabelText('auth_token')
   expect(detect).toHaveBeenCalledWith(
     '/api/upstream-monitors/detect',
     { base_url: 'https://example.com' },
     expect.anything()
   )
-  fireEvent.change(screen.getByLabelText('JWT'), {
+  fireEvent.change(screen.getByLabelText('auth_token'), {
     target: { value: 'new-jwt' },
-  })
-  fireEvent.click(screen.getByRole('button', { name: 'Save' }))
-  expect(onSave).not.toHaveBeenCalled()
-  expect(screen.getByText('Refresh token is required')).toBeVisible()
-  fireEvent.change(screen.getByLabelText('Refresh token'), {
-    target: { value: 'new-refresh' },
   })
   fireEvent.click(screen.getByRole('button', { name: 'Save' }))
   await waitFor(() =>
     expect(onSave).toHaveBeenCalledWith(182, expect.anything(), {
       provider: 'sub2api',
       access_token: 'new-jwt',
-      refresh_token: 'new-refresh',
     })
   )
 })

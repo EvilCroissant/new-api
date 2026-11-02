@@ -86,12 +86,13 @@ function RoutingPolicyEditor(props: { config: PolicyConfig }) {
 
   const save = async (submitted: RoutingPolicyFormValues) => {
     const next = routingPolicyOptions(submitted)
+    const previousOptions = routingPolicyOptions(defaults)
     next.AutomaticRetryStatusCodes = parseHttpStatusCodeRules(
       next.AutomaticRetryStatusCodes
     ).normalized
     const delta = Object.fromEntries(
       Object.entries(next).filter(([key, value]) => {
-        const previous = props.config.options[key]
+        const previous = previousOptions[key]
         if (key === 'channel_affinity_setting.rules') {
           return (
             JSON.stringify(JSON.parse(value)) !==

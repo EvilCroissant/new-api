@@ -333,7 +333,7 @@ it('sends balance sorting to the server and keeps invitation details on two line
   expect(
     screen.queryByRole('button', { name: 'Total Used' })
   ).not.toBeInTheDocument()
-  expect(screen.getByText('Inviter ID: 42')).toBeInTheDocument()
+  expect(screen.getByText('Inviter: ID 42')).toBeInTheDocument()
   expect(screen.getByText(/Invited 2 users · Earnings:/)).toBeInTheDocument()
 })
 

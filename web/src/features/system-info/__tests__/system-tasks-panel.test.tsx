@@ -84,6 +84,12 @@ it('filters history on the server and resets pagination without hiding active ta
     })
   const client = renderPanel()
   await screen.findByRole('combobox', { name: 'Type' })
+  expect(
+    screen.getByRole('option', { name: 'Profit synchronization' })
+  ).toBeInTheDocument()
+  expect(
+    screen.getByRole('option', { name: 'Upstream monitor synchronization' })
+  ).toBeInTheDocument()
   await userEvent.click(
     await screen.findByRole('button', { name: 'Go to next page' })
   )

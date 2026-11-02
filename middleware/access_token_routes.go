@@ -81,6 +81,7 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	"POST /api/user/passkey/verify/finish":         accessTokenAnyRule,
 	"DELETE /api/user/passkey":                     accessTokenScopeRule("account_security:write"),
 	"GET /api/user/aff":                            accessTokenScopeRule("wallet:read"),
+	"GET /api/user/aff/rewards":                    accessTokenScopeRule("wallet:read"),
 	"GET /api/user/topup/info":                     accessTokenScopeRule("wallet:read"),
 	"GET /api/user/topup/self":                     accessTokenScopeRule("wallet:read"),
 	"POST /api/user/topup":                         accessTokenScopeRule("wallet:write"),
@@ -150,6 +151,7 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	"PUT /api/option/":                                           accessTokenScopeRule("option:write"),
 	"PUT /api/option/passkey/domains":                            accessTokenScopeRule("option:write"),
 	"GET /api/option/model_pricing":                              accessTokenScopeRule("option:read"),
+	"GET /api/option/model_pricing/issues":                       accessTokenScopeRule("option:read"),
 	"PATCH /api/option/model_pricing":                            accessTokenScopeRule("option:write"),
 	"POST /api/option/model_pricing/convert":                     accessTokenScopeRule("option:read"),
 	"POST /api/option/model_pricing/preview":                     accessTokenScopeRule("option:read"),
@@ -172,6 +174,20 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	"DELETE /api/custom-oauth-provider/:id":     accessTokenScopeRule("option:write"),
 	"GET /api/ratio_sync/channels":              accessTokenScopeRule("option:read"),
 	"POST /api/ratio_sync/fetch":                accessTokenScopeRule("option:write"),
+
+	// Fork upstream credentials and profit settings remain session-only until
+	// they have dedicated scopes in the access token catalog.
+	"GET /api/channel-profit/":             accessTokenSessionRule,
+	"PUT /api/channel-profit/:id":          accessTokenSessionRule,
+	"POST /api/channel-profit/sync":        accessTokenSessionRule,
+	"POST /api/channel-profit/:id/sync":    accessTokenSessionRule,
+	"GET /api/upstream-monitors/":          accessTokenSessionRule,
+	"GET /api/upstream-monitors/:id":       accessTokenSessionRule,
+	"POST /api/upstream-monitors/detect":   accessTokenSessionRule,
+	"POST /api/upstream-monitors/":         accessTokenSessionRule,
+	"PUT /api/upstream-monitors/:id":       accessTokenSessionRule,
+	"POST /api/upstream-monitors/:id/sync": accessTokenSessionRule,
+	"DELETE /api/upstream-monitors/:id":    accessTokenSessionRule,
 
 	// router/api-router.go: /api/performance, /api/system-task, /api/system-info
 	"GET /api/performance/stats":                   accessTokenScopeRule("ops:read"),

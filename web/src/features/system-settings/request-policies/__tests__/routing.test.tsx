@@ -118,6 +118,13 @@ function show() {
     </QueryClientProvider>
   )
 }
+it('does not save inferred affinity defaults when server options omit them', async () => {
+  show()
+  await screen.findByRole('table')
+  await userEvent.click(screen.getByRole('button', { name: 'Save Changes' }))
+  expect(api.patch).not.toHaveBeenCalled()
+})
+
 it('opens global affinity settings and the complete rules table without switching views', async () => {
   show()
   expect(await screen.findByRole('table')).toBeVisible()

@@ -32,6 +32,10 @@ import { I18nextProvider } from 'react-i18next'
 import { toast } from 'sonner'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import fr from '@/i18n/locales/fr.json'
+import ja from '@/i18n/locales/ja.json'
+import ru from '@/i18n/locales/ru.json'
+import viLocale from '@/i18n/locales/vi.json'
 import zhTW from '@/i18n/locales/zh-TW.json'
 import zh from '@/i18n/locales/zh.json'
 import { api } from '@/lib/api'
@@ -107,7 +111,15 @@ beforeEach(async () => {
   await testI18n.init({
     lng: 'en',
     fallbackLng: 'en',
-    resources: { en: { translation: {} }, zh, 'zh-TW': zhTW },
+    resources: {
+      en: { translation: {} },
+      fr,
+      ja,
+      ru,
+      vi: viLocale,
+      zh,
+      'zh-TW': zhTW,
+    },
     interpolation: { escapeValue: false },
   })
   vi.spyOn(api, 'put').mockResolvedValue({ data: { success: true } })
@@ -279,7 +291,7 @@ describe('OAuth settings saves', () => {
     )
   })
 
-  it.each(['zh', 'zh-TW'])(
+  it.each(['en', 'zh', 'zh-TW', 'fr', 'ja', 'ru', 'vi'])(
     'uses the Well-Known technical term in %s validation',
     async (language) => {
       await testI18n.changeLanguage(language)
@@ -287,16 +299,19 @@ describe('OAuth settings saves', () => {
       await renderSettings()
       await user.click(screen.getByRole('tab', { name: 'OIDC' }))
       await user.type(
-        screen.getByRole('textbox', { name: 'Well-Known URL' }),
+        screen.getByRole('textbox', { name: testI18n.t('Well-Known URL') }),
         'invalid'
       )
       await user.click(
         screen.getByRole('button', { name: testI18n.t('Save Changes') })
       )
 
-      const url = screen.getByRole('textbox', { name: 'Well-Known URL' })
+      const url = screen.getByRole('textbox', {
+        name: testI18n.t('Well-Known URL'),
+      })
+      expect(url).toHaveAccessibleName(expect.stringContaining('Well-Known'))
       expect(url).toHaveAccessibleDescription(
-        expect.stringContaining('Well-Known URL')
+        expect.stringContaining('Well-Known')
       )
       expect(url).not.toHaveAccessibleDescription(
         expect.stringContaining('知名')
