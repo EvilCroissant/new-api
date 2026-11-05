@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -358,11 +359,163 @@ func TestChannelProfitDatabaseAndEstimation(t *testing.T) {
 					assert.Zero(t, *fixed.EstimatedUSD)
 					testChannelProfitMonitorIntegration(t, db)
 					testChannelProfitSub2APICostSync(t, db)
+					t.Run("zero upstream ratio", func(t *testing.T) { testChannelProfitZeroRatio(t, db) })
 					t.Run("disabled channels", func(t *testing.T) { testChannelProfitDisabledChannels(t, db) })
 				})
 			}
 		})
 	}
+}
+
+func testChannelProfitZeroRatio(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	var requests atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(upstream.Close)
+	zero := 0.0
+	channelIDs := make([]int, 0, 3)
+	for i := range 3 {
+		channel := &model.Channel{Name: fmt.Sprintf("Free upstream %d", i), Key: "free-shared-key", Status: common.ChannelStatusEnabled, BaseURL: &upstream.URL}
+		require.NoError(t, db.Create(channel).Error)
+		channelIDs = append(channelIDs, channel.Id)
+		require.NoError(t, db.Create(&model.ChannelProfitConfig{ChannelId: channel.Id, Enabled: true, SyncIntervalMinutes: 60, CostMode: "ratio", ManualRatio: &zero, CostFactor: 2}).Error)
+		ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+		ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+		ctx.Set("username", "profit-test")
+		requestID := fmt.Sprintf("free-request-%d", i)
+		ctx.Set(common.RequestIdKey, requestID)
+		common.SetContextKey(ctx, constant.ContextKeyChannelBaseUrl, upstream.URL)
+		common.SetContextKey(ctx, constant.ContextKeyChannelKey, channel.Key)
+		model.CaptureChannelProfitConfig(ctx, channel.Id)
+		model.RecordConsumeLog(ctx, 920140, model.RecordConsumeLogParams{ChannelId: channel.Id, Quota: (i + 1) * 500000, Other: model.NewLogOther()})
+		var record model.ChannelProfitRecord
+		require.NoError(t, db.Where("request_id = ?", requestID).First(&record).Error)
+		assert.Equal(t, "estimated", record.Status)
+		assert.Equal(t, "upstream_ratio", record.Source)
+		assert.Empty(t, record.Reason)
+		assert.Equal(t, float64(i+1), record.RevenueUSD)
+		assert.Zero(t, record.CostUSD)
+		require.NotNil(t, record.EstimatedUSD)
+		assert.Zero(t, *record.EstimatedUSD)
+	}
+	t.Cleanup(func() {
+		require.NoError(t, model.LOG_DB.Where("channel_id IN ?", channelIDs).Delete(&model.Log{}).Error)
+		require.NoError(t, db.Where("id IN ?", channelIDs).Delete(&model.Channel{}).Error)
+		require.NoError(t, db.Where("channel_id IN ?", channelIDs).Delete(&model.ChannelProfitConfig{}).Error)
+		for _, id := range channelIDs {
+			model.InvalidateChannelProfitConfig(id)
+		}
+	})
+	date := time.Now().Format("2006-01-02")
+	summary, err := GetChannelProfitSummary(date, false)
+	require.NoError(t, err)
+	require.Len(t, summary.Rows, 1)
+	assert.True(t, summary.ProfitAvailable, "a manual zero needs no upstream snapshot")
+	assert.Equal(t, 6.0, summary.RevenueUSD)
+	assert.Equal(t, 6.0, summary.ProfitUSD)
+	assert.Zero(t, summary.CostUSD)
+	assert.False(t, summary.Partial)
+
+	// Old remote costs/errors and an associated account must not trigger discovery.
+	snapshot := &model.ChannelProfitSnapshot{ChannelId: channelIDs[0], UsageDate: date, KeyFingerprint: channelProfitKeyFingerprint("free-shared-key"), Provider: channelProfitProviderNewAPI, DirectCostAvailable: true, DirectCostUSD: 9, Partial: true, LastError: "old upstream error", LastSyncedAt: 1}
+	require.NoError(t, model.SaveChannelProfitSnapshot(snapshot))
+	require.NoError(t, model.SaveChannelProfitPricing(&model.ChannelProfitPricing{ID: model.ProfitCostSiteID(upstream.URL), LastError: "old pricing error"}))
+	require.NoError(t, model.CreateUpstreamMonitor(&model.UpstreamMonitor{BaseURL: upstream.URL, Provider: UpstreamMonitorProviderNewAPI, AccessToken: "monitor-access"}))
+	history := &model.ChannelProfitRecord{ID: "free-upstream-history", ChannelID: channelIDs[0], CostUSD: 9, Status: "matched", CreatedAt: time.Now().AddDate(0, 0, -1).Unix()}
+	require.NoError(t, db.Create(history).Error)
+	for _, tc := range []struct {
+		name string
+		due  bool
+		last int64
+	}{
+		{name: "manual refresh"},
+		{name: "scheduled full refresh", due: true},
+		{name: "scheduled request cost refresh", due: true, last: time.Now().Unix()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := model.UpdateChannelProfitConfigs(channelIDs, model.ChannelProfitConfigUpdate{LastSyncAttemptAt: &tc.last})
+			require.NoError(t, err)
+			result, err := SyncChannelProfits(context.Background(), ChannelProfitSyncOptions{ChannelId: channelIDs[0], DueOnly: tc.due})
+			require.NoError(t, err)
+			assert.Equal(t, 1, result.Channels)
+			assert.Equal(t, 1, result.Keys)
+			assert.Equal(t, 1, result.Synced)
+			assert.Zero(t, result.Failed)
+		})
+	}
+	group, err := getChannelProfitGroup(channelIDs[0])
+	require.NoError(t, err)
+	require.NoError(t, syncChannelProfitRequestCosts(context.Background(), group, upstream.Client()))
+	assert.Zero(t, requests.Load(), "zero ratio must not query any upstream endpoint")
+	summary, err = GetChannelProfitSummary(date, false)
+	require.NoError(t, err)
+	require.Len(t, summary.Rows, 1)
+	row := summary.Rows[0]
+	assert.Equal(t, "synced", row.Status)
+	assert.Empty(t, row.LastError)
+	assert.Empty(t, row.CostSyncError)
+	assert.False(t, row.Partial)
+	assert.True(t, row.CostAvailable)
+	assert.True(t, row.ProfitAvailable)
+	assert.True(t, summary.MarginAvailable)
+	assert.Equal(t, 1.0, summary.Margin)
+	assert.Equal(t, 6.0, summary.ProfitUSD)
+	assert.Zero(t, summary.CostUSD)
+	assert.EqualValues(t, 3, row.RequestCoverage.Estimated)
+	assert.Zero(t, row.RequestCoverage.Unknown)
+	assert.Zero(t, row.RequestCoverage.CostUSD)
+	require.Len(t, row.Keys, 1)
+	assert.True(t, row.Keys[0].RatioAvailable)
+	assert.Zero(t, row.Keys[0].UpstreamGroupRatio)
+	assert.True(t, row.Keys[0].ProfitAvailable)
+	assert.Equal(t, 6.0, row.Keys[0].ProfitUSD)
+	require.NoError(t, db.First(history, "id = ?", history.ID).Error)
+	assert.Equal(t, 9.0, history.CostUSD, "changing the ratio must preserve historical request costs")
+	stored, err := model.GetChannelProfitSnapshot(channelIDs[0], date, snapshot.KeyFingerprint)
+	require.NoError(t, err)
+	assert.Equal(t, 9.0, stored.DirectCostUSD, "skipping sync must preserve remote snapshots")
+
+	require.NoError(t, db.Model(&model.Channel{}).Where("id = ?", channelIDs[2]).Update("status", common.ChannelStatusManuallyDisabled).Error)
+	summary, err = GetChannelProfitSummary(date, false)
+	require.NoError(t, err)
+	assert.Equal(t, 3.0, summary.ProfitUSD, "disabled child channels are excluded")
+	assert.EqualValues(t, 2, summary.Rows[0].RequestCoverage.Total)
+	require.NoError(t, db.Model(&model.Channel{}).Where("id IN ?", channelIDs).Update("status", common.ChannelStatusManuallyDisabled).Error)
+	summary, err = GetChannelProfitSummary(date, false)
+	require.NoError(t, err)
+	assert.Equal(t, "channel_disabled", summary.Rows[0].Status)
+	assert.Zero(t, summary.RevenueUSD)
+	assert.False(t, summary.ProfitAvailable)
+	assert.False(t, summary.Partial)
+	require.NoError(t, db.Model(&model.Channel{}).Where("id IN ?", channelIDs).Update("status", common.ChannelStatusEnabled).Error)
+
+	// Nonzero and automatic ratios must resume discovery, even on unsupported sites.
+	positive := 0.1
+	for _, update := range []model.ChannelProfitConfigUpdate{{ManualRatio: &positive}, {ClearManualRatio: true}} {
+		_, err = model.UpdateChannelProfitConfigs(channelIDs, update)
+		require.NoError(t, err)
+		group, err = getChannelProfitGroup(channelIDs[0])
+		require.NoError(t, err)
+		before := requests.Load()
+		_, failed := syncChannelProfitGroup(context.Background(), group, date)
+		assert.Equal(t, 1, failed)
+		assert.Greater(t, requests.Load(), before)
+	}
+	fixedMode, fixedCost := "request", 0.25
+	_, err = model.UpdateChannelProfitConfigs(channelIDs, model.ChannelProfitConfigUpdate{CostMode: &fixedMode, ManualRatio: &zero, RequestCostUSD: &fixedCost})
+	require.NoError(t, err)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	ctx.Set(common.RequestIdKey, "fixed-with-zero-ratio")
+	model.CaptureChannelProfitConfig(ctx, channelIDs[0])
+	model.RecordConsumeLog(ctx, 920140, model.RecordConsumeLogParams{ChannelId: channelIDs[0], Quota: 5000, Other: model.NewLogOther()})
+	var fixed model.ChannelProfitRecord
+	require.NoError(t, db.Where("request_id = ?", "fixed-with-zero-ratio").First(&fixed).Error)
+	assert.Equal(t, "fixed_request", fixed.Source)
+	assert.Equal(t, 0.5, fixed.CostUSD, "a stale zero ratio must not override fixed request costs")
 }
 
 func testChannelProfitDisabledChannels(t *testing.T, db *gorm.DB) {

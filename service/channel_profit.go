@@ -174,6 +174,10 @@ type channelProfitGroup struct {
 	AccessToken         string
 }
 
+func (group *channelProfitGroup) hasZeroCostRatio() bool {
+	return group.CostMode == "ratio" && group.ManualRatio != nil && *group.ManualRatio == 0
+}
+
 type channelProfitSyncHandler struct{}
 
 func (channelProfitSyncHandler) Type() string { return model.SystemTaskTypeChannelProfit }
@@ -366,7 +370,7 @@ func SyncChannelProfits(ctx context.Context, syncOptions ...ChannelProfitSyncOpt
 			}
 
 			// Cost logs need frequent polling even when daily balance sync is infrequent.
-			if options.DueOnly && group.LastSyncAttemptAt > 0 && now-group.LastSyncAttemptAt < int64(group.SyncIntervalMinutes*60) {
+			if options.DueOnly && !group.hasZeroCostRatio() && group.LastSyncAttemptAt > 0 && now-group.LastSyncAttemptAt < int64(group.SyncIntervalMinutes*60) {
 				client, clientErr := GetHttpClientWithProxySettings(group.ActiveChannels[0].GetSetting().Proxy, group.ActiveChannels[0].GetSetting())
 				if clientErr == nil {
 					clientErr = syncChannelProfitRequestCosts(ctx, group, client)
@@ -411,6 +415,9 @@ func SyncChannelProfits(ctx context.Context, syncOptions ...ChannelProfitSyncOpt
 func syncChannelProfitGroup(ctx context.Context, group *channelProfitGroup, usageDate string) (int, int) {
 	if len(group.ActiveKeys) == 0 {
 		return 0, 0
+	}
+	if group.hasZeroCostRatio() {
+		return len(group.ActiveKeys), 0
 	}
 	channel := group.ActiveChannels[0]
 	settings := channel.GetSetting()
@@ -803,7 +810,7 @@ func GetChannelProfitSummary(usageDate string, includeDisabled bool) (*ChannelPr
 			groupSnapshots = append(groupSnapshots, snapshotsByChannel[channel.Id]...)
 		}
 		row := buildChannelProfitGroupRow(group, quotaByChannel, groupSnapshots)
-		if group.CostMode == "ratio" && len(group.ActiveChannels) > 0 {
+		if group.CostMode == "ratio" && !group.hasZeroCostRatio() && len(group.ActiveChannels) > 0 {
 			row.CostSyncError = costErrors[model.ProfitCostSiteID(group.BaseURL)]
 		}
 		for _, channel := range group.ActiveChannels {
@@ -908,7 +915,8 @@ func buildChannelProfitGroupRow(group *channelProfitGroup, quotaByChannel map[in
 
 	row.CostAvailable = group.Enabled && len(group.ActiveKeys) > 0
 	row.Status = "synced"
-	hasActiveSnapshot := false
+	zeroCost := group.hasZeroCostRatio()
+	hasActiveCost := false
 	activeKeys := make(map[string]bool, len(group.ActiveKeys))
 	for _, key := range group.ActiveKeys {
 		activeKeys[key.Fingerprint] = true
@@ -985,13 +993,23 @@ func buildChannelProfitGroupRow(group *channelProfitGroup, quotaByChannel map[in
 			row.Keys = append(row.Keys, key)
 			continue
 		}
+		// An explicit free upstream needs neither a daily snapshot nor discovery.
+		if zeroCost {
+			hasActiveCost = true
+			key.RatioAvailable = true
+			key.CostAvailable = true
+			key.ProfitAvailable = key.RevenueAvailable
+			key.ProfitUSD = key.RevenueUSD
+			row.Keys = append(row.Keys, key)
+			continue
+		}
 		if snapshot == nil {
 			row.CostAvailable = false
 			row.Partial = true
 			row.Keys = append(row.Keys, key)
 			continue
 		}
-		hasActiveSnapshot = true
+		hasActiveCost = true
 
 		provider := channelProfitSnapshotProvider(snapshot)
 		if row.Provider == "" {
@@ -1064,7 +1082,7 @@ func buildChannelProfitGroupRow(group *channelProfitGroup, quotaByChannel map[in
 		row.Status = "channel_disabled"
 		return row
 	}
-	if !hasActiveSnapshot {
+	if !hasActiveCost {
 		row.Status = "pending"
 		row.Partial = true
 	} else if row.Status != "error" && row.Partial {

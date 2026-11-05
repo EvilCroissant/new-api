@@ -233,6 +233,9 @@ func channelProfitMonitorClient(group *channelProfitGroup, client *http.Client) 
 
 // Discover only the metadata needed for estimates; this never reconciles requests.
 func syncChannelProfitRequestCosts(ctx context.Context, group *channelProfitGroup, client *http.Client, providers ...string) error {
+	if group.hasZeroCostRatio() {
+		return nil
+	}
 	client, monitor, err := channelProfitMonitorClient(group, client)
 	if err != nil {
 		return err
