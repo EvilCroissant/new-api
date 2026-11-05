@@ -1,15 +1,25 @@
 package service
 
 import (
+	"fmt"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/driver/mysql"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
+	"gorm.io/gorm/schema"
 )
 
 type retryBudgetChannel struct {
@@ -339,6 +349,132 @@ func TestRetryBudgetStopsWhenEveryCandidateFailed(t *testing.T) {
 			selected, _, err = CacheGetRandomSatisfiedChannel(param)
 			require.NoError(t, err)
 			assert.Nil(t, selected)
+		})
+	}
+}
+
+func TestRetryBudgetSingleChannel(t *testing.T) {
+	for _, dialect := range []string{"sqlite", "mysql", "postgres"} {
+		t.Run(dialect, func(t *testing.T) {
+			var driver gorm.Dialector
+			switch dialect {
+			case "sqlite":
+				driver = sqlite.Open(filepath.Join(t.TempDir(), "retry.db"))
+			case "mysql":
+				dsn := os.Getenv("TEST_MYSQL_DSN")
+				if dsn == "" {
+					t.Skip("TEST_MYSQL_DSN not configured")
+				}
+				driver = mysql.Open(dsn)
+			case "postgres":
+				dsn := os.Getenv("TEST_POSTGRES_DSN")
+				if dsn == "" {
+					t.Skip("TEST_POSTGRES_DSN not configured")
+				}
+				driver = postgres.Open(dsn)
+			}
+			db, err := gorm.Open(driver, &gorm.Config{NamingStrategy: schema.NamingStrategy{
+				TablePrefix: fmt.Sprintf("retry_%d_", time.Now().UnixNano()),
+			}})
+			require.NoError(t, err)
+			sqlDB, err := db.DB()
+			require.NoError(t, err)
+			sqlDB.SetMaxOpenConns(1)
+			t.Cleanup(func() { require.NoError(t, sqlDB.Close()) })
+			require.NoError(t, db.AutoMigrate(&model.Channel{}, &model.Ability{}))
+			previousDB, previousMemory, previousRetries := model.DB, common.MemoryCacheEnabled, common.RetryTimes
+			previousType := common.MainDatabaseType()
+			affinitySetting := operation_setting.GetChannelAffinitySetting()
+			previousAffinity := *affinitySetting
+			model.DB, common.RetryTimes = db, 3
+			common.SetMainDatabaseType(common.DatabaseType(dialect))
+			affinitySetting.FRTOptimizationEnabled = false
+			t.Cleanup(func() {
+				model.DB, common.MemoryCacheEnabled, common.RetryTimes = previousDB, previousMemory, previousRetries
+				common.SetMainDatabaseType(previousType)
+				*affinitySetting = previousAffinity
+				if previousMemory {
+					model.InitChannelCache()
+				}
+				require.NoError(t, db.Migrator().DropTable(&model.Ability{}, &model.Channel{}))
+			})
+			var version string
+			if dialect == "sqlite" {
+				require.NoError(t, db.Raw("SELECT sqlite_version()").Scan(&version).Error)
+			} else {
+				require.NoError(t, db.Raw("SELECT version()").Scan(&version).Error)
+			}
+			t.Logf("database: %s %s", dialect, version)
+
+			for _, memory := range []bool{true, false} {
+				t.Run(fmt.Sprintf("memory_%t", memory), func(t *testing.T) {
+					common.MemoryCacheEnabled = memory
+					for _, tc := range []struct {
+						name         string
+						priorities   []int64
+						disabled     bool
+						failAll      bool
+						filterSecond bool
+						wantRetry    bool
+					}{
+						{name: "single", priorities: []int64{8}, wantRetry: true},
+						{name: "disabled", priorities: []int64{8}, disabled: true},
+						{name: "multiple_exhausted", priorities: []int64{8, 8}, failAll: true},
+						{name: "higher_priority_is_not_a_single_channel", priorities: []int64{8, 10}},
+						{name: "single_after_path_filter", priorities: []int64{8, 8}, filterSecond: true, wantRetry: true},
+					} {
+						t.Run(tc.name, func(t *testing.T) {
+							group, modelName := tc.name, "single-retry-model"
+							channels := make([]retryBudgetChannel, len(tc.priorities))
+							for i, priority := range tc.priorities {
+								channels[i] = retryBudgetChannel{id: 978001 + i, priority: priority}
+							}
+							seedRetryBudgetChannels(t, group, modelName, channels)
+							t.Cleanup(func() {
+								require.NoError(t, db.Where("channel_id IN ?", []int{978001, 978002}).Delete(&model.Ability{}).Error)
+								require.NoError(t, db.Where("id IN ?", []int{978001, 978002}).Delete(&model.Channel{}).Error)
+							})
+							ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+							retry := 1
+							param := &RetryParam{Ctx: ctx, TokenGroup: group, ModelName: modelName, RequestPath: "/v1/chat/completions", Retry: &retry}
+							param.MarkChannelFailed(&model.Channel{Id: 978001, Priority: common.GetPointer(int64(8))})
+							if tc.failAll {
+								param.MarkChannelFailed(&model.Channel{Id: 978002, Priority: common.GetPointer(int64(8))})
+							}
+							if tc.filterSecond {
+								// An advanced channel without a matching endpoint is ineligible.
+								require.NoError(t, db.Model(&model.Channel{}).Where("id = ?", 978002).Update("type", constant.ChannelTypeAdvancedCustom).Error)
+							}
+							if tc.disabled {
+								require.NoError(t, db.Model(&model.Channel{}).Where("id = ?", 978001).Update("status", common.ChannelStatusManuallyDisabled).Error)
+								require.NoError(t, db.Model(&model.Ability{}).Where("channel_id = ?", 978001).Update("enabled", false).Error)
+							}
+							if memory {
+								model.InitChannelCache()
+								// FRT must also fall back to retrying the only eligible channel.
+								affinitySetting.Enabled, affinitySetting.FRTOptimizationEnabled = true, tc.wantRetry
+								t.Cleanup(func() { affinitySetting.FRTOptimizationEnabled = false })
+							}
+							for retry <= common.RetryTimes {
+								channel, selectedGroup, err := CacheGetRandomSatisfiedChannel(param)
+								require.NoError(t, err)
+								assert.Equal(t, group, selectedGroup)
+								if !tc.wantRetry {
+									assert.Nil(t, channel)
+									return
+								}
+								require.NotNil(t, channel)
+								assert.Equal(t, 978001, channel.Id)
+								param.MarkChannelFailed(channel)
+								param.IncreaseRetry()
+							}
+							channel, _, err := CacheGetRandomSatisfiedChannel(param)
+							require.NoError(t, err)
+							assert.Nil(t, channel, "the configured retry budget must still apply")
+						})
+					}
+				})
+			}
 		})
 	}
 }

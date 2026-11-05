@@ -267,7 +267,6 @@ func getChannelForRetry(group string, model string, currentPriority int64, remai
 		var abilities []Ability
 		err := DB.
 			Where(&Ability{Group: group, Model: modelName, Enabled: true}).
-			Where("priority <= ?", currentPriority).
 			Order("priority DESC").
 			Order("weight DESC").
 			Find(&abilities).Error
@@ -291,6 +290,19 @@ func getChannelForRetry(group string, model string, currentPriority int64, remai
 		}
 	}
 
+	// Count candidates before excluding failed channels or higher priorities:
+	// exhausting several channels must not turn the last one into a singleton.
+	if len(abilities) == 1 {
+		channel := &Channel{}
+		if err := DB.First(channel, "id = ?", abilities[0].ChannelId).Error; err != nil {
+			return nil, err
+		}
+		if channel.Status != common.ChannelStatusEnabled || channel.GetPriority() > currentPriority {
+			return nil, nil
+		}
+		return channel, nil
+	}
+
 	availableAbilities := make([]Ability, 0, len(abilities))
 	prioritySet := make(map[int64]struct{})
 	for _, ability := range abilities {
@@ -300,6 +312,9 @@ func getChannelForRetry(group string, model string, currentPriority int64, remai
 		priority := int64(0)
 		if ability.Priority != nil {
 			priority = *ability.Priority
+		}
+		if priority > currentPriority {
+			continue
 		}
 		availableAbilities = append(availableAbilities, ability)
 		prioritySet[priority] = struct{}{}

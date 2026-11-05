@@ -405,7 +405,8 @@ func GetRandomSatisfiedChannelSkippingPriorityAndChannels(group string, model st
 }
 
 // GetRandomSatisfiedChannelForRetry selects an untried channel at or below
-// currentPriority. A downward move always selects the immediately next
+// currentPriority, or retries the sole eligible channel within the budget.
+// A downward move always selects the immediately next
 // available priority. It never skips an intermediate priority to reach a
 // lower one before the retry budget runs out.
 func GetRandomSatisfiedChannelForRetry(group string, model string, currentPriority int64, remainingRetries int, filters []dto.ChannelFilter, failedChannelIDs map[int]struct{}) (*Channel, error) {
@@ -423,6 +424,17 @@ func GetRandomSatisfiedChannelForRetry(group string, model string, currentPriori
 	if len(channels) == 0 {
 		normalizedModel := ratio_setting.FormatMatchingModelName(model)
 		channels, _ = filterCandidateIDs(group2model2channels[group][normalizedModel], model, filters)
+	}
+
+	if len(channels) == 1 {
+		channel, ok := channelsIDM[channels[0]]
+		if !ok {
+			return nil, fmt.Errorf("数据库一致性错误，渠道# %d 不存在，请联系管理员修复", channels[0])
+		}
+		if channel.Status != common.ChannelStatusEnabled || channel.GetPriority() > currentPriority {
+			return nil, nil
+		}
+		return channel, nil
 	}
 
 	availableChannels := make([]int, 0, len(channels))
