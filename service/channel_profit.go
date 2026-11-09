@@ -178,13 +178,26 @@ func (group *channelProfitGroup) hasZeroCostRatio() bool {
 	return group.CostMode == "ratio" && group.ManualRatio != nil && *group.ManualRatio == 0
 }
 
+func (group *channelProfitGroup) syncDue(now int64) bool {
+	return group.LastSyncAttemptAt <= 0 || now-group.LastSyncAttemptAt >= int64(group.SyncIntervalMinutes)*60
+}
+
 type channelProfitSyncHandler struct{}
 
 func (channelProfitSyncHandler) Type() string { return model.SystemTaskTypeChannelProfit }
 
 func (channelProfitSyncHandler) Enabled() bool {
-	count, err := model.CountEnabledChannelProfitConfigs()
-	return err == nil && count > 0
+	groups, err := listChannelProfitGroups()
+	if err != nil {
+		return false
+	}
+	now := common.GetTimestamp()
+	for _, group := range groups {
+		if group.Enabled && len(group.ActiveChannels) > 0 && group.syncDue(now) {
+			return true
+		}
+	}
+	return false
 }
 
 func (channelProfitSyncHandler) Interval() time.Duration { return channelProfitSchedulerInterval }
@@ -336,7 +349,7 @@ func SyncChannelProfits(ctx context.Context, syncOptions ...ChannelProfitSyncOpt
 			continue
 		}
 
-		if options.DueOnly && group.CostMode == "request" && group.LastSyncAttemptAt > 0 && now-group.LastSyncAttemptAt < int64(group.SyncIntervalMinutes*60) {
+		if options.DueOnly && !group.syncDue(now) {
 			continue
 		}
 		selected = append(selected, group)
@@ -369,24 +382,6 @@ func SyncChannelProfits(ctx context.Context, syncOptions ...ChannelProfitSyncOpt
 				return
 			}
 
-			// Cost logs need frequent polling even when daily balance sync is infrequent.
-			if options.DueOnly && !group.hasZeroCostRatio() && group.LastSyncAttemptAt > 0 && now-group.LastSyncAttemptAt < int64(group.SyncIntervalMinutes*60) {
-				client, clientErr := GetHttpClientWithProxySettings(group.ActiveChannels[0].GetSetting().Proxy, group.ActiveChannels[0].GetSetting())
-				if clientErr == nil {
-					clientErr = syncChannelProfitRequestCosts(ctx, group, client)
-				}
-				resultMu.Lock()
-				if clientErr != nil {
-					result.Failed++
-					if firstErr == nil {
-						firstErr = clientErr
-					}
-				} else {
-					result.Synced++
-				}
-				resultMu.Unlock()
-				return
-			}
 			synced, failed := syncChannelProfitGroup(ctx, group, usageDate)
 			channelIds := make([]int, 0, len(group.Channels))
 			for _, channel := range group.Channels {
