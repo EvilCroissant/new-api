@@ -429,6 +429,15 @@ func testChannelProfitSyncInterval(t *testing.T, db *gorm.DB) {
 				require.NoError(t, err)
 				assert.Equal(t, 1, result.Synced)
 				assert.Zero(t, result.Failed)
+				require.Len(t, result.Groups, 1)
+				detail := result.Groups[0]
+				assert.Equal(t, channel.Name, detail.Name)
+				assert.Equal(t, []int{channel.Id}, detail.ChannelIDs)
+				assert.Equal(t, lastAttempt, detail.PreviousSyncAttemptAt)
+				assert.Equal(t, 60, detail.SyncIntervalMinutes)
+				assert.Positive(t, detail.AttemptedAt)
+				assert.Equal(t, detail.AttemptedAt+3600, detail.NextSyncAt)
+				assert.Empty(t, detail.Error)
 				assert.Greater(t, requests.Load(), before, "first and expired syncs must refresh the upstream")
 				assert.False(t, channelProfitSyncHandler{}.Enabled())
 				before = requests.Load()
@@ -463,6 +472,9 @@ func testChannelProfitSyncInterval(t *testing.T, db *gorm.DB) {
 			result, err = SyncChannelProfits(context.Background(), scheduled)
 			require.NoError(t, err)
 			assert.Equal(t, 1, result.Failed)
+			require.Len(t, result.Groups, 1)
+			assert.Contains(t, result.Groups[0].Error, "HTTP 503")
+			assert.Equal(t, result.Groups[0].AttemptedAt+3600, result.Groups[0].NextSyncAt)
 			assert.False(t, channelProfitSyncHandler{}.Enabled(), "failed syncs also wait for the configured interval")
 			before = requests.Load()
 			result, err = SyncChannelProfits(context.Background(), scheduled)
@@ -470,9 +482,101 @@ func testChannelProfitSyncInterval(t *testing.T, db *gorm.DB) {
 			assert.Equal(t, ChannelProfitSyncResult{}, result)
 			assert.Equal(t, before, requests.Load())
 
+			// Another upstream becoming due must not re-fetch this fresh group.
+			secondURL := upstream.URL + "/second"
+			second := &model.Channel{Name: "Staggered upstream", Key: "second-key", Status: common.ChannelStatusEnabled, BaseURL: &secondURL}
+			require.NoError(t, db.Create(second).Error)
+			zero := 0.0
+			secondConfig := &model.ChannelProfitConfig{ChannelId: second.Id, Enabled: true, CostMode: "ratio", ManualRatio: &zero, SyncIntervalMinutes: 30, CostFactor: 1}
+			require.NoError(t, db.Create(secondConfig).Error)
+			t.Cleanup(func() {
+				require.NoError(t, db.Delete(secondConfig).Error)
+				require.NoError(t, db.Delete(second).Error)
+				model.InvalidateChannelProfitConfig(second.Id)
+			})
+			result, err = SyncChannelProfits(context.Background(), ChannelProfitSyncOptions{DueOnly: true})
+			require.NoError(t, err)
+			require.Len(t, result.Groups, 1)
+			assert.Equal(t, []int{second.Id}, result.Groups[0].ChannelIDs)
+			assert.Equal(t, 30, result.Groups[0].SyncIntervalMinutes)
+			assert.True(t, result.Groups[0].ZeroCost)
+			assert.Equal(t, before, requests.Load(), "staggered groups must not refresh groups before their interval")
+			assert.False(t, channelProfitSyncHandler{}.Enabled())
+
 			require.NoError(t, db.Model(config).Update("last_sync_attempt_at", 0).Error)
 			require.NoError(t, db.Model(channel).Update("status", common.ChannelStatusManuallyDisabled).Error)
 			assert.False(t, channelProfitSyncHandler{}.Enabled(), "disabled channels must not create scheduled tasks")
+		})
+	}
+}
+
+func TestChannelProfitSyncTaskDetails(t *testing.T) {
+	truncate(t)
+	tables := []any{&model.ChannelProfitConfig{}, &model.ChannelProfitSnapshot{}, &model.ChannelProfitPricing{}, &model.ChannelProfitKeyState{}, &model.ChannelProfitRecord{}, &model.UpstreamMonitor{}}
+	require.NoError(t, model.DB.AutoMigrate(tables...))
+	t.Cleanup(func() {
+		for _, table := range tables {
+			require.NoError(t, model.DB.Migrator().DropTable(table))
+		}
+	})
+	for _, outcome := range []string{"zero ratio", "upstream failure", "pricing failure"} {
+		t.Run(outcome, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if outcome != "pricing failure" || r.URL.Path == "/api/pricing" {
+					w.WriteHeader(http.StatusServiceUnavailable)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				switch r.URL.Path {
+				case "/api/status":
+					fmt.Fprint(w, `{"success":true,"data":{"quota_per_unit":500000}}`)
+				case "/api/log/token":
+					fmt.Fprint(w, `{"success":true,"data":[]}`)
+				case "/api/usage/token":
+					fmt.Fprint(w, `{"code":true,"data":{"total_used":1000}}`)
+				default:
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			t.Cleanup(upstream.Close)
+			channel := &model.Channel{Name: outcome, Key: "secret-upstream-key", Status: common.ChannelStatusEnabled, BaseURL: &upstream.URL}
+			require.NoError(t, model.DB.Create(channel).Error)
+			ratio := 0.1
+			if outcome == "zero ratio" {
+				ratio = 0
+			}
+			config := &model.ChannelProfitConfig{ChannelId: channel.Id, Enabled: true, CostMode: "ratio", ManualRatio: &ratio, CostFactor: 1, SyncIntervalMinutes: 60}
+			require.NoError(t, model.DB.Create(config).Error)
+			task, err := model.CreateSystemTask(model.SystemTaskTypeChannelProfit, channelProfitSyncPayload{ChannelId: channel.Id}, nil)
+			require.NoError(t, err)
+			task, claimed, err := model.ClaimSystemTask(task.ID, task.Type, "profit-runner", time.Now().Unix()+60)
+			require.NoError(t, err)
+			require.True(t, claimed)
+			channelProfitSyncHandler{}.Run(context.Background(), task, "profit-runner")
+			stored, err := model.GetSystemTaskByTaskID(task.TaskID)
+			require.NoError(t, err)
+			require.NotNil(t, stored)
+			var result ChannelProfitSyncResult
+			require.NoError(t, common.UnmarshalJsonStr(stored.Result, &result))
+			require.Len(t, result.Groups, 1)
+			assert.Equal(t, []int{channel.Id}, result.Groups[0].ChannelIDs)
+			assert.NotContains(t, stored.Result, channel.Key)
+			if outcome == "zero ratio" {
+				assert.Equal(t, model.SystemTaskStatusSucceeded, stored.Status)
+				assert.Equal(t, 1, result.Synced)
+				assert.True(t, result.Groups[0].ZeroCost)
+				assert.Empty(t, stored.Error)
+			} else {
+				assert.Equal(t, model.SystemTaskStatusFailed, stored.Status)
+				assert.Contains(t, stored.Error, "HTTP 503")
+				assert.Contains(t, result.Groups[0].Error, "HTTP 503")
+				if outcome == "pricing failure" {
+					assert.Equal(t, 1, result.Synced, "daily totals can succeed while pricing fails")
+					assert.Zero(t, result.Failed)
+				} else {
+					assert.Equal(t, 1, result.Failed)
+				}
+			}
 		})
 	}
 }
@@ -558,6 +662,10 @@ func testChannelProfitZeroRatio(t *testing.T, db *gorm.DB) {
 			assert.Equal(t, 1, result.Keys)
 			assert.Equal(t, 1, result.Synced)
 			assert.Zero(t, result.Failed)
+			require.Len(t, result.Groups, 1)
+			assert.True(t, result.Groups[0].ZeroCost)
+			assert.Equal(t, channelIDs, result.Groups[0].ChannelIDs)
+			assert.Empty(t, result.Groups[0].Error)
 		})
 	}
 	group, err := getChannelProfitGroup(channelIDs[0])
@@ -614,7 +722,8 @@ func testChannelProfitZeroRatio(t *testing.T, db *gorm.DB) {
 		group, err = getChannelProfitGroup(channelIDs[0])
 		require.NoError(t, err)
 		before := requests.Load()
-		_, failed := syncChannelProfitGroup(context.Background(), group, date)
+		_, failed, syncErr := syncChannelProfitGroup(context.Background(), group, date)
+		assert.Error(t, syncErr)
 		assert.Equal(t, 1, failed)
 		assert.Greater(t, requests.Load(), before)
 	}
@@ -890,7 +999,12 @@ func testChannelProfitSub2APICostSync(t *testing.T, db *gorm.DB) {
 			siteID := model.ProfitCostSiteID(upstream.URL)
 			pricing := model.ChannelProfitPricing{ID: siteID, QuotaPerUnit: 500000, PricingJSON: `{"test-model":{"quota_type":1,"model_price":9}}`, LastError: "upstream request logs unavailable: /api/log/token: upstream returned HTTP 404"}
 			require.NoError(t, model.SaveChannelProfitPricing(&pricing))
-			synced, failed := syncChannelProfitGroup(context.Background(), group, time.Now().Format("2006-01-02"))
+			synced, failed, syncErr := syncChannelProfitGroup(context.Background(), group, time.Now().Format("2006-01-02"))
+			if tc.wantError != "" {
+				assert.ErrorContains(t, syncErr, tc.wantError)
+			} else {
+				require.NoError(t, syncErr)
+			}
 			assert.Equal(t, 1, synced, "daily totals are independent from cost discovery")
 			assert.Zero(t, failed)
 			// Discovery without an already detected provider must also work.
@@ -1055,7 +1169,8 @@ func testChannelProfitMonitorIntegration(t *testing.T, db *gorm.DB) {
 				group.ActiveKeys[0].Owner = channel
 				// Exercise the full scheduler path: daily totals fail, but request
 				// prices and ratios must still be populated for the next relay.
-				synced, failed := syncChannelProfitGroup(context.Background(), group, time.Now().Format("2006-01-02"))
+				synced, failed, syncErr := syncChannelProfitGroup(context.Background(), group, time.Now().Format("2006-01-02"))
+				assert.Error(t, syncErr)
 				assert.Zero(t, synced)
 				assert.Equal(t, 1, failed)
 				var state model.ChannelProfitKeyState

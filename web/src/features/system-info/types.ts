@@ -91,3 +91,25 @@ export type SystemTaskHistoryDeleteResponse = {
   message: string
   data?: { deleted_count: number }
 }
+
+export type ChannelProfitGroupSyncResult = {
+  name: string
+  channel_ids: number[]
+  keys: number
+  synced: number
+  failed: number
+  sync_interval_minutes: number
+  previous_sync_attempt_at: number
+  attempted_at: number
+  next_sync_at: number
+  zero_cost?: boolean
+  error?: string
+}
+
+export type ChannelProfitSyncResult = {
+  channels: number
+  keys: number
+  synced: number
+  failed: number
+  groups?: ChannelProfitGroupSyncResult[]
+}

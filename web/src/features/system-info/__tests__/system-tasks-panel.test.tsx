@@ -31,6 +31,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { api, type ApiRequestConfig } from '@/lib/api'
 
 import { SystemTasksPanel } from '../components/system-tasks-panel'
+import { SystemTasksTable } from '../components/system-tasks-table'
 
 const task = {
   id: 1,
@@ -58,6 +59,131 @@ function renderPanel() {
 afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
+})
+
+it('shows counts for legacy profit results and opens details with the keyboard', async () => {
+  render(
+    <SystemTasksTable
+      tasks={[
+        {
+          ...task,
+          type: 'channel_profit_sync',
+          status: 'succeeded',
+          payload: { due_only: true },
+          result: { channels: 2, keys: 3, synced: 3, failed: 0 },
+        },
+      ]}
+    />
+  )
+  expect(
+    screen.getByText('2 upstreams · 3/3 keys synced · 0 failed')
+  ).toBeVisible()
+  expect(screen.getByText('100%')).toBeVisible()
+  const details = screen.getByRole('button', { name: 'View sync details' })
+  details.focus()
+  await userEvent.keyboard('{Enter}')
+  const dialog = await screen.findByRole('dialog', {
+    name: 'Profit sync details',
+  })
+  expect(within(dialog).getByText('Scheduled')).toBeVisible()
+  expect(
+    within(dialog).getByText('This older task only contains summary counts.')
+  ).toBeVisible()
+  await userEvent.keyboard('{Escape}')
+  await waitFor(() =>
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  )
+  expect(details).toHaveFocus()
+})
+
+it('shows each synced upstream schedule and its full error without another request', async () => {
+  const get = vi.spyOn(api, 'get')
+  const error = `upstream returned HTTP 503: ${'temporarily unavailable '.repeat(20).trim()}`
+  render(
+    <SystemTasksTable
+      tasks={[
+        {
+          ...task,
+          type: 'channel_profit_sync',
+          status: 'failed',
+          payload: {},
+          error,
+          result: {
+            channels: 2,
+            keys: 2,
+            synced: 1,
+            failed: 1,
+            groups: [
+              {
+                name: 'Upstream A',
+                channel_ids: [129, 165],
+                keys: 1,
+                synced: 0,
+                failed: 1,
+                sync_interval_minutes: 60,
+                previous_sync_attempt_at: 100,
+                attempted_at: 4000,
+                next_sync_at: 7600,
+                error,
+              },
+              {
+                name: 'Free upstream',
+                channel_ids: [221],
+                keys: 1,
+                synced: 1,
+                failed: 0,
+                sync_interval_minutes: 30,
+                previous_sync_attempt_at: 2000,
+                attempted_at: 4000,
+                next_sync_at: 5800,
+                zero_cost: true,
+              },
+            ],
+          },
+        },
+      ]}
+    />
+  )
+  await userEvent.click(
+    screen.getByRole('button', { name: 'View sync details' })
+  )
+  const dialog = await screen.findByRole('dialog')
+  expect(
+    within(dialog).getByText('Manual or configuration change')
+  ).toBeVisible()
+  expect(
+    within(dialog).getByRole('heading', { name: 'Upstream A' })
+  ).toBeVisible()
+  expect(within(dialog).getByText('#129, #165')).toBeVisible()
+  expect(within(dialog).getByText('Every 60 minutes')).toBeVisible()
+  expect(within(dialog).getByText('Every 30 minutes')).toBeVisible()
+  expect(
+    within(dialog).getByText('Zero ratio: no upstream queries')
+  ).toBeVisible()
+  expect(within(dialog).getAllByText(error).length).toBeGreaterThan(0)
+  expect(within(dialog).getAllByText('Next eligible sync').length).toBe(2)
+  expect(get).not.toHaveBeenCalled()
+})
+
+it('preserves ordinary task errors and empty details for tasks without results', () => {
+  render(
+    <SystemTasksTable
+      tasks={[
+        { ...task, status: 'failed', error: 'model fetch failed' },
+        {
+          ...task,
+          task_id: 'pending-profit',
+          type: 'channel_profit_sync',
+          status: 'pending',
+        },
+      ]}
+    />
+  )
+  expect(screen.getByText('model fetch failed')).toBeVisible()
+  expect(
+    screen.queryByRole('button', { name: 'View sync details' })
+  ).not.toBeInTheDocument()
+  expect(screen.queryByText('100%')).not.toBeInTheDocument()
 })
 
 it('filters history on the server and resets pagination without hiding active tasks', async () => {

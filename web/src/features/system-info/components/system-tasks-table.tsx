@@ -37,6 +37,8 @@ import { formatTimestampRelative, formatTimestampToDate } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
 import { SYSTEM_TASK_TYPE_LABEL } from '../constants'
+import type { ChannelProfitSyncResult } from '../types'
+import { ProfitSyncTaskDetail } from './profit-sync-task-detail'
 
 const STATUS_VARIANT: Record<SystemTaskStatus, 'secondary' | 'destructive'> = {
   pending: 'secondary',
@@ -73,9 +75,35 @@ const TYPE_DISPLAY_ID: Record<string, string> = {
   midjourney_poll: 'drawing_task_poll',
 }
 
-function getProgress(task: SystemTask): number | null {
+function getProfitSyncResult(task: SystemTask): ChannelProfitSyncResult | null {
+  if (task.type !== 'channel_profit_sync' || !task.result) return null
+  const result = task.result
+  if (
+    ![result.channels, result.keys, result.synced, result.failed].every(
+      (value) =>
+        typeof value === 'number' && Number.isFinite(value) && value >= 0
+    )
+  ) {
+    return null
+  }
+  return result as ChannelProfitSyncResult
+}
+
+function getProgress(
+  task: SystemTask,
+  result: ChannelProfitSyncResult | null
+): number | null {
   const progress = (task.state as { progress?: unknown } | undefined)?.progress
-  if (typeof progress !== 'number' || Number.isNaN(progress)) return null
+  if (typeof progress !== 'number' || !Number.isFinite(progress)) {
+    if (!result || (task.status !== 'succeeded' && task.status !== 'failed')) {
+      return null
+    }
+    if (result.keys === 0) return task.status === 'succeeded' ? 100 : null
+    return Math.min(
+      100,
+      Math.round(((result.synced + result.failed) / result.keys) * 100)
+    )
+  }
   return Math.min(100, Math.max(0, progress))
 }
 
@@ -110,7 +138,8 @@ export function SystemTasksTable(props: SystemTasksTableProps) {
       </TableHeader>
       <TableBody>
         {props.tasks.map((task) => {
-          const progress = getProgress(task)
+          const result = getProfitSyncResult(task)
+          const progress = getProgress(task, result)
           return (
             <TableRow key={task.task_id} className='hover:bg-muted/30'>
               <TableCell className='px-4 py-3 align-middle'>
@@ -163,10 +192,18 @@ export function SystemTasksTable(props: SystemTasksTableProps) {
                 )}
               </TableCell>
               <TableCell
-                className='text-destructive max-w-[220px] truncate py-3 pr-4 align-middle text-xs'
+                className={cn(
+                  'max-w-[220px] py-3 pr-4 align-middle text-xs',
+                  !result && 'truncate',
+                  task.error && 'text-destructive'
+                )}
                 title={task.error || undefined}
               >
-                {task.error || '-'}
+                {result ? (
+                  <ProfitSyncTaskDetail task={task} result={result} />
+                ) : (
+                  task.error || '-'
+                )}
               </TableCell>
             </TableRow>
           )

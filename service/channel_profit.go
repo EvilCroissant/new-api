@@ -118,10 +118,25 @@ type ChannelProfitSummary struct {
 }
 
 type ChannelProfitSyncResult struct {
-	Channels int `json:"channels"`
-	Keys     int `json:"keys"`
-	Synced   int `json:"synced"`
-	Failed   int `json:"failed"`
+	Channels int                            `json:"channels"`
+	Keys     int                            `json:"keys"`
+	Synced   int                            `json:"synced"`
+	Failed   int                            `json:"failed"`
+	Groups   []ChannelProfitGroupSyncResult `json:"groups,omitempty"`
+}
+
+type ChannelProfitGroupSyncResult struct {
+	Name                  string `json:"name"`
+	ChannelIDs            []int  `json:"channel_ids"`
+	Keys                  int    `json:"keys"`
+	Synced                int    `json:"synced"`
+	Failed                int    `json:"failed"`
+	SyncIntervalMinutes   int    `json:"sync_interval_minutes"`
+	PreviousSyncAttemptAt int64  `json:"previous_sync_attempt_at"`
+	AttemptedAt           int64  `json:"attempted_at"`
+	NextSyncAt            int64  `json:"next_sync_at"`
+	ZeroCost              bool   `json:"zero_cost,omitempty"`
+	Error                 string `json:"error,omitempty"`
 }
 
 type ChannelProfitConfigUpdate struct {
@@ -216,11 +231,19 @@ func (channelProfitSyncHandler) Run(ctx context.Context, task *model.SystemTask,
 		ChannelId: payload.ChannelId,
 		DueOnly:   payload.DueOnly,
 	})
+	status := model.SystemTaskStatusSucceeded
+	errorMessage := ""
 	if err != nil {
-		failSystemTask(task, runnerID, err)
-		return
+		status, errorMessage = model.SystemTaskStatusFailed, err.Error()
+	} else {
+		for _, group := range result.Groups {
+			if group.Error != "" {
+				status, errorMessage = model.SystemTaskStatusFailed, group.Name+": "+group.Error
+				break
+			}
+		}
 	}
-	if err := model.FinishSystemTask(task.TaskID, runnerID, model.SystemTaskStatusSucceeded, result, ""); err != nil {
+	if err := model.FinishSystemTask(task.TaskID, runnerID, status, result, errorMessage); err != nil {
 		logSystemTaskLockError(ctx, task, err)
 	}
 }
@@ -366,15 +389,24 @@ func SyncChannelProfits(ctx context.Context, syncOptions ...ChannelProfitSyncOpt
 	}
 
 	usageDate := time.Now().In(time.Local).Format("2006-01-02")
+	result.Groups = make([]ChannelProfitGroupSyncResult, len(selected))
 	semaphore := make(chan struct{}, channelProfitMaxWorkers)
 	var waitGroup sync.WaitGroup
 	var resultMu sync.Mutex
 	var firstErr error
-	for _, group := range selected {
-		group := group
-		waitGroup.Add(1)
-		go func() {
-			defer waitGroup.Done()
+	for i, group := range selected {
+		detail := ChannelProfitGroupSyncResult{
+			Name:                  group.DisplayName,
+			Keys:                  len(group.ActiveKeys),
+			SyncIntervalMinutes:   group.SyncIntervalMinutes,
+			PreviousSyncAttemptAt: group.LastSyncAttemptAt,
+			ZeroCost:              group.hasZeroCostRatio(),
+		}
+		for _, channel := range group.ActiveChannels {
+			detail.ChannelIDs = append(detail.ChannelIDs, channel.Id)
+		}
+		result.Groups[i] = detail
+		waitGroup.Go(func() {
 			select {
 			case semaphore <- struct{}{}:
 				defer func() { <-semaphore }()
@@ -382,7 +414,7 @@ func SyncChannelProfits(ctx context.Context, syncOptions ...ChannelProfitSyncOpt
 				return
 			}
 
-			synced, failed := syncChannelProfitGroup(ctx, group, usageDate)
+			synced, failed, syncErr := syncChannelProfitGroup(ctx, group, usageDate)
 			channelIds := make([]int, 0, len(group.Channels))
 			for _, channel := range group.Channels {
 				channelIds = append(channelIds, channel.Id)
@@ -391,14 +423,22 @@ func SyncChannelProfits(ctx context.Context, syncOptions ...ChannelProfitSyncOpt
 			_, updateErr := model.UpdateChannelProfitConfigs(channelIds, model.ChannelProfitConfigUpdate{
 				LastSyncAttemptAt: &attemptedAt,
 			})
+			detail.Synced, detail.Failed, detail.AttemptedAt = synced, failed, attemptedAt
+			if updateErr == nil {
+				detail.NextSyncAt = attemptedAt + int64(group.SyncIntervalMinutes)*60
+			}
+			if groupErr := errors.Join(syncErr, updateErr); groupErr != nil {
+				detail.Error = groupErr.Error()
+			}
 			resultMu.Lock()
+			result.Groups[i] = detail
 			result.Synced += synced
 			result.Failed += failed
 			if updateErr != nil && firstErr == nil {
 				firstErr = updateErr
 			}
 			resultMu.Unlock()
-		}()
+		})
 	}
 	waitGroup.Wait()
 	if err := ctx.Err(); err != nil {
@@ -407,12 +447,12 @@ func SyncChannelProfits(ctx context.Context, syncOptions ...ChannelProfitSyncOpt
 	return result, firstErr
 }
 
-func syncChannelProfitGroup(ctx context.Context, group *channelProfitGroup, usageDate string) (int, int) {
+func syncChannelProfitGroup(ctx context.Context, group *channelProfitGroup, usageDate string) (int, int, error) {
 	if len(group.ActiveKeys) == 0 {
-		return 0, 0
+		return 0, 0, nil
 	}
 	if group.hasZeroCostRatio() {
-		return len(group.ActiveKeys), 0
+		return len(group.ActiveKeys), 0, nil
 	}
 	channel := group.ActiveChannels[0]
 	settings := channel.GetSetting()
@@ -421,7 +461,7 @@ func syncChannelProfitGroup(ctx context.Context, group *channelProfitGroup, usag
 		for _, key := range group.ActiveKeys {
 			saveChannelProfitFailure(key.Owner.Id, usageDate, key.Value, err)
 		}
-		return 0, len(group.ActiveKeys)
+		return 0, len(group.ActiveKeys), err
 	}
 	keyValues := make([]string, 0, len(group.ActiveKeys))
 	for _, key := range group.ActiveKeys {
@@ -432,7 +472,7 @@ func syncChannelProfitGroup(ctx context.Context, group *channelProfitGroup, usag
 		for _, key := range group.ActiveKeys {
 			saveChannelProfitFailure(key.Owner.Id, usageDate, key.Value, err)
 		}
-		return 0, len(group.ActiveKeys)
+		return 0, len(group.ActiveKeys), err
 	}
 	if monitor != nil && time.Now().Unix()-monitor.LastSyncedAt >= int64(group.SyncIntervalMinutes)*60 {
 		_, saveErr := syncAndSaveUpstreamMonitorWithClient(ctx, monitor, upstreamMonitorHTTPClient())
@@ -441,7 +481,7 @@ func syncChannelProfitGroup(ctx context.Context, group *channelProfitGroup, usag
 		}
 		client, monitor, err = channelProfitMonitorClient(group, client)
 		if err != nil {
-			return 0, len(group.ActiveKeys)
+			return 0, len(group.ActiveKeys), err
 		}
 	}
 	backend, err := detectChannelProfitBackend(ctx, client, group.BaseURL, keyValues, usageDate)
@@ -453,7 +493,7 @@ func syncChannelProfitGroup(ctx context.Context, group *channelProfitGroup, usag
 		for _, key := range group.ActiveKeys {
 			saveChannelProfitFailure(key.Owner.Id, usageDate, key.Value, err)
 		}
-		return 0, len(group.ActiveKeys)
+		return 0, len(group.ActiveKeys), err
 	}
 
 	costSyncErr := syncChannelProfitRequestCosts(ctx, group, client, backend.Provider)
@@ -477,13 +517,14 @@ func syncChannelProfitGroup(ctx context.Context, group *channelProfitGroup, usag
 			for _, key := range group.ActiveKeys {
 				saveChannelProfitFailure(key.Owner.Id, usageDate, key.Value, err)
 			}
-			return 0, len(group.ActiveKeys)
+			return 0, len(group.ActiveKeys), errors.Join(costSyncErr, err)
 		}
 		newAPIRatioErr = err
 	}
 
 	synced := 0
 	failed := 0
+	firstErr := errors.Join(costSyncErr, newAPIRatioErr)
 	interval := time.Duration(group.SyncIntervalMinutes) * time.Minute
 	for _, key := range group.ActiveKeys {
 		var updateErr error
@@ -548,11 +589,14 @@ func syncChannelProfitGroup(ctx context.Context, group *channelProfitGroup, usag
 		if updateErr != nil {
 			saveChannelProfitFailure(key.Owner.Id, usageDate, key.Value, updateErr)
 			failed++
+			if firstErr == nil {
+				firstErr = updateErr
+			}
 			continue
 		}
 		synced++
 	}
-	return synced, failed
+	return synced, failed, firstErr
 }
 
 func updateChannelProfitSnapshot(
