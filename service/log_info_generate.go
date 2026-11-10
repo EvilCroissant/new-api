@@ -1,7 +1,10 @@
 package service
 
 import (
+	"bufio"
+	"context"
 	"encoding/base64"
+	"errors"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -98,7 +101,7 @@ func appendRelayLogAdminInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo,
 	if events := RequestPolicy(ctx).Events(); len(events) > 0 {
 		other.SetAdmin("request_policy", events)
 	}
-	appendStreamStatus(relayInfo, other)
+	appendStreamStatus(ctx, relayInfo, other)
 }
 
 func AppendRelayLogAdminInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other *model.LogOther) {
@@ -166,27 +169,56 @@ func appendParamOverrideInfo(relayInfo *relaycommon.RelayInfo, other *model.LogO
 	other.SetPublic("po", relayInfo.ParamOverrideAudit)
 }
 
-func appendStreamStatus(relayInfo *relaycommon.RelayInfo, other *model.LogOther) {
+func appendStreamStatus(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, other *model.LogOther) {
 	if relayInfo == nil || other == nil || !relayInfo.IsStream || relayInfo.StreamStatus == nil {
 		return
 	}
 	ss := relayInfo.StreamStatus
 	status := "ok"
 	outcome := ss.OutcomeSnapshot()
-	upstreamError := ss.UpstreamErrorMessage()
 	upstreamDetails := ss.UpstreamErrorDetails()
-	if !ss.IsNormalEnd() || ss.HasErrors() || outcome.Response == relaycommon.ResponseOutcomeFailed || upstreamDetails != nil {
+	missingTerminal := outcome.ExpectsTerminal && outcome.Response == relaycommon.ResponseOutcomeUnknown && outcome.EndReason == relaycommon.StreamEndReasonEOF
+	requestActive := ctx == nil || ctx.Request == nil || ctx.Request.Context().Err() == nil
+	// Classify transport failures for display only. Keep real upstream details
+	// authoritative, and do not mutate the outcome used by routing or billing.
+	if upstreamDetails == nil && requestActive && outcome.Response == relaycommon.ResponseOutcomeUnknown &&
+		!errors.Is(ss.EndError, context.Canceled) && !errors.Is(ss.EndError, context.DeadlineExceeded) {
+		switch outcome.EndReason {
+		case relaycommon.StreamEndReasonEOF:
+			if missingTerminal && !outcome.HasErrors {
+				upstreamDetails = &relaycommon.UpstreamErrorDetails{
+					Code:    "upstream_stream_truncated",
+					Type:    "upstream_error",
+					Message: "Upstream response stream ended before completion",
+				}
+			}
+		case relaycommon.StreamEndReasonScannerErr:
+			if ss.EndError != nil && !errors.Is(ss.EndError, bufio.ErrTooLong) {
+				upstreamDetails = &relaycommon.UpstreamErrorDetails{
+					Code:    "upstream_stream_read_error",
+					Type:    "upstream_error",
+					Message: "Upstream response stream was interrupted",
+				}
+				message := strings.ToLower(ss.EndError.Error())
+				if strings.Contains(message, "stream error: stream id ") || strings.Contains(message, "http2:") && strings.Contains(message, "stream") {
+					upstreamDetails.Code = "upstream_http2_stream_error"
+					upstreamDetails.Message = "Upstream HTTP/2 stream failed"
+				}
+			}
+		}
+	}
+	if !ss.IsNormalEnd() || outcome.HasErrors || outcome.Response == relaycommon.ResponseOutcomeFailed || missingTerminal || upstreamDetails != nil {
 		status = "error"
 	}
 	streamInfo := map[string]any{
 		"status":     status,
 		"end_reason": string(ss.EndReason),
 	}
-	if upstreamError != "" {
-		streamInfo["upstream_error"] = upstreamError
-	}
 	if upstreamDetails != nil {
 		streamInfo["upstream_error_details"] = upstreamDetails
+		if upstreamDetails.Message != "" {
+			streamInfo["upstream_error"] = upstreamDetails.Message
+		}
 	}
 	if outcome.Response != relaycommon.ResponseOutcomeUnknown {
 		streamInfo["response_status"] = string(outcome.Response)

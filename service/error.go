@@ -110,7 +110,7 @@ func RelayErrorHandler(ctx context.Context, resp *http.Response, showBodyWhenFai
 	if c, ok := ctx.(*gin.Context); ok {
 		secrets = append(common.UpstreamAddresses(c), common.GetContextKeyString(c, constant.ContextKeyChannelKey))
 	}
-	if details := relaycommon.ParseUpstreamError(responseBodyText, "error", secrets...); details != nil {
+	if details := relaycommon.ParseUpstreamErrorBody(responseBodyText, secrets...); details != nil {
 		details.StatusCode = resp.StatusCode
 		defer func() {
 			newApiErr.Err = &upstreamResponseError{error: newApiErr.Err, details: details}

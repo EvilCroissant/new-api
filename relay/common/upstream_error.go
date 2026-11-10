@@ -18,6 +18,43 @@ type UpstreamErrorDetails struct {
 	StatusCode int    `json:"status_code,omitempty"`
 }
 
+// ParseUpstreamErrorBody accepts JSON and SSE HTTP error bodies. SSE frames
+// still need an error envelope or event name; ordinary data is not an error
+// merely because the HTTP status failed.
+func ParseUpstreamErrorBody(data string, secrets ...string) *UpstreamErrorDetails {
+	if details := ParseUpstreamError(data, "error", secrets...); details != nil {
+		return details
+	}
+	if gjson.Valid(data) {
+		return nil
+	}
+
+	normalized := strings.ReplaceAll(data, "\r\n", "\n")
+	normalized = strings.ReplaceAll(normalized, "\r", "\n")
+	for frame := range strings.SplitSeq(normalized, "\n\n") {
+		var eventType string
+		var payload strings.Builder
+		for line := range strings.SplitSeq(frame, "\n") {
+			field, value, found := strings.Cut(line, ":")
+			if !found {
+				continue
+			}
+			value, _ = strings.CutPrefix(value, " ")
+			switch field {
+			case "event":
+				eventType = strings.TrimSpace(value)
+			case "data":
+				payload.WriteString(value)
+				payload.WriteByte('\n')
+			}
+		}
+		if details := ParseUpstreamError(payload.String(), eventType, secrets...); details != nil {
+			return details
+		}
+	}
+	return nil
+}
+
 // ParseUpstreamError recognizes OpenAI-compatible HTTP bodies and SSE payloads.
 // eventType is the SSE event field, or "error" for a bare HTTP error object.
 func ParseUpstreamError(data, eventType string, secrets ...string) *UpstreamErrorDetails {
