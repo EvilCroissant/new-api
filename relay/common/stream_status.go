@@ -1,13 +1,21 @@
 package common
 
 import (
+	"bufio"
+	"context"
+	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"time"
 )
 
 type StreamEndReason string
+
+// ErrStreamAborted distinguishes an intentional gateway stop from a vanished
+// client. Reply checks must stop generation immediately, without a drain.
+var ErrStreamAborted = errors.New("stream stopped by gateway")
 
 const (
 	StreamEndReasonNone        StreamEndReason = ""
@@ -56,6 +64,10 @@ type StreamStatus struct {
 	incompleteReason string
 	expectsTerminal  bool
 	upstreamError    *UpstreamErrorDetails
+	upstreamReadErr  error
+	upstreamEOF      bool
+	clientError      error
+	drainTimedOut    bool
 }
 
 // StreamOutcome holds classification facts only; upstream messages never
@@ -149,6 +161,59 @@ func (s *StreamStatus) UpstreamErrorDetails() *UpstreamErrorDetails {
 	}
 	details := *s.upstreamError
 	return &details
+}
+
+// CaptureUpstreamReadError runs at the read boundary, before a concurrent
+// downstream cancellation can hide the cause. Locally induced cancellation and
+// size enforcement are not evidence of a broken upstream connection.
+func (s *StreamStatus) CaptureUpstreamReadError(err error) {
+	if s == nil || err == nil || errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded) || errors.Is(err, bufio.ErrTooLong) {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.upstreamReadErr == nil {
+		s.upstreamReadErr = err
+	}
+}
+
+// StreamDiagnostics keeps downstream termination separate from upstream facts.
+type StreamDiagnostics struct {
+	ClientError       error
+	DrainTimedOut     bool
+	UpstreamReadError error
+	UpstreamEOF       bool
+}
+
+func (s *StreamStatus) DiagnosticsSnapshot() StreamDiagnostics {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return StreamDiagnostics{
+		ClientError: s.clientError, DrainTimedOut: s.drainTimedOut,
+		UpstreamReadError: s.upstreamReadErr, UpstreamEOF: s.upstreamEOF,
+	}
+}
+
+// MarkUpstreamEOF is called only for natural EOF, never for local body close.
+func (s *StreamStatus) MarkUpstreamEOF() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.upstreamEOF = true
+}
+
+func (s *StreamStatus) MarkClientDisconnected(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.clientError == nil {
+		s.clientError = err
+	}
+}
+
+func (s *StreamStatus) MarkDrainTimedOut() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.drainTimedOut = true
 }
 
 // RequireTerminal declares that the protocol always ends with an explicit

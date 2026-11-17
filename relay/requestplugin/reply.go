@@ -98,7 +98,7 @@ func Reply(c *gin.Context, format types.RelayFormat, info *relaycommon.RelayInfo
 		return func() {}
 	}
 	parent := c.Request.Context()
-	ctx, cancel := context.WithCancel(parent)
+	ctx, cancel := context.WithCancelCause(parent)
 	writer := &replyWriter{
 		ResponseWriter: c.Writer,
 		c:              c,
@@ -106,7 +106,7 @@ func Reply(c *gin.Context, format types.RelayFormat, info *relaycommon.RelayInfo
 		format:         format,
 		check:          newReplyCheck(ctx, plan, instances),
 		parent:         parent,
-		cancel:         cancel,
+		cancel:         func() { cancel(relaycommon.ErrStreamAborted) },
 		recordAt:       -1,
 	}
 	// A stop cancels this context: the handler then ends the attempt as for a

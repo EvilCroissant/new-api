@@ -3,6 +3,7 @@ package helper
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/QuantumNous/new-api/constant"
@@ -309,12 +311,9 @@ func TestStreamScannerHandler_DataWithExtraSpaces(t *testing.T) {
 	assert.Equal(t, "{\"trimmed\":true}", got)
 }
 
-// TestStreamScannerHandler_ClientCancelAbortsUpstreamAndReturns pins the
-// disconnect contract: when the client goes away, the handler must return
-// promptly (all goroutines joined, so the gin.Context can never leak into a
-// pooled reuse), the upstream body must be closed to stop token generation,
-// and no data received after the disconnect may be processed or written.
-func TestStreamScannerHandler_ClientCancelAbortsUpstreamAndReturns(t *testing.T) {
+// Disconnect stops downstream writes, while late errors and usage still pass
+// through protocol handlers before every goroutine is joined.
+func TestStreamScannerHandler_ClientCancelDrainsUpstreamAndReturns(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -359,26 +358,28 @@ func TestStreamScannerHandler_ClientCancelAbortsUpstreamAndReturns(t *testing.T)
 
 	cancel()
 
-	// The handler must return without any further upstream input: cleanup
-	// closes resp.Body, which unblocks the scanner goroutine.
+	_, err = fmt.Fprint(pw, "event: error\ndata: {\"message\":\"late upstream failure\"}\n\n")
+	require.NoError(t, err)
+	require.NoError(t, pw.Close())
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("handler did not return after client disconnect")
 	}
 
-	// Upstream read side must be closed so the provider stops generating
-	// (and billing) for a request nobody is listening to.
 	_, err = fmt.Fprint(pw, "data: second\n")
-	require.ErrorIs(t, err, io.ErrClosedPipe, "upstream body should be closed after client disconnect")
+	require.ErrorIs(t, err, io.ErrClosedPipe, "upstream body must be closed after draining")
 
-	assert.Equal(t, int64(1), count.Load(), "no chunk after disconnect should be processed")
+	assert.Equal(t, int64(2), count.Load(), "late data must still be parsed")
 	require.NotNil(t, info.StreamStatus)
 	assert.Equal(t, relaycommon.StreamEndReasonClientGone, info.StreamStatus.EndReason)
+	assert.Equal(t, "late upstream failure", info.StreamStatus.UpstreamErrorMessage())
+	assert.ErrorIs(t, c.Request.Context().Err(), context.Canceled, "restore the original request before settlement")
 
 	body := recorder.Body.String()
 	assert.Contains(t, body, "first")
 	assert.NotContains(t, body, "second")
+	assert.NotContains(t, body, "late upstream failure")
 }
 
 // ---------- Ping tests ----------
@@ -704,6 +705,7 @@ func TestStreamScannerHandler_PreservesUpstreamErrorAfterClientCancel(t *testing
 	}()
 	_, err := fmt.Fprintln(pw, `data: {"type":"error","error":{"code":"server_is_overloaded","type":"overloaded_error","param":"model","message":"`+message+`"}}`)
 	require.NoError(t, err)
+	require.NoError(t, pw.Close())
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
@@ -817,8 +819,8 @@ func TestStreamScannerHandler_PreservesAlreadyReadErrorOnCancel(t *testing.T) {
 		{"multiline error", "event: error\ndata: {\ndata: \"message\":\"overloaded\"}\n\n", "", "overloaded"},
 		{"content before error", "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\nevent: error\ndata: {\"message\":\"overloaded\"}\n\n", "", "overloaded"},
 		{"event type reset", "event: error\n\ndata: {\"message\":\"ordinary content\"}\n\n", "", ""},
-		{"error not yet received", "event: error\n", "data: {\"message\":\"not received\"}\n\n", ""},
-		{"unfinished line", "event: error\ndata: {\"message\":\"unfinished\"}", "", ""},
+		{"late error", "event: error\n", "data: {\"message\":\"late failure\"}\n\n", "late failure"},
+		{"final line without newline", "event: error\ndata: {\"message\":\"unfinished\"}", "", "unfinished"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
@@ -832,13 +834,236 @@ func TestStreamScannerHandler_PreservesAlreadyReadErrorOnCancel(t *testing.T) {
 			c.Request = c.Request.WithContext(ctx)
 			info.DisablePing = true
 			var forwarded atomic.Int64
-			StreamScannerHandler(c, resp, info, func(string, *StreamResult) { forwarded.Add(1) })
+			StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {
+				forwarded.Add(1)
+				require.NoError(t, StringData(c, data))
+			})
 			assert.Equal(t, tc.message, info.StreamStatus.UpstreamErrorMessage())
 			assert.Equal(t, relaycommon.StreamEndReasonClientGone, info.StreamStatus.EndReason)
 			assert.ErrorIs(t, info.StreamStatus.EndError, context.Canceled)
-			assert.Zero(t, forwarded.Load(), "must not forward after cancellation")
-			assert.Equal(t, 1, body.reads, "must not read upstream again after cancellation")
-			assert.True(t, body.closed.Load(), "must close upstream on cancellation")
+			assert.Positive(t, forwarded.Load(), "late payloads still reach the protocol parser")
+			assert.False(t, c.Writer.Written(), "must not write to the canceled client")
+			assert.True(t, body.closed.Load(), "must close upstream after draining")
+		})
+	}
+}
+
+type streamCancelReadError struct {
+	cancel context.CancelFunc
+	err    error
+}
+
+func (r *streamCancelReadError) Read([]byte) (int, error) {
+	r.cancel()
+	return 0, r.err
+}
+
+func TestStreamScannerHandler_ReadErrorSurvivesClientCancel(t *testing.T) {
+	for _, tc := range []struct {
+		name, code string
+		err        error
+	}{
+		{"HTTP2 reset", "upstream_http2_stream_error", errors.New("stream error: stream ID 1; INTERNAL_ERROR; received from peer")},
+		{"unexpected EOF", "upstream_stream_read_error", io.ErrUnexpectedEOF},
+		{"clean EOF without terminal", "upstream_stream_truncated", io.EOF},
+		{"cancellation has no upstream cause", "", context.Canceled},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			c, resp, info := setupStreamTest(t, &streamCancelReadError{cancel: cancel, err: tc.err})
+			c.Request = c.Request.WithContext(ctx)
+			info.IsStream, info.DisablePing = true, true
+			StreamScannerHandler(c, resp, info, func(string, *StreamResult) {})
+			info.StreamStatus.RequireTerminal()
+			other := model.NewLogOther()
+			service.AppendRelayErrorLogAdminInfo(c, info, other)
+			stream := other.Snapshot()["stream_status"].(map[string]any)
+			assert.Equal(t, true, stream["client_disconnected"])
+			if tc.code == "" {
+				assert.Equal(t, "client_gone", stream["end_reason"])
+				assert.NotContains(t, stream, "upstream_error_details")
+				return
+			}
+			if errors.Is(tc.err, io.EOF) {
+				assert.Equal(t, "client_gone", stream["end_reason"])
+			} else {
+				assert.Equal(t, "scanner_error", stream["end_reason"])
+				assert.Equal(t, tc.err.Error(), stream["end_error"])
+			}
+			details, ok := stream["upstream_error_details"].(*relaycommon.UpstreamErrorDetails)
+			require.True(t, ok)
+			assert.Equal(t, tc.code, details.Code)
+		})
+	}
+}
+
+func TestStreamScannerHandler_DrainDeadlineClosesBlockedUpstream(t *testing.T) {
+	for _, timeout := range []time.Duration{0, time.Millisecond} {
+		t.Run(timeout.String(), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			reader, writer := io.Pipe()
+			t.Cleanup(func() { _ = reader.Close(); _ = writer.Close() })
+			c, resp, info := setupStreamTest(t, reader)
+			resp.Body = reader
+			c.Request = c.Request.WithContext(ctx)
+			info.IsStream, info.DisablePing = true, true
+			done := make(chan struct{})
+			go func() {
+				streamScannerHandler(c, resp, info, func(string, *StreamResult) {}, timeout)
+				close(done)
+			}()
+			cancel()
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				t.Fatal("drain deadline did not release the blocked read")
+			}
+			_, err := writer.Write([]byte("data: late\n\n"))
+			require.ErrorIs(t, err, io.ErrClosedPipe)
+			diagnostics := info.StreamStatus.DiagnosticsSnapshot()
+			assert.ErrorIs(t, diagnostics.ClientError, context.Canceled)
+			assert.Equal(t, timeout > 0, diagnostics.DrainTimedOut)
+			assert.NoError(t, diagnostics.UpstreamReadError, "closing our own body must not fabricate an upstream failure")
+			assert.False(t, diagnostics.UpstreamEOF, "closing our own body is not natural EOF")
+			other := model.NewLogOther()
+			service.AppendRelayErrorLogAdminInfo(c, info, other)
+			stream := other.Snapshot()["stream_status"].(map[string]any)
+			assert.Equal(t, relaycommon.StreamEndReasonClientGone, info.StreamStatus.EndReason)
+			assert.Equal(t, timeout > 0, stream["drain_timeout"] == true)
+			assert.NotContains(t, stream, "upstream_error_details")
+		})
+	}
+}
+
+func TestStreamScannerHandler_DrainStopsAtTerminal(t *testing.T) {
+	for _, tc := range []struct {
+		name, frame, errorMessage string
+		outcome                   relaycommon.ResponseOutcome
+		cancelAfterTerminal       bool
+	}{
+		{name: "named upstream error", frame: "event: error\ndata: {\"message\":\"late failure\"}\n\n", errorMessage: "late failure"},
+		{name: "multiline upstream error", frame: "event: error\ndata: {\ndata: \"message\":\"late failure\"}\n\n", errorMessage: "late failure"},
+		{name: "completed", frame: "data: terminal\n\n", outcome: relaycommon.ResponseOutcomeCompleted},
+		{name: "failed", frame: "data: terminal\n\n", outcome: relaycommon.ResponseOutcomeFailed},
+		{name: "error before disconnect", frame: "event: error\ndata: {\"message\":\"late failure\"}\n\n", errorMessage: "late failure", cancelAfterTerminal: true},
+		{name: "completion before disconnect", frame: "data: terminal\n\n", outcome: relaycommon.ResponseOutcomeCompleted, cancelAfterTerminal: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+			reader, writer := io.Pipe()
+			t.Cleanup(func() { _ = reader.Close(); _ = writer.Close() })
+			c, resp, info := setupStreamTest(t, reader)
+			resp.Body = reader
+			c.Request = c.Request.WithContext(ctx)
+			info.DisablePing = true
+			done := make(chan struct{})
+			firstHandled := make(chan struct{})
+			terminalHandled := make(chan struct{})
+			var parsed []string
+			go func() {
+				streamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {
+					parsed = append(parsed, data)
+					if data == "first" {
+						if !tc.cancelAfterTerminal {
+							cancel()
+						}
+						close(firstHandled)
+					} else if tc.outcome == relaycommon.ResponseOutcomeCompleted {
+						info.StreamStatus.MarkCompleted()
+					} else if tc.outcome == relaycommon.ResponseOutcomeFailed {
+						info.StreamStatus.MarkFailed("server_error", "upstream_error", 503)
+					}
+					if tc.cancelAfterTerminal && data != "first" {
+						close(terminalHandled)
+					}
+				}, time.Hour)
+				close(done)
+			}()
+			_, err := fmt.Fprint(writer, "data: first\n\n")
+			require.NoError(t, err)
+			select {
+			case <-firstHandled:
+			case <-time.After(time.Second):
+				t.Fatal("first frame was not processed")
+			}
+			_, err = io.WriteString(writer, tc.frame)
+			require.NoError(t, err)
+			if tc.cancelAfterTerminal {
+				select {
+				case <-terminalHandled:
+				case <-time.After(time.Second):
+					t.Fatal("terminal frame was not processed")
+				}
+				cancel()
+			}
+			// Keep upstream open: the terminal result itself must end the drain.
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("terminal result did not close upstream")
+			}
+			assert.GreaterOrEqual(t, len(parsed), 2, "parse the final frame before returning")
+			assert.Equal(t, tc.errorMessage, info.StreamStatus.UpstreamErrorMessage())
+			assert.Equal(t, string(tc.outcome), info.StreamStatus.ResponseOutcome())
+			assert.Equal(t, relaycommon.StreamEndReasonClientGone, info.StreamStatus.EndReason)
+			assert.False(t, info.StreamStatus.DiagnosticsSnapshot().DrainTimedOut)
+			_, err = io.WriteString(writer, "data: unwanted generation\n\n")
+			assert.ErrorIs(t, err, io.ErrClosedPipe)
+		})
+	}
+}
+
+func TestStreamUpstreamContextDrainLifetime(t *testing.T) {
+	oldDrain, oldIdle := constant.StreamDrainTimeout, constant.StreamingTimeout
+	t.Cleanup(func() { constant.StreamDrainTimeout, constant.StreamingTimeout = oldDrain, oldIdle })
+	for _, tc := range []struct {
+		name             string
+		drain, idle      int
+		deadline, budget time.Duration
+	}{
+		{name: "zero closes immediately", drain: 0, idle: 30},
+		{name: "three-second window", drain: 3, idle: 30, budget: 3 * time.Second},
+		{name: "negative uses default", drain: -1, idle: 30, budget: 3 * time.Second},
+		{name: "shorter idle timeout", drain: 2, idle: 1, budget: time.Second},
+		{name: "provider deadline", drain: 2, idle: 30, deadline: 250 * time.Millisecond, budget: 250 * time.Millisecond},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			constant.StreamDrainTimeout, constant.StreamingTimeout = tc.drain, tc.idle
+			synctest.Test(t, func(t *testing.T) {
+				client, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				type requestValueKey struct{}
+				upstream := context.WithValue(context.Background(), requestValueKey{}, "request-value")
+				if tc.deadline != 0 {
+					var release context.CancelFunc
+					upstream, release = context.WithTimeout(upstream, tc.deadline)
+					defer release()
+				}
+				ctx, release := NewStreamUpstreamContext(client, upstream)
+				defer release()
+				assert.Equal(t, "request-value", ctx.Value(requestValueKey{}))
+				cancel()
+				synctest.Wait()
+				if tc.budget == 0 {
+					assert.ErrorIs(t, ctx.Err(), context.Canceled, "zero disables the drain")
+					assert.NotErrorIs(t, context.Cause(ctx), errStreamDrainTimeout)
+					return
+				}
+				assert.NoError(t, ctx.Err(), "client cancellation starts a bounded drain")
+				time.Sleep(tc.budget - time.Nanosecond)
+				assert.NoError(t, ctx.Err())
+				time.Sleep(time.Nanosecond)
+				synctest.Wait()
+				if tc.deadline != 0 {
+					assert.ErrorIs(t, ctx.Err(), context.DeadlineExceeded, "preserve the provider deadline")
+					return
+				}
+				assert.ErrorIs(t, ctx.Err(), context.Canceled, "drain expires at the absolute budget")
+				assert.ErrorIs(t, context.Cause(ctx), errStreamDrainTimeout)
+			})
 		})
 	}
 }

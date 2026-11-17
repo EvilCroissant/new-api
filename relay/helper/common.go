@@ -166,8 +166,11 @@ func FlushWriter(c *gin.Context) (err error) {
 	if requestContextDone(c) {
 		return fmt.Errorf("request context done: %w", c.Request.Context().Err())
 	}
+	return flushResponseWriter(c.Writer)
+}
 
-	flusher, ok := c.Writer.(http.Flusher)
+func flushResponseWriter(responseWriter gin.ResponseWriter) error {
+	flusher, ok := responseWriter.(http.Flusher)
 	if !ok {
 		return errors.New("streaming error: flusher not found")
 	}
@@ -176,7 +179,7 @@ func FlushWriter(c *gin.Context) (err error) {
 	// Gin's http.Flusher wrapper discards the underlying FlushError result.
 	// Flush wrappers first so their buffers are preserved, then surface any
 	// stored write error from an error-aware writer underneath them.
-	var writer http.ResponseWriter = c.Writer
+	var writer http.ResponseWriter = responseWriter
 	for {
 		if flusher, ok := writer.(interface{ FlushError() error }); ok {
 			return flusher.FlushError()

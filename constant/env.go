@@ -1,6 +1,10 @@
 package constant
 
 var StreamingTimeout int
+
+// StreamDrainTimeout bounds upstream reads after the downstream disconnects.
+// Zero closes the upstream immediately instead of waiting for final usage.
+var StreamDrainTimeout = 3
 var DifyDebug bool
 var MaxFileDownloadMB int
 var StreamScannerMaxBufferMB int

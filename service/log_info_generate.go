@@ -192,34 +192,36 @@ func appendStreamStatus(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, othe
 	status := "ok"
 	outcome := ss.OutcomeSnapshot()
 	upstreamDetails := ss.UpstreamErrorDetails()
-	missingTerminal := outcome.ExpectsTerminal && outcome.Response == relaycommon.ResponseOutcomeUnknown && outcome.EndReason == relaycommon.StreamEndReasonEOF
+	diagnostics := ss.DiagnosticsSnapshot()
+	diagnosticError := ss.EndError
+	if diagnostics.UpstreamReadError != nil {
+		diagnosticError = diagnostics.UpstreamReadError
+	}
+	requestStopped := ctx != nil && ctx.Request != nil && errors.Is(context.Cause(ctx.Request.Context()), relaycommon.ErrStreamAborted)
+	missingTerminal := !requestStopped && outcome.ExpectsTerminal && outcome.Response == relaycommon.ResponseOutcomeUnknown &&
+		(outcome.EndReason == relaycommon.StreamEndReasonEOF || diagnostics.UpstreamEOF)
 	requestActive := ctx == nil || ctx.Request == nil || ctx.Request.Context().Err() == nil
 	// Classify transport failures for display only. Keep real upstream details
 	// authoritative, and do not mutate the outcome used by routing or billing.
-	if upstreamDetails == nil && requestActive && outcome.Response == relaycommon.ResponseOutcomeUnknown &&
-		!errors.Is(ss.EndError, context.Canceled) && !errors.Is(ss.EndError, context.DeadlineExceeded) {
-		switch outcome.EndReason {
-		case relaycommon.StreamEndReasonEOF:
-			if missingTerminal && !outcome.HasErrors {
-				upstreamDetails = &relaycommon.UpstreamErrorDetails{
-					Code:    "upstream_stream_truncated",
-					Type:    "upstream_error",
-					Message: "Upstream response stream ended before completion",
-				}
-			}
-		case relaycommon.StreamEndReasonScannerErr:
-			if ss.EndError != nil && !errors.Is(ss.EndError, bufio.ErrTooLong) {
-				upstreamDetails = &relaycommon.UpstreamErrorDetails{
-					Code:    "upstream_stream_read_error",
-					Type:    "upstream_error",
-					Message: "Upstream response stream was interrupted",
-				}
-				message := strings.ToLower(ss.EndError.Error())
-				if strings.Contains(message, "stream error: stream id ") || strings.Contains(message, "http2:") && strings.Contains(message, "stream") {
-					upstreamDetails.Code = "upstream_http2_stream_error"
-					upstreamDetails.Message = "Upstream HTTP/2 stream failed"
-				}
-			}
+	if upstreamDetails == nil && missingTerminal && !outcome.HasErrors && (requestActive || diagnostics.UpstreamEOF) {
+		upstreamDetails = &relaycommon.UpstreamErrorDetails{
+			Code:    "upstream_stream_truncated",
+			Type:    "upstream_error",
+			Message: "Upstream response stream ended before completion",
+		}
+	}
+	readFailure := diagnostics.UpstreamReadError != nil || requestActive && outcome.EndReason == relaycommon.StreamEndReasonScannerErr
+	if upstreamDetails == nil && readFailure && outcome.Response == relaycommon.ResponseOutcomeUnknown && diagnosticError != nil &&
+		!errors.Is(diagnosticError, context.Canceled) && !errors.Is(diagnosticError, context.DeadlineExceeded) && !errors.Is(diagnosticError, bufio.ErrTooLong) {
+		upstreamDetails = &relaycommon.UpstreamErrorDetails{
+			Code:    "upstream_stream_read_error",
+			Type:    "upstream_error",
+			Message: "Upstream response stream was interrupted",
+		}
+		message := strings.ToLower(diagnosticError.Error())
+		if strings.Contains(message, "stream error: stream id ") || strings.Contains(message, "http2:") && strings.Contains(message, "stream") {
+			upstreamDetails.Code = "upstream_http2_stream_error"
+			upstreamDetails.Message = "Upstream HTTP/2 stream failed"
 		}
 	}
 	if !ss.IsNormalEnd() || outcome.HasErrors || outcome.Response == relaycommon.ResponseOutcomeFailed || missingTerminal || upstreamDetails != nil {
@@ -228,6 +230,12 @@ func appendStreamStatus(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, othe
 	streamInfo := map[string]any{
 		"status":     status,
 		"end_reason": string(ss.EndReason),
+	}
+	if diagnostics.ClientError != nil {
+		streamInfo["client_disconnected"] = true
+	}
+	if diagnostics.DrainTimedOut {
+		streamInfo["drain_timeout"] = true
 	}
 	if upstreamDetails != nil {
 		streamInfo["upstream_error_details"] = upstreamDetails

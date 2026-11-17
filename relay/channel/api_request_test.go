@@ -2,15 +2,85 @@ package channel
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"github.com/QuantumNous/new-api/constant"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestStreamRequestKeepsUpstreamReadableAfterClientCancel(t *testing.T) {
+	finish := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		select {
+		case <-finish:
+			_, _ = io.WriteString(w, "event: error\ndata: {\"message\":\"late upstream failure\"}\n\n")
+		case <-r.Context().Done():
+		}
+	}))
+	t.Cleanup(server.Close)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil).WithContext(ctx)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL, nil)
+	require.NoError(t, err)
+	response, err := DoRequest(c, request, &relaycommon.RelayInfo{IsStream: true, DisablePing: true, ChannelMeta: &relaycommon.ChannelMeta{}})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = response.Body.Close() })
+	cancel()
+	assert.NoError(t, response.Request.Context().Err())
+	close(finish)
+	body, err := io.ReadAll(response.Body)
+	require.NoError(t, err)
+	assert.Contains(t, string(body), "late upstream failure")
+	require.NoError(t, response.Body.Close())
+	assert.ErrorIs(t, response.Request.Context().Err(), context.Canceled, "body close releases the upstream context")
+}
+
+func TestStreamRequestDrainDeadlineAlsoBoundsWaitingForHeaders(t *testing.T) {
+	previous := constant.StreamDrainTimeout
+	constant.StreamDrainTimeout = 1
+	t.Cleanup(func() { constant.StreamDrainTimeout = previous })
+	started := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-r.Context().Done()
+	}))
+	t.Cleanup(server.Close)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil).WithContext(ctx)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL, nil)
+	require.NoError(t, err)
+	done := make(chan error, 1)
+	go func() {
+		_, err := DoRequest(c, request, &relaycommon.RelayInfo{IsStream: true, DisablePing: true, ChannelMeta: &relaycommon.ChannelMeta{}})
+		done <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("upstream request did not start")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		require.Error(t, err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("header wait survived the drain deadline")
+	}
+}
 
 func TestNewTaskAPIRequestInheritsClientCancellation(t *testing.T) {
 	recorder := httptest.NewRecorder()

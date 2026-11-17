@@ -313,6 +313,9 @@ func (w *cancelAfterWriter) WriteString(s string) (int, error) {
 
 func newDisconnectingImageStream(t *testing.T, sseBody, disconnectAfter string) (*gin.Context, *httptest.ResponseRecorder, *http.Response, *relaycommon.RelayInfo) {
 	t.Helper()
+	oldDrainTimeout := constant.StreamDrainTimeout
+	constant.StreamDrainTimeout = 1
+	t.Cleanup(func() { constant.StreamDrainTimeout = oldDrainTimeout })
 	c, recorder, resp, info := newImageTestContext(t, "", "text/event-stream", true)
 	ctx, cancel := context.WithCancel(c.Request.Context())
 	t.Cleanup(cancel)

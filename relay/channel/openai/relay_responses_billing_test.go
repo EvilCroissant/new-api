@@ -133,10 +133,10 @@ func TestOaiResponsesStreamHandlerCompletionLifecycle(t *testing.T) {
 		{name: "midstream disconnect", event: "response.output_text.delta", cancel: true, wantEnd: relaycommon.StreamEndReasonClientGone, wantError: true},
 		{name: "midstream disconnect followed by cleanup EOF", event: "response.output_text.delta", cancel: true, closeEOF: true, wantEnd: relaycommon.StreamEndReasonClientGone, wantError: true},
 		{name: "cancellation before flush", event: "response.completed", responseStatus: "completed", cancel: true, cancelBeforeFlush: true, wantEnd: relaycommon.StreamEndReasonClientGone, wantError: true},
-		{name: "event write failure", event: "response.completed", responseStatus: "completed", failWrite: 1, wantEnd: relaycommon.StreamEndReasonHandlerStop, wantError: true},
-		{name: "data write failure", event: "response.completed", responseStatus: "completed", failWrite: 2, wantEnd: relaycommon.StreamEndReasonHandlerStop, wantError: true},
-		{name: "delimiter write failure", event: "response.completed", responseStatus: "completed", failWrite: 3, wantEnd: relaycommon.StreamEndReasonHandlerStop, wantError: true},
-		{name: "flush failure", event: "response.completed", responseStatus: "completed", failFlush: true, wantEnd: relaycommon.StreamEndReasonHandlerStop, wantError: true},
+		{name: "event write failure", event: "response.completed", responseStatus: "completed", failWrite: 1, wantEnd: relaycommon.StreamEndReasonClientGone, wantError: true},
+		{name: "data write failure", event: "response.completed", responseStatus: "completed", failWrite: 2, wantEnd: relaycommon.StreamEndReasonClientGone, wantError: true},
+		{name: "delimiter write failure", event: "response.completed", responseStatus: "completed", failWrite: 3, wantEnd: relaycommon.StreamEndReasonClientGone, wantError: true},
+		{name: "flush failure", event: "response.completed", responseStatus: "completed", failFlush: true, wantEnd: relaycommon.StreamEndReasonClientGone, wantError: true},
 		{name: "protocol error before completion", event: "response.completed", responseStatus: "completed", priorError: true, cancel: true, wantEnd: relaycommon.StreamEndReasonClientGone, wantError: true},
 		{name: "upstream read failure before handler returns", event: "response.completed", responseStatus: "completed", scannerError: true, wantEnd: relaycommon.StreamEndReasonScannerErr, wantError: true},
 		{name: "done with failed response", event: "response.done", responseStatus: "failed", eof: true, wantEnd: relaycommon.StreamEndReasonEOF, wantError: true},
@@ -216,6 +216,70 @@ func TestOaiResponsesStreamHandlerCompletionLifecycle(t *testing.T) {
 				default:
 					t.Fatal("upstream body was not closed")
 				}
+			}
+		})
+	}
+}
+
+func TestOaiResponsesStreamHandlerDrainsFinalUsageAfterDisconnect(t *testing.T) {
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+	for _, failed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("failed=%t", failed), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+			reader, writer := io.Pipe()
+			t.Cleanup(func() { _ = reader.Close(); _ = writer.Close() })
+			recorder := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(recorder)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil).WithContext(ctx)
+			c.Writer = &cancelAfterWriter{ResponseWriter: c.Writer, needle: "hello", cancel: cancel}
+			info := &relaycommon.RelayInfo{
+				IsStream: true, DisablePing: true, StartTime: time.Now(), RelayFormat: types.RelayFormatOpenAIResponses,
+				ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "gpt-4o"},
+			}
+			resp := &http.Response{StatusCode: http.StatusOK, Body: reader}
+			done := make(chan struct{})
+			var usage *dto.Usage
+			var apiErr *types.NewAPIError
+			go func() {
+				usage, apiErr = OaiResponsesStreamHandler(c, info, resp)
+				close(done)
+			}()
+			_, err := fmt.Fprint(writer, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n")
+			require.NoError(t, err)
+			select {
+			case <-ctx.Done():
+			case <-time.After(2 * time.Second):
+				t.Fatal("first output did not reach the client")
+			}
+			status, event := "completed", "response.completed"
+			errorJSON := "null"
+			if failed {
+				status, event = "failed", "response.failed"
+				errorJSON = `{"code":"server_error","message":"late upstream failure"}`
+			}
+			_, err = fmt.Fprintf(writer, "data: {\"type\":%q,\"response\":{\"status\":%q,\"error\":%s,\"usage\":{\"input_tokens\":7,\"output_tokens\":5,\"total_tokens\":12}}}\n\n", event, status, errorJSON)
+			require.NoError(t, err)
+			// Leave the socket open: a parsed terminal must stop the drain while
+			// retaining the usage carried in that same frame.
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				t.Fatal("stream did not finish draining")
+			}
+			require.Nil(t, apiErr)
+			require.NotNil(t, usage)
+			assert.Equal(t, 7, usage.PromptTokens)
+			assert.Equal(t, 5, usage.CompletionTokens)
+			assert.Equal(t, 12, usage.TotalTokens)
+			assert.Equal(t, status, info.StreamStatus.ResponseOutcome())
+			assert.Equal(t, relaycommon.StreamEndReasonClientGone, info.StreamStatus.EndReason)
+			assert.ErrorIs(t, c.Request.Context().Err(), context.Canceled)
+			assert.NotContains(t, recorder.Body.String(), event, "terminal event must not be written after disconnect")
+			if failed {
+				assert.Equal(t, "late upstream failure", info.StreamStatus.UpstreamErrorMessage())
 			}
 		})
 	}

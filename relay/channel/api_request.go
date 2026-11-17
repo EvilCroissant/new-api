@@ -1,6 +1,7 @@
 package channel
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -535,6 +536,16 @@ func keepUpstreamRedirectResponse(_ *http.Request, _ []*http.Request) error {
 	return http.ErrUseLastResponse
 }
 
+type streamUpstreamBody struct {
+	io.ReadCloser
+	release context.CancelFunc
+}
+
+func (b *streamUpstreamBody) Close() error {
+	b.release()
+	return b.ReadCloser.Close()
+}
+
 func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http.Response, error) {
 	client, err := service.GetHttpClientWithProxySettings(info.ChannelSetting.Proxy, info.ChannelSetting)
 	if err != nil {
@@ -567,8 +578,17 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 	}
 
 	common2.SetContextKey(c, appconstant.ContextKeyUpstreamRequestOrigin, req.URL.Scheme+"://"+req.URL.Host)
+	var release context.CancelFunc
+	if info.IsStream {
+		upstreamContext, cancel := helper.NewStreamUpstreamContext(c.Request.Context(), req.Context())
+		release = cancel
+		req = req.WithContext(upstreamContext)
+	}
 	resp, err := relayClient.Do(req)
 	if err != nil {
+		if release != nil {
+			release()
+		}
 		// A url.Error quotes the request URL, whose query may carry a
 		// credential: log its operation, the host and the cause only.
 		reason := err.Error()
@@ -580,7 +600,13 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 		return nil, types.NewError(err, types.ErrorCodeDoRequestFailed, types.ErrOptionWithHideErrMsg("upstream error: do request failed"))
 	}
 	if resp == nil {
+		if release != nil {
+			release()
+		}
 		return nil, errors.New("resp is nil")
+	}
+	if release != nil {
+		resp.Body = &streamUpstreamBody{ReadCloser: resp.Body, release: release}
 	}
 	if common2.DebugEnabled {
 		policy := service.NormalizeHTTPTransportPolicy(info.ChannelSetting)
