@@ -735,6 +735,7 @@ func UpdateUser(c *gin.Context) {
 		return
 	}
 	if authzTouched {
+		model.BumpSyncTopic(model.SyncTopicAuthz)
 		if err := authz.ReloadPolicy(); err != nil {
 			common.ApiError(c, err)
 			return
@@ -1075,6 +1076,7 @@ func CreateUser(c *gin.Context) {
 		return
 	}
 	if authzTouched {
+		model.BumpSyncTopic(model.SyncTopicAuthz)
 		if err := authz.ReloadPolicy(); err != nil {
 			common.ApiError(c, err)
 			return
@@ -1220,6 +1222,7 @@ func ManageUser(c *gin.Context) {
 			common.ApiError(c, err)
 			return
 		}
+		model.BumpSyncTopic(model.SyncTopicAuthz)
 		if err := authz.ReloadPolicy(); err != nil {
 			common.ApiError(c, err)
 			return
