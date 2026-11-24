@@ -2,18 +2,39 @@ package controller
 
 import (
 	"net/http"
-	"sort"
 	"strconv"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
 	"github.com/gin-gonic/gin"
+	"github.com/samber/lo"
 )
 
+func usablePerfMetricGroups(c *gin.Context) []string {
+	userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
+	usableGroups := service.GetUserUsableGroups(userGroup)
+	groups := make([]string, 0, len(usableGroups))
+	for group := range usableGroups {
+		if group == "auto" || ratio_setting.ContainsGroupRatio(group) {
+			groups = append(groups, group)
+		}
+	}
+	return groups
+}
+
 func GetPerfMetricsSummary(c *gin.Context) {
+	getPerfMetricsSummary(c, usablePerfMetricGroups(c))
+}
+
+func GetDashboardPerfMetricsSummary(c *gin.Context) {
+	getPerfMetricsSummary(c, append(lo.Keys(ratio_setting.GetGroupRatioCopy()), "auto"))
+}
+
+func getPerfMetricsSummary(c *gin.Context, groups []string) {
 	hours := 24
 	if rawHours := c.Query("hours"); rawHours != "" {
 		if parsed, err := strconv.Atoi(rawHours); err == nil {
@@ -26,7 +47,7 @@ func GetPerfMetricsSummary(c *gin.Context) {
 		common.ApiErrorStatus(c, http.StatusBadRequest, common.NewMessage("Invalid parameters"))
 		return
 	}
-	result, err := perfmetrics.QuerySummaryAll(hours, visiblePerfGroups(c), recentModels...)
+	result, err := perfmetrics.QuerySummaryAll(hours, groups, recentModels...)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
@@ -62,7 +83,7 @@ func GetPerfMetrics(c *gin.Context) {
 		Model:         modelName,
 		Group:         c.Query("group"),
 		Hours:         hours,
-		AllowedGroups: visiblePerfGroups(c),
+		AllowedGroups: usablePerfMetricGroups(c),
 	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
@@ -76,32 +97,4 @@ func GetPerfMetrics(c *gin.Context) {
 		"success": true,
 		"data":    result,
 	})
-}
-
-func visiblePerfGroups(c *gin.Context) []string {
-	visible := visiblePerfGroupSet(c)
-	groups := make([]string, 0, len(visible))
-	for group := range visible {
-		groups = append(groups, group)
-	}
-	sort.Strings(groups)
-	return groups
-}
-
-func visiblePerfGroupSet(c *gin.Context) map[string]struct{} {
-	userGroup := ""
-	if c != nil {
-		userGroup = c.GetString("user_group")
-	}
-	usableGroups := service.GetUserUsableGroups(userGroup)
-	visible := make(map[string]struct{})
-	for group := range ratio_setting.GetGroupRatioCopy() {
-		if _, ok := usableGroups[group]; ok {
-			visible[group] = struct{}{}
-		}
-	}
-	if len(service.GetUserAutoGroup(userGroup)) > 0 {
-		visible["auto"] = struct{}{}
-	}
-	return visible
 }
