@@ -4597,6 +4597,7 @@
     "OpenAI only": "Chỉ OpenAI",
     "OpenAI Organization": "Tổ chức OpenAI",
     "OpenAI Organization ID (optional)": "ID Tổ chức OpenAI (tùy chọn)",
+    "OpenAI Responses to Anthropic Messages": "OpenAI Responses sang Anthropic Messages",
     "OpenAI Responses to Gemini Generate Content": "OpenAI Responses sang Gemini Generate Content",
     "OpenAI Responses to OpenAI Chat": "OpenAI Responses sang OpenAI Chat",
     "OpenAI, Anthropic, etc.": "OpenAI, Anthropic, v.v.",
@@ -7815,6 +7816,8 @@
     "Zhipu": "Zhipu",
     "Zhipu GLM": "Zhipu GLM",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Plugin routes": "Tuyến của plugin",
+    "{{on}} of {{total}} on": "Đã bật {{on}}/{{total}}"
   }
 }

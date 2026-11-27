@@ -4597,6 +4597,7 @@
     "OpenAI only": "Только OpenAI",
     "OpenAI Organization": "Организация OpenAI",
     "OpenAI Organization ID (optional)": "Идентификатор организации OpenAI (необязательно)",
+    "OpenAI Responses to Anthropic Messages": "OpenAI Responses в Anthropic Messages",
     "OpenAI Responses to Gemini Generate Content": "OpenAI Responses в Gemini Generate Content",
     "OpenAI Responses to OpenAI Chat": "OpenAI Responses в OpenAI Chat",
     "OpenAI, Anthropic, etc.": "OpenAI, Anthropic и т.д.",
@@ -7815,6 +7816,8 @@
     "Zhipu": "Zhipu",
     "Zhipu GLM": "Zhipu GLM",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Plugin routes": "Маршруты плагина",
+    "{{on}} of {{total}} on": "Включено {{on}} из {{total}}"
   }
 }
